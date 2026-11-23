@@ -12139,3 +12139,525 @@ def test_outputs_package_contract_manifest_and_ca_bundle():
         await client.aclose()
 
     _run(_scenario())
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════
+#  极简模式 S1/S2（2026-11-23）：脚本库＋界面偏好
+#
+#  用户原话：「个人可自定义脚本库，把想要的脚本添加到个人脚本库，并可打开脚本修改。」
+#            「勾选脚本（打开个人脚本库可一次多选）→上传三视图→豆包生成视频（生成数量可选）」
+#
+#  这里的「脚本」＝直接投给豆包的成品提示词，不是钩子文案（不过 ≤80 字形态闸、不展开）。
+#  钉五件事：①定稿即冻结、派生不覆盖；②同一人不留两条同内容定稿；③生产载体默认不进
+#  五环的 ②③ 列表、也不能拿 script_texts 绕过复核；④轻量过审的角色/职能/自审闸与审核口
+#  同口径、且响应逐条带 ok（HTTP 200 ≠ 全过）；⑤投产走同一个 produce＋dispatch，
+#  不调模型展开、成片照进成片墙。
+# ═════════════════════════════════════════════════════════════════════════════════════
+
+_SCRIPT_URL = "/api/assets/scripts"
+_SCRIPT_BODY = (
+    "镜头1：清晨的小巷，一个穿灰外套的女孩推开木门。"
+    "镜头2：她抬头，看见墙上挂着一张泛黄的照片。"
+    "镜头3：她伸手取下照片，笑了笑。"
+)
+
+
+def _block_word() -> str:
+    return svc.DEFAULT_RISK_LEXICON[svc.RISK_LEVEL_BLOCK][0]
+
+
+async def _mk_script(client, h, name="灰外套女孩", body=None, **extra):
+    """新建一条脚本（断言成功），返回响应体。"""
+    r = await client.post(
+        _SCRIPT_URL,
+        json={"name": name, "body": body or _SCRIPT_BODY, "source_kind": "manual", **extra},
+        headers=h,
+    )
+    assert r.status_code in (200, 201), r.text
+    return r.json()
+
+
+async def _finalize(client, h, sid, **extra):
+    return await client.post(f"{_SCRIPT_URL}/{sid}/finalize", json=extra, headers=h)
+
+
+async def _ready_and_approved(client, h_owner, h_approver, name="待投脚本"):
+    """走到「已定稿＋已过审」，返回 (脚本行, 载体 id)。"""
+    s = await _mk_script(client, h_owner, name=name)
+    fin = await _finalize(client, h_owner, s["id"])
+    assert fin.status_code == 200, fin.text
+    ap = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": [s["id"]]}, headers=h_approver)
+    assert ap.status_code == 200 and ap.json()["results"][0]["ok"] is True, ap.text
+    return ap.json()["results"][0]
+
+
+def test_script_library_crud_finalize_fork_and_retire():
+    """脚本库基本盘：建/列/详/改/定稿/派生/下架——定稿即冻结，改定稿＝派生新草稿。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+
+        # 新建（201）＋ 同内容再建幂等（200 回原行，不堆重复）
+        s = await _mk_script(client, ho)
+        assert s["state"] == "draft" and s["reused"] is False and s["body"] == _SCRIPT_BODY
+        again = await client.post(
+            _SCRIPT_URL, json={"name": "换个名字也是同一篇", "body": _SCRIPT_BODY}, headers=ho)
+        assert again.status_code == 200, again.text
+        assert again.json()["reused"] is True and again.json()["id"] == s["id"]
+
+        # 列表不随正文（只给预览＋字数）；默认只看自己的，owner=all 看所有人的
+        mine = await client.get(_SCRIPT_URL, headers=ho)
+        assert mine.json()["total"] == 1
+        item = mine.json()["items"][0]
+        assert "body" not in item and item["preview"] and item["body_chars"] > 0
+        assert item["state_label"] == "库稿" and item["owner_name"]
+        assert (await client.get(_SCRIPT_URL, headers=hm)).json()["total"] == 0
+        all_view = await client.get(_SCRIPT_URL, params={"owner": "all"}, headers=hm)
+        assert all_view.json()["total"] == 1 and all_view.json()["items"][0]["owner_id"] != ""
+
+        # 详情带全文（读全员可见）
+        one = await client.get(f"{_SCRIPT_URL}/{s['id']}", headers=hm)
+        assert one.status_code == 200 and one.json()["body"] == _SCRIPT_BODY
+
+        # 入参校验：空名 422 / 超长正文 413 / 不存在的原型 400 / 不认的来源 400
+        assert (await client.post(_SCRIPT_URL, json={"name": " ", "body": "x"}, headers=ho)).status_code == 422
+        assert (await client.post(
+            _SCRIPT_URL, json={"name": "长", "body": "字" * 20001}, headers=ho)).status_code == 413
+        assert (await client.post(
+            _SCRIPT_URL, json={"name": "原型", "body": "x", "category_id": str(uuid.uuid4())},
+            headers=ho)).status_code == 400
+        assert (await client.post(
+            _SCRIPT_URL, json={"name": "来源", "body": "x", "source_kind": "reverse"},
+            headers=ho)).status_code == 400
+
+        # 改草稿（原地）；别人不能改
+        up = await client.put(
+            f"{_SCRIPT_URL}/{s['id']}", json={"name": "改名了", "note": "给自己看的备注"}, headers=ho)
+        assert up.status_code == 200 and up.json()["name"] == "改名了" and up.json()["forked"] is False
+        assert (await client.put(
+            f"{_SCRIPT_URL}/{s['id']}", json={"name": "乱改"}, headers=hm)).status_code == 403
+
+        # 定稿 → 可投稿；重复定稿幂等
+        fin = await _finalize(client, ho, s["id"])
+        assert fin.status_code == 200 and fin.json()["state"] == "ready" and fin.json()["reused"] is False
+        fin2 = await _finalize(client, ho, s["id"])
+        assert fin2.status_code == 200 and fin2.json()["reused"] is True
+
+        # 定稿后改正文＝派生新草稿（201），原稿一字不动；重复派生幂等（200 回同一条）
+        new_body = _SCRIPT_BODY + "镜头4：她把照片放进口袋。"
+        fork = await client.put(f"{_SCRIPT_URL}/{s['id']}", json={"body": new_body}, headers=ho)
+        assert fork.status_code == 201, fork.text
+        fk = fork.json()
+        assert fk["forked"] is True and fk["state"] == "draft" and fk["based_on_script_id"] == s["id"]
+        assert fk["id"] != s["id"]
+        fork2 = await client.put(f"{_SCRIPT_URL}/{s['id']}", json={"body": new_body}, headers=ho)
+        assert fork2.status_code == 200 and fork2.json()["id"] == fk["id"]
+        origin = await client.get(f"{_SCRIPT_URL}/{s['id']}", headers=ho)
+        assert origin.json()["state"] == "ready" and origin.json()["body"] == _SCRIPT_BODY
+
+        # 别人也能基于它派生自己的草稿（读全员可见，派生不用问人）
+        fork_m = await client.put(f"{_SCRIPT_URL}/{s['id']}", json={}, headers=hm)
+        assert fork_m.status_code == 201 and fork_m.json()["state"] == "draft"
+        assert fork_m.json()["name"].endswith("（副本）")
+
+        # 下架＝软删；幂等；默认列表不再回它，显式点名才回
+        assert (await client.delete(f"{_SCRIPT_URL}/{fk['id']}", headers=ho)).json()["state"] == "retired"
+        assert (await client.delete(f"{_SCRIPT_URL}/{fk['id']}", headers=ho)).status_code == 200
+        assert (await client.get(_SCRIPT_URL, headers=ho)).json()["total"] == 1
+        gone = await client.get(_SCRIPT_URL, params={"state": "retired"}, headers=ho)
+        assert gone.json()["total"] == 1 and gone.json()["items"][0]["id"] == fk["id"]
+        # 已下架的不能再改、不能再定稿
+        assert (await client.put(f"{_SCRIPT_URL}/{fk['id']}", json={"name": "x"}, headers=ho)).status_code == 409
+        assert (await _finalize(client, ho, fk["id"])).status_code == 409
+
+        # 审计：定稿动作留了改前原文（strict），谁点的查得到
+        logs = [a for a in await _rows(AuditLog, AuditLog.action == "asset.script.finalize")
+                if str(a.target_id) == s["id"] and not (a.after or {}).get("reused_script_id")]
+        assert logs and logs[0].after["state"] == "ready" and logs[0].after["body"] == _SCRIPT_BODY
+        assert logs[0].operator_name == OPERATOR_USER
+        # 管理员代改别人的要留痕（admin_edit）
+        admin_edit = await client.put(f"{_SCRIPT_URL}/{fork_m.json()['id']}", json={"name": "管理员改的"}, headers=ha)
+        assert admin_edit.status_code == 200 and admin_edit.json()["name"] == "管理员改的"
+        alog = [a for a in await _rows(AuditLog, AuditLog.action == "asset.script.update")
+                if str(a.target_id) == fork_m.json()["id"]]
+        assert alog and alog[-1].after.get("admin_edit") is True
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_script_finalize_blocks_risk_words_and_keeps_one_ready_per_body():
+    """定稿的两道硬闸：风险词 block 命中即 409；同一人不留两条内容相同的可投稿脚本
+    （应用层幂等＋库级部分唯一索引兜底并发）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.models.asset import SCRIPT_DRAFT, SCRIPT_READY, SCRIPT_RETIRED, AssetScript
+        from sqlalchemy import exc as saexc
+
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+
+        # ① 风险词 block：命中即拦，点名是哪个词，状态不变
+        bad = await _mk_script(client, ho, name="含险词", body=f"镜头1：这个药能{_block_word()}所有病。")
+        fin = await _finalize(client, ho, bad["id"])
+        assert fin.status_code == 409 and _block_word() in fin.json()["detail"], fin.text
+        assert (await client.get(f"{_SCRIPT_URL}/{bad['id']}", headers=ho)).json()["state"] == "draft"
+
+        # ② 同内容定稿去重：先有一条定稿 Y；另一条草稿原地改成 Y 再定稿 → 回已有的那条
+        y_body = _SCRIPT_BODY + "（Y 版）"
+        first = await _mk_script(client, ho, name="Y 定稿", body=y_body)
+        assert (await _finalize(client, ho, first["id"])).json()["state"] == "ready"
+        second = await _mk_script(client, ho, name="先叫 Z", body=_SCRIPT_BODY + "（Z 版）")
+        assert second["id"] != first["id"]
+        assert (await client.put(
+            f"{_SCRIPT_URL}/{second['id']}", json={"body": y_body}, headers=ho)).status_code == 200
+        twin = await _finalize(client, ho, second["id"])
+        assert twin.status_code == 200 and twin.json()["reused"] is True
+        assert twin.json()["id"] == first["id"]
+        # 那条重复草稿随之收起（不堆两条一样的可投稿脚本）
+        assert (await client.get(f"{_SCRIPT_URL}/{second['id']}", headers=ho)).json()["state"] == "retired"
+
+        # ③ 库级兜底：绕过接口直接插第二条同 (owner, body_hash) 的 ready 行 → 撞唯一索引；
+        #    草稿不受这条索引约束（派生草稿在改字前与母稿逐字相同是正常的）
+        ready = (await _rows(AssetScript, AssetScript.id == uuid.UUID(first["id"])))[0]
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetScript(owner_id=ready.owner_id, name="并发撞车", body=y_body,
+                              state=SCRIPT_READY, body_hash=ready.body_hash))
+            try:
+                await s.flush()
+                await s.commit()
+                raised = False
+            except saexc.IntegrityError:
+                raised = True
+                await s.rollback()
+        assert raised, "同一个人第二条同内容 ready 行必须被唯一索引挡下"
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetScript(owner_id=ready.owner_id, name="重复草稿", body=y_body,
+                              state=SCRIPT_DRAFT, body_hash=ready.body_hash))
+            await s.commit()   # 草稿重复：不报错
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_script_carrier_is_hidden_from_five_rings_and_cannot_bypass_recheck():
+    """生产载体不是钩子文案：五环的 ②③ 列表默认看不到它；也不能拿 script_texts 把普通
+    过审文案当成脚本绕过投产前复核。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        cats = (await client.get("/api/assets/categories", headers=ho)).json()["items"]
+        cat_id = next(c["id"] for c in cats if c.get("active", True))
+
+        pend_before = (await client.get(
+            "/api/assets/summaries", params={"audit_status": "pending", "page_size": 1}, headers=ho)).json()["total"]
+        assets_before = (await client.get("/api/assets", params={"page_size": 200}, headers=ho)).json()["total"]
+
+        s = await _mk_script(client, ho, category_id=cat_id)
+        assert (await _finalize(client, ho, s["id"])).status_code == 200
+        sub = await client.post(f"{_SCRIPT_URL}/submit", json={"script_ids": [s["id"]]}, headers=ho)
+        assert sub.status_code == 200 and sub.json()["results"][0]["ok"] is True, sub.text
+        carrier_id = sub.json()["results"][0]["carrier_summary_id"]
+        row = (await _rows(AssetSummary, AssetSummary.id == uuid.UUID(carrier_id)))[0]
+
+        # 审核列表：默认看不到载体（角标不受污染）；显式 include_carriers 才回
+        hidden = await client.get(
+            "/api/assets/summaries", params={"asset_id": str(row.asset_id)}, headers=ho)
+        assert hidden.json()["total"] == 0, hidden.text
+        shown = await client.get(
+            "/api/assets/summaries",
+            params={"asset_id": str(row.asset_id), "include_carriers": "true"}, headers=ho)
+        assert shown.json()["total"] == 1 and shown.json()["items"][0]["id"] == carrier_id
+        pend_after = (await client.get(
+            "/api/assets/summaries", params={"audit_status": "pending", "page_size": 1}, headers=ho)).json()["total"]
+        assert pend_after == pend_before, "送审一条脚本不该让五环的「等审核」角标 +1"
+
+        # 素材列表：壳默认不出现
+        assert (await client.get("/api/assets", params={"page_size": 200}, headers=ho)).json()["total"] == assets_before
+        with_shell = await client.get(
+            "/api/assets", params={"page_size": 200, "include_carriers": "true"}, headers=ho)
+        assert str(row.asset_id) in {a["id"] for a in with_shell.json()["items"]}
+        # 原型字典的引用计数不把载体算进去
+        cat_after = {c["id"]: c for c in (await client.get("/api/assets/categories", headers=ho)).json()["items"]}
+        assert cat_after[cat_id].get("asset_count", 0) == next(
+            c for c in cats if c["id"] == cat_id).get("asset_count", 0)
+
+        # 过审后，载体仍不出现在「已过审」挑选列表里（对它做 autoclip 展开＝把脚本当文案展开）
+        ap = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": [s["id"]]}, headers=ho)
+        assert ap.json()["results"][0]["ok"] is True, ap.text
+        approved = await client.get(
+            "/api/assets/summaries", params={"audit_status": "approved", "page_size": 300}, headers=ho)
+        assert carrier_id not in {x["id"] for x in approved.json()["items"]}
+
+        # 绕过尝试一：不带 script_texts、直接对载体调普通投产口 → 400，两种形态都拒
+        #   （expand=false 会建出没有正文的裸单；expand=true 会把整篇脚本当钩子文案送去展开）
+        #   ⚠️ 这条用例的脚本只有 60 字、能过 ≤80 字形态闸——所以拦住它的**不能是形态闸**，
+        #   必须是「脚本载体只认脚本直投」这道闸本身（首跑时这里真的建出了单，才补的闸）。
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()) as expand_spy:
+            bare = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [carrier_id], "n": 1, "expand": False,
+                      "hook_codes": ["7Z901"], "async_mode": False},
+                headers=ho)
+            expanded = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [carrier_id], "n": 1, "hook_codes": ["7Z905"], "async_mode": False},
+                headers=ho)
+            async_mode = await client.post(
+                "/api/assets/produce",
+                json={"summary_ids": [carrier_id], "n": 1, "hook_codes": ["7Z906"], "async_mode": True},
+                headers=ho)
+        for refused in (bare, expanded, async_mode):
+            assert refused.status_code == 400, refused.text
+            assert "脚本的生产载体" in refused.json()["detail"]
+        assert expand_spy.call_count == 0, "被拒的那几次不许真的去调模型展开"
+        assert (await _count(AssetProduction)) == 0, "被拒的那几次一张单都不许落库"
+
+        # 绕过尝试二：给一条**普通**过审文案塞 script_texts → 400（键必须是脚本载体）
+        asset_id, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7Z902"])
+        carrier_text = (await _rows(AssetSummary, AssetSummary.id == uuid.UUID(carrier_id)))[0].text
+        normal_sid = str((await _row_of(AssetProduction, uuid.UUID(listed[0]["id"]))).summary_id)
+        not_carrier = await client.post(
+            "/api/assets/produce",
+            json={"summary_ids": [normal_sid], "n": 1, "script_texts": {normal_sid: carrier_text},
+                  "hook_codes": ["7Z903"], "async_mode": False},
+            headers=ho)
+        assert not_carrier.status_code == 400 and "不是脚本的生产载体" in not_carrier.json()["detail"]
+
+        # 绕过尝试三：载体的投递正文与过审正文不一致 → 400（审的必须就是投的）
+        mismatch = await client.post(
+            "/api/assets/produce",
+            json={"summary_ids": [carrier_id], "n": 1, "expand": False,
+                  "script_texts": {carrier_id: carrier_text + "偷偷加一句"},
+                  "hook_codes": ["7Z904"], "async_mode": False},
+            headers=ho)
+        assert mismatch.status_code == 400 and "不一致" in mismatch.json()["detail"]
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_script_submit_approve_follows_review_role_and_self_review_knob():
+    """轻量过审与审核口同口径：角色/职能闸、自审闸读同一个旋钮、审计同一个动作名；
+    响应逐条带 ok（没定稿的要如实说，不能让人以为整批都过了）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+
+        # 素材专员能建稿、能定稿、能送审；但没有审核职能 → approve 403
+        s = await _mk_script(client, hm, name="素材专员的脚本")
+        assert (await _finalize(client, hm, s["id"])).status_code == 200
+        forbidden = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": [s["id"]]}, headers=hm)
+        assert forbidden.status_code == 403, forbidden.text
+        sub = await client.post(f"{_SCRIPT_URL}/submit", json={"script_ids": [s["id"]]}, headers=hm)
+        assert sub.status_code == 200 and sub.json()["results"][0]["audit_status"] == "pending", sub.text
+        # 幂等：再送一次不新建载体
+        again = await client.post(f"{_SCRIPT_URL}/submit", json={"script_ids": [s["id"]]}, headers=hm)
+        assert again.json()["submitted"] == 0
+        assert again.json()["results"][0]["carrier_summary_id"] == sub.json()["results"][0]["carrier_summary_id"]
+
+        # 运营在「待过审」里看得到同事送来的脚本
+        pending = await client.get(
+            _SCRIPT_URL, params={"owner": "all", "carrier_status": "pending"}, headers=ho)
+        assert pending.json()["total"] == 1 and pending.json()["items"][0]["id"] == s["id"]
+
+        # 运营自己送审自己的脚本：旋钮关 → 自审被拦（逐条 ok:false ＋ 错误码）；旋钮开 → 放行并留痕
+        mine = await _mk_script(client, ho, name="运营自己的脚本", body=_SCRIPT_BODY + "（运营版）")
+        assert (await _finalize(client, ho, mine["id"])).status_code == 200
+        assert (await client.post(f"{_SCRIPT_URL}/submit", json={"script_ids": [mine["id"]]}, headers=ho)).status_code == 200
+        saved = settings.ASSET_SELF_PRODUCE_ALLOWED
+        try:
+            settings.ASSET_SELF_PRODUCE_ALLOWED = False
+            blocked = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": [mine["id"]]}, headers=ho)
+            r0 = blocked.json()["results"][0]
+            assert blocked.status_code == 200 and r0["ok"] is False, blocked.text
+            assert r0["error_code"] == "ASSET_SELF_REVIEW_BLOCKED"
+        finally:
+            settings.ASSET_SELF_PRODUCE_ALLOWED = saved
+        ok = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": [mine["id"], s["id"]]}, headers=ho)
+        assert ok.status_code == 200, ok.text
+        assert [r["ok"] for r in ok.json()["results"]] == [True, True]
+        # 再点一次：已过审的如实回 already，不重复写审计
+        repeat = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": [mine["id"]]}, headers=ho)
+        assert repeat.json()["results"][0]["ok"] is True and repeat.json()["results"][0]["already"] is True
+
+        # 审计：与审核口同一个动作名（admin 撤审抽检靠它），带 via/script/self_review 标记
+        logs = [a for a in await _rows(AuditLog, AuditLog.action == "asset.summary_review.approve")
+                if (a.after or {}).get("via") == "simple_script"]
+        assert len(logs) == 2
+        self_log = next(a for a in logs if str(a.target_id) == sub.json()["results"][0]["carrier_summary_id"])
+        assert self_log.after["self_review"] is None, "运营审素材专员送来的不算自审"
+        mine_log = next(a for a in logs if a.target_id != self_log.target_id)
+        assert mine_log.after["self_review"]["self"] is True
+        assert mine_log.after["script"]["id"] == mine["id"]
+
+        # 没定稿的脚本 approve：逐条 ok:false，HTTP 仍是 200（所以界面必须念出失败条数）
+        draft = await _mk_script(client, ho, name="没定稿", body=_SCRIPT_BODY + "（没定稿）")
+        mixed = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": [draft["id"], mine["id"]]}, headers=ho)
+        assert mixed.status_code == 200
+        assert mixed.json()["results"][0]["ok"] is False and "还没定稿" in mixed.json()["results"][0]["error"]
+        assert "未通过 1 条" in mixed.json()["message"]
+        # 载体在库里的审核态确实变了（审的＝投的那一版）
+        rows = {str(r.id): r for r in await _rows(AssetSummary)}
+        assert rows[sub.json()["results"][0]["carrier_summary_id"]].audit_status == RV_APPROVED
+        assert rows[sub.json()["results"][0]["carrier_summary_id"]].reviewed_by is not None
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_script_produce_dispatches_to_board_without_model_expansion():
+    """屏 2「投豆包」：已过审的脚本 → 一脚本一单 → 直投板上。不调模型展开、成片照进
+    成片墙（不是试产）；未过审不能投；用别人过审的脚本要先确认（且确认前不烧号）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        taken: List[int] = []
+
+        async def fake_take(n):
+            taken.append(n)
+            return ([f"7Z5{i:02d}" for i in range(1, n + 1)], [], None)
+
+        s = await _mk_script(client, hm, name="要投的脚本")
+        assert (await _finalize(client, hm, s["id"])).status_code == 200
+
+        fb = _FakeBoard()
+        with _board_off(fb), patch("app.api.assets._take_hook_codes", fake_take), \
+                patch("app.api.assets._call_autoclip", _fake_autoclip()) as expand:
+            # ① 未过审：不能投，也没取号
+            early = await client.post(f"{_SCRIPT_URL}/produce", json={"script_ids": [s["id"]]}, headers=ho)
+            assert early.status_code == 400 and "还没过审" in early.json()["detail"], early.text
+            assert taken == []
+
+            # ② 管理员过审 → 运营来投＝用了别人过审的脚本：先确认；确认前不建单、不取号
+            ap = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": [s["id"]]}, headers=ha)
+            assert ap.json()["results"][0]["ok"] is True, ap.text
+            cross = await client.post(f"{_SCRIPT_URL}/produce", json={"script_ids": [s["id"]]}, headers=ho)
+            assert cross.status_code == 400 and "替他人过审候选投产" in cross.json()["detail"], cross.text
+            assert taken == [], "跨人确认被拦下的那一次不许烧号"
+
+            # ③ 确认后：一脚本一单，受理即回任务号
+            res = await client.post(
+                f"{_SCRIPT_URL}/produce",
+                json={"script_ids": [s["id"]], "board_total": 2, "cross_person_confirm": True},
+                headers=ho)
+            assert res.status_code == 200, res.text
+            body = res.json()
+            assert taken == [1] and len(body["production_ids"]) == 1
+            r0 = body["results"][0]
+            assert r0["ok"] is True and r0["hook_code"] == "7Z501" and r0["production_id"]
+            assert body["dispatch"]["queued"] is True and body["dispatch"]["job_id"]
+
+            # 生产单：正文＝脚本正文（没有模型展开）、板上出 2 版、板面名＝脚本名、不是试产
+            prod = await _row_of(AssetProduction, uuid.UUID(r0["production_id"]))
+            assert prod.prompt_text == _SCRIPT_BODY and prod.prompt_snapshot == _SCRIPT_BODY
+            assert prod.board_total == 2 and prod.board_name and prod.is_trial is False
+            assert prod.created_by is not None and prod.hook_code == "7Z501"
+
+            # 后台投板任务跑完：板上建了任务、提示词原样、成片进了成片墙
+            job = await _wait_job(client, ho, body["dispatch"]["job_id"])
+            assert job["status"] == "succeeded", job
+            assert len(fb.creates) == 1 and fb.creates[0]["prompt"] == _SCRIPT_BODY
+            assert int(fb.creates[0]["total"]) == 2
+            assert prod.status in ("success",) or (await _row_of(AssetProduction, prod.id)).status == "success"
+            outs = await client.get("/api/assets/outputs", params={"owner": "all", "limit": 10}, headers=ho)
+            assert outs.json()["total"] == 2, outs.text
+            assert all(o["kind"] == "doubao_raw" for o in outs.json()["items"])
+            # 全程没调过模型展开（脚本本身就是提示词）
+            assert expand.call_count == 0
+
+            # ④ 留痕：脚本 → 生产单的对账链
+            logs = [a for a in await _rows(AuditLog, AuditLog.action == "asset.script.produce")]
+            assert len(logs) == 1 and logs[0].after["production_ids"] == body["production_ids"]
+            assert logs[0].after["hook_codes"] == ["7Z501"]
+            take_logs = [a for a in await _rows(AuditLog, AuditLog.action == "asset.hook_code.take")
+                         if (a.after or {}).get("via") == "script_produce"]
+            assert len(take_logs) == 1 and take_logs[0].after["codes"] == ["7Z501"]
+
+        # ⑤ 素材专员没有投产职能 → 403；⑥ 不存在的脚本 → 400
+        assert (await client.post(
+            f"{_SCRIPT_URL}/produce", json={"script_ids": [s["id"]]}, headers=hm)).status_code == 403
+        ghost = await client.post(f"{_SCRIPT_URL}/produce", json={"script_ids": [str(uuid.uuid4())]}, headers=ho)
+        assert ghost.status_code == 400 and ghost.json()["detail"].startswith("这几条还不能投")
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_script_save_from_asset_is_free_and_rejects_without_reverse_draft():
+    """「钩子视频导入 → 反推 → 收进脚本库」的后半段：读库里已有的反推稿（0 元）；
+    素材还没有可用反推稿时如实拒绝并说清下一步。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.models.asset import AssetScript
+
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        custom_script = "镜头1：雨夜的便利店，男孩把伞递给女孩。" + "（专属反推稿）"
+        asset_id, _task = await _make_ready_asset(client, hm, script=custom_script, category_id=None)
+        got = await client.post(f"{_SCRIPT_URL}/save-from-asset", json={"asset_id": asset_id}, headers=hm)
+        assert got.status_code == 201, got.text
+        row = got.json()
+        assert row["source_kind"] == "reverse" and row["body"] == custom_script and row["state"] == "draft"
+        assert row["origin_asset_id"] == asset_id and row["reused"] is False
+        # 幂等：同一条素材再收一次 → 回原行
+        twice = await client.post(f"{_SCRIPT_URL}/save-from-asset", json={"asset_id": asset_id}, headers=hm)
+        assert twice.status_code == 200 and twice.json()["id"] == row["id"]
+
+        # 素材还没反推过 → 404 ＋ 下一步
+        resp = await _import(client, hm, [DOUYIN_1])
+        bare = resp.json()["items"][0]["id"]
+        none = await client.post(f"{_SCRIPT_URL}/save-from-asset", json={"asset_id": bare}, headers=hm)
+        assert none.status_code == 404 and "还没反推过" in none.json()["detail"], none.text
+        assert (await client.post(
+            f"{_SCRIPT_URL}/save-from-asset", json={"asset_id": str(uuid.uuid4())}, headers=hm)).status_code == 404
+
+        # 素材被强制删除后脚本还在（这正是脚本不挂在候选文案上的原因）
+        stored = (await _rows(AssetScript, AssetScript.id == uuid.UUID(row["id"])))[0]
+        assert stored.origin_asset_id == uuid.UUID(asset_id)
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_ui_preferences_default_by_role_and_roundtrip():
+    """极简开关＝用户级偏好：没存过按角色给默认值（运营＝极简、管理员＝全量），存了就跨设备生效。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho, ha = h["operator"], h["admin"]
+
+        op_default = (await client.get("/api/assets/ui/preferences", headers=ho)).json()["ui_config"]
+        ad_default = (await client.get("/api/assets/ui/preferences", headers=ha)).json()["ui_config"]
+        assert op_default["asset_library_mode"] == "simple"
+        assert ad_default["asset_library_mode"] == "full"
+
+        saved = await client.put(
+            "/api/assets/ui/preferences", json={"ui_config": {"asset_library_mode": "full"}}, headers=ho)
+        assert saved.status_code == 200 and saved.json()["ui_config"]["asset_library_mode"] == "full"
+        assert (await client.get("/api/assets/ui/preferences", headers=ho)).json()["ui_config"][
+            "asset_library_mode"] == "full"
+        # 只动自己那一行：管理员的不受影响
+        assert (await client.get("/api/assets/ui/preferences", headers=ha)).json()["ui_config"][
+            "asset_library_mode"] == "full"
+
+        # 入参校验：不是对象 422 / 不认的模式 422
+        assert (await client.put(
+            "/api/assets/ui/preferences", json={"ui_config": ["simple"]}, headers=ho)).status_code == 422
+        bad = await client.put(
+            "/api/assets/ui/preferences", json={"ui_config": {"asset_library_mode": "极简"}}, headers=ho)
+        assert bad.status_code == 422, bad.text
+        await client.aclose()
+
+    _run(_scenario())

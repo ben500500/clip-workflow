@@ -132,6 +132,9 @@ class UserPreference(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
     slice_config = Column(JSON, nullable=True)   # 当前用户的切片配置（JSON，可整体覆盖）
+    # 2026-11-23 极简模式 S2：素材库界面偏好（JSON，如 {"asset_library_mode": "simple"}）。
+    # 不复用 slice_config——那是切片配置，语义互相污染。
+    ui_config = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

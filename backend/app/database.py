@@ -420,6 +420,9 @@ async def _apply_compat_migrations():
         # 0070（试产单标记，2026-11-12）：审核员改提示词投豆包验证预期的单——
         # 成片只进审核台做判定依据，不进成片墙/交付包。存量单回填 false＝非试产。
         ("asset_productions", "is_trial", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        # 0075（极简模式 S2，2026-11-23）：素材库界面偏好（极简/全量）。新表 asset_scripts
+        # 由 create_all 建（163 的迁移容器跑 init_db），这里只管老表补列。
+        ("user_preferences", "ui_config", "JSON"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

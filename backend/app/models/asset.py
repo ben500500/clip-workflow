@@ -845,3 +845,72 @@ class AssetElementGuess(Base):
 
     def __repr__(self) -> str:
         return f"<AssetElementGuess(hash={self.body_hash[:8]}, slot={self.slot_key})>"
+
+
+# ── 脚本库（2026-11-23 极简模式 S1，用户原话「个人可自定义脚本库，把想要的脚本添加到个人脚本库，
+# 并可打开脚本修改」）──────────────────────────────────────────────────────────
+# 这里的「脚本」＝直接投给豆包的成品提示词（反推详规改好的／上传的稿），**不是**钩子文案：
+# 钩子文案过 ≤80 字形态闸、要经 autoclip 展开才成提示词；脚本本身就是提示词，不展开。
+SCRIPT_DRAFT = "draft"        # 库稿：可改
+SCRIPT_READY = "ready"        # 可投稿：已定稿，正文冻结（要改＝派生新草稿，出处链不断）
+SCRIPT_RETIRED = "retired"    # 已下架：软删留档——被生产单引用过的脚本硬删会让出处链断掉
+SCRIPT_STATES = (SCRIPT_DRAFT, SCRIPT_READY, SCRIPT_RETIRED)
+SCRIPT_SOURCE_KINDS = ("manual", "upload", "reverse")   # 手写／文件上传／从素材反推稿收进来
+
+
+class AssetScript(Base):
+    """脚本库的一行（极简模式）。owner＝「个人的」锚点（asset_summaries 只有 reviewed_by、
+    表达不了归属，所以脚本单独建表、不挂在候选文案上——文案会随素材 CASCADE 删除）。
+
+    三条设计约束：
+    - **定稿即冻结**：`ready` 行的正文不可改；要改就派生一条新 `draft`
+      （`based_on_script_id` 指回来），投出去的永远是对得上号的那一版。
+    - **同一人不留两条内容相同的可投稿脚本**：部分唯一索引只约束 `ready` 行——
+      草稿阶段允许重复（派生出来的草稿在改字之前与母稿逐字相同，是正常的），
+      定稿时内容与已有可投稿脚本相同则幂等返回那一行。
+    - **生产载体**（`carrier_summary_id`）：生产单必须挂在候选文案上
+      （`asset_productions.summary_id` NOT NULL），所以每个脚本首次送审时配一个
+      素材壳＋候选行当载体；五环的 ②③ 列表默认把载体藏起来（它们不是钩子文案）。
+      载体被删（素材强制删除）时置空，脚本本身留着。
+    """
+
+    __tablename__ = "asset_scripts"
+    __table_args__ = (
+        Index(
+            "uq_asset_scripts_ready_body",
+            "owner_id",
+            "body_hash",
+            unique=True,
+            postgresql_where=text("state = 'ready'"),
+            sqlite_where=text("state = 'ready'"),
+        ),
+        Index("ix_asset_scripts_carrier_summary_id", "carrier_summary_id"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    owner_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    name = Column(String(60), nullable=False)
+    body = Column(Text, nullable=False)
+    state = Column(String(12), nullable=False, default=SCRIPT_DRAFT)
+    category_id = Column(
+        UUID(as_uuid=True), ForeignKey("asset_categories.id", ondelete="SET NULL"), nullable=True
+    )
+    source_kind = Column(String(12), nullable=False, default="manual")
+    # 稿子从哪条素材来的（素材删了脚本还在——这正是它不进 asset_summaries 的原因）
+    origin_asset_id = Column(
+        UUID(as_uuid=True), ForeignKey("asset_items.id", ondelete="SET NULL"), nullable=True
+    )
+    # 派生链：这条草稿/定稿是从哪条脚本派生来的（不改写原文）
+    based_on_script_id = Column(
+        UUID(as_uuid=True), ForeignKey("asset_scripts.id", ondelete="SET NULL"), nullable=True
+    )
+    carrier_summary_id = Column(
+        UUID(as_uuid=True), ForeignKey("asset_summaries.id", ondelete="SET NULL"), nullable=True
+    )
+    body_hash = Column(String(64), nullable=False)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<AssetScript(id={self.id}, name={self.name!r}, state={self.state})>"

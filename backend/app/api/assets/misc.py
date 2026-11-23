@@ -42,6 +42,7 @@ import asyncio
 import contextlib
 import sys
 import copy
+import hashlib
 import logging
 import os
 import re
@@ -56,9 +57,9 @@ from typing import Annotated, Any, Dict, List, Optional, Tuple
 import json
 import httpx
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import and_, delete, exists, func, or_, select, text
+from sqlalchemy import and_, case, delete, exists, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -111,6 +112,11 @@ from app.models.asset import (
     RV_PASSED_EDITED,
     RV_PENDING,
     RV_REJECTED,
+    SCRIPT_DRAFT,
+    SCRIPT_READY,
+    SCRIPT_RETIRED,
+    SCRIPT_SOURCE_KINDS,
+    SCRIPT_STATES,
     SOURCE_FILE,
     SOURCE_LINK,
     STAGE_FAILED,
@@ -126,7 +132,7 @@ from app.models.asset import (
     AssetItem,
     AssetJob,
     AssetOutput,
-    AssetProduction,
+    AssetScript,    AssetProduction,
     AssetSummary,
     gen_asset_code,
     gen_batch_code,
@@ -134,7 +140,7 @@ from app.models.asset import (
 from app.models.audit import AuditLog
 from app.models.material import Episode, Project, SliceOutput, SliceTask, SystemConfig
 from app.models.models import User
-from app.models.user import UserRole
+from app.models.user import UserPreference, UserRole
 from app.services import asset_compose_service as compose
 from app.services import asset_frame_service as framesvc
 from app.services import asset_prompt_elements as pesvc
@@ -450,6 +456,15 @@ class ProduceRequest(BaseModel):
     #（那是「过审」信号，试产不能冒充）。
     trial: bool = Field(False, description="试产单：不过审闸，prompt_text 直投，行带 is_trial")
     prompt_text: Optional[str] = Field(None, description="trial=true 时必填：投给豆包的提示词正文")
+    script_texts: Optional[Dict[str, str]] = Field(
+        None,
+        description=(
+            "极简模式脚本直投（2026-11-23）：候选 id → 脚本正文。键必须是**脚本的生产载体**"
+            "（asset_scripts.carrier_summary_id），且正文须与载体的过审正文逐字一致（审的＝投的）。"
+            "这些行不展开、不过 A2-1 形态复核（形态闸是给钩子文案的，脚本本身就是提示词），"
+            "提示词与板面 name（脚本名）直落行；风险词 block 闸仍在投板侧照扫。"
+        ),
+    )
     board_total: Optional[int] = Field(None, description="板上 total＝**同一条提示词出几版**（1..20，默认 1）。与 n 是两个量，混用会白烧 n×total")
     board_tag: Optional[str] = Field(None, description="板上 tag（拥有者标记），缺省用 ASSET_BOARD_TAG；不填=无主任务、按天筛不到")
     hook_codes: Optional[List[str]] = Field(None, description="五位钩子编号（hook_id.py 取来的，按 n 的顺序对应）；后端不自己编号")
@@ -963,7 +978,12 @@ async def _category_usage(db: AsyncSession) -> Dict[str, Dict[str, int]]:
         rows = (
             await db.execute(
                 select(model.category_id, func.count(model.id))
-                .where(model.category_id.is_not(None))
+                .where(
+                    model.category_id.is_not(None),
+                    # 2026-11-23 极简模式：脚本的生产载体（及其素材壳）不算原型引用——
+                    # 否则字典抽屉里"这条挂着 N 条素材"会把脚本库的壳也数进去
+                    _not_script_carrier(model.id, via_asset=model is AssetItem),
+                )
                 .group_by(model.category_id)
             )
         ).all()
@@ -1027,7 +1047,10 @@ async def list_categories(
         "asset_count": int(
             (
                 await db.execute(
-                    select(func.count(AssetItem.id)).where(AssetItem.category_id.is_(None))
+                    select(func.count(AssetItem.id)).where(
+                        AssetItem.category_id.is_(None),
+                        _not_script_carrier(AssetItem.id, via_asset=True),
+                    )
                 )
             ).scalar_one()
             or 0
@@ -1035,7 +1058,10 @@ async def list_categories(
         "copy_count": int(
             (
                 await db.execute(
-                    select(func.count(AssetSummary.id)).where(AssetSummary.category_id.is_(None))
+                    select(func.count(AssetSummary.id)).where(
+                        AssetSummary.category_id.is_(None),
+                        _not_script_carrier(AssetSummary.id),
+                    )
                 )
             ).scalar_one()
             or 0
@@ -3212,10 +3238,14 @@ async def list_assets(
     sort: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
+    include_carriers: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """素材列表：一行 = 一条素材（批量筛选靠 batch_id/status，不做批次父行页）。
+
+    `include_carriers`（2026-11-23 极简模式）：默认把**脚本的生产载体素材壳**藏起来
+    （见 `_not_script_carrier`）——壳里只有一篇脚本、没有原片，混在 ② 里只会让人点开困惑。
 
     A4-3 补齐的四个筛选（缺一线就没法用：昨天那 200 条里谁卡住、卡在哪一步，
     只能一页页翻）：`created_by`（创建人）、`date_from`/`date_to`（导入日期区间，
@@ -3230,6 +3260,8 @@ async def list_assets(
     page_size = min(max(1, page_size), 200)
 
     conds = []
+    if not include_carriers:
+        conds.append(_not_script_carrier(AssetItem.id, via_asset=True))
     if status:
         conds.append(AssetItem.status == status)
     if batch_id:
@@ -6519,12 +6551,17 @@ async def list_summaries(
     category_id: Optional[str] = None,
     q: Optional[str] = None,
     owner: Optional[str] = None,
+    include_carriers: bool = False,
     page: int = 1,
     page_size: int = 100,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """文案审核队列（列表形式 + 审核态），素材列表点「文案」也走这里。
+
+    `include_carriers`（2026-11-23 极简模式）：默认把**脚本的生产载体**藏起来（见
+    `_not_script_carrier`）——载体不是钩子文案，混进审核队列会污染角标、点「过」又过不了
+    形态闸。极简模式的读口自己带 `true`。
 
     11-09 加的两个入参（给「② 素材与文案 → 投去 AI 生成」用，读口径不变）：
       - `audit_status` 可传逗号多值（如 `approved,passed_edited`），单值行为照旧；
@@ -6553,6 +6590,8 @@ async def list_summaries(
     page_size = min(max(1, page_size), 300)
 
     conds = []
+    if not include_carriers:
+        conds.append(_not_script_carrier(AssetSummary.id))
     # 11-03 口径：审核队列与全部读口一样**不分可见范围**，全量进队列（谁能审仍看角色）
     # 11-09：`audit_status` 支持逗号多值（② 素材与文案「投去 AI 生成」要一次把
     # approved + passed_edited 一起取回）。拆成两次请求拼不出可信 total，也不该让人
@@ -8123,6 +8162,69 @@ async def create_productions(
             ),
         )
 
+    # 极简模式脚本直投（2026-11-23）：入参里的键必须是脚本的生产载体、正文须与载体过审正文
+    # 逐字一致。为什么在这里卡死而不是信前端：script_texts 会让这些行跳过 A2-1 形态复核——
+    # 不校验的话，任何有投产权的人都能拿它当"绕过复核的任意提示词"入口。
+    direct_texts: Dict[str, str] = {}
+    if data.script_texts:
+        _d_keys = [str(k).strip() for k, v in data.script_texts.items() if str(k).strip()]
+        _unknown = sorted(k for k in _d_keys if k not in {str(x) for x in data.summary_ids})
+        if _unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"script_texts 里有不在本次 summary_ids 里的候选：{', '.join(_unknown[:5])}",
+            )
+        _carrier_ids = [
+            _as_uuid(k, "script_texts 的键") for k in _d_keys
+        ]
+        _carrier_rows = (
+            await db.execute(
+                select(AssetScript.carrier_summary_id, AssetScript.body).where(
+                    AssetScript.carrier_summary_id.in_(_carrier_ids)
+                )
+            )
+        ).all()
+        _carrier_body = {str(cid): (body or "") for cid, body in _carrier_rows if cid is not None}
+        for k in _d_keys:
+            _want = (data.script_texts.get(k) or "").strip()
+            if k not in _carrier_body:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"script_texts 的键 {k[:8]}… 不是脚本的生产载体（只能是极简模式送审过的脚本）",
+                )
+            if _want != _carrier_body[k].strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"脚本 {k[:8]}… 的投递正文与过审正文不一致（审的必须就是投的）——改过脚本请重新定稿并过审",
+                )
+            direct_texts[k] = _want
+
+    # 反过来也要堵：**是脚本载体、却没带 script_texts** 的候选，一律不许在这里建单。
+    # 不堵的后果与正文长短有关（所以靠形态闸"碰巧拦住"不算闸）：脚本短于 80 字时形态闸
+    # 放行——expand=false 建出一张没有正文的裸单；expand=true 把整篇脚本当钩子文案送去
+    # autoclip 展开，展开稿对不上原稿还白烧一个钩子号。脚本载体只认脚本直投那一条路。
+    _sid_uuids = [_as_uuid(x, "summary_id") for x in data.summary_ids]
+    _carrier_sids = {
+        str(cid)
+        for (cid,) in (
+            await db.execute(
+                select(AssetScript.carrier_summary_id).where(
+                    AssetScript.carrier_summary_id.in_(_sid_uuids)
+                )
+            )
+        ).all()
+        if cid is not None
+    } if _sid_uuids else set()
+    _stray = [s for s in map(str, _sid_uuids) if s in _carrier_sids and s not in direct_texts]
+    if _stray:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"这 {len(_stray)} 条是脚本的生产载体，不能按钩子文案投产（不展开、不当裸单）——"
+                "请从脚本库投豆包（POST /assets/scripts/produce）"
+            ),
+        )
+
     if data.async_mode:
         # D-1：展开提示词要调模型（实测一次 9 分钟），同步等会一路撞上
         # 浏览器 960s / 后端 900s / nginx 的超时链，参数校验已经全过完了才排后台，
@@ -8219,8 +8321,10 @@ async def create_productions(
         # 提示词上会全拦；且待审条目多无反推稿，_prompt_script_of 的补稿路径会同步等
         # 模型——正是弹窗长时间转圈的来源。试产提示词的风险词闸在投板侧照扫
         #（_risk_recheck_map 扫的就是 p.prompt_text，admin force+理由同一道口）。
+        # 脚本直投行：正文已由脚本库的轻量过审把关（风险词 block 重扫＋审计），形态闸不适用
+        direct_text = direct_texts.get(str(uuid_s))
         waived = None
-        if not data.trial:
+        if not data.trial and direct_text is None:
             script = await _prompt_script_of(db, asset)
             verdict = svc.recheck_copy(summary.text, script, lexicon=book, exemptions=exemptions)
             if not verdict["ok"]:
@@ -8462,6 +8566,11 @@ async def create_productions(
                 if data.trial:
                     row["prompt_text"] = (data.prompt_text or "").strip() or None
                     row["is_trial"] = True
+                elif direct_text is not None:
+                    # 脚本直投：脚本正文就是提示词（不展开）；板面 name＝脚本名（＝载体素材标题）
+                    row["prompt_text"] = direct_text
+                    if not row.get("video_titles"):
+                        row["video_titles"] = [asset.title or "脚本"]
                 prod = AssetProduction(
                     asset_id=asset.id,
                     summary_id=summary.id,
@@ -14178,6 +14287,26 @@ async def _enqueue_preview(
         }
 
 
+def _not_script_carrier(col: Any, via_asset: bool = False):
+    """「不是脚本的生产载体」过滤条件（极简模式 S1，2026-11-23）。
+
+    脚本库给每个脚本配一个素材壳＋候选行当生产载体（生产单必须挂在候选文案上），
+    但载体**不是钩子文案**：正文是整篇脚本、不过 ≤80 字形态闸。混进五环的列表会
+    ①污染「等审核」角标 ②出现在「从过审文案开单」挑选器里（对它做 autoclip 展开＝
+    把一篇脚本当文案展开，白烧钩子号）。所以五环的 ②③ 读口默认把载体及其素材壳藏起来，
+    极简模式自己的读口（/assets/scripts）不走这里。
+    """
+    if via_asset:
+        return ~exists(
+            select(AssetScript.id)
+            .join(AssetSummary, AssetSummary.id == AssetScript.carrier_summary_id)
+            .where(AssetSummary.asset_id == col)
+        )
+    return ~exists(
+        select(AssetScript.id).where(AssetScript.carrier_summary_id == col)
+    )
+
+
 def _split_ids(raw: Optional[str], field: str) -> List[str]:
     """`?asset_ids=a,b` → [a, b]：去空、去重、非法 UUID 当场 400 说清是哪一颗。"""
     out: List[str] = []
@@ -14194,6 +14323,1260 @@ def _split_ids(raw: Optional[str], field: str) -> List[str]:
         if part not in out:
             out.append(part)
     return out
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════
+#  脚本库 · 极简模式 S1（2026-11-23）
+#
+# 用户原话：「个人可自定义脚本库，把想要的脚本添加到个人脚本库，并可打开脚本修改。」
+#           「勾选脚本（打开个人脚本库可一次多选）→上传三视图→豆包生成视频（生成数量可选）」
+#
+# 这里的「脚本」＝直接投给豆包的成品提示词（反推详规改好的／上传的稿），**不是**钩子文案。
+# 两者走的闸不同，别混：
+#   · 钩子文案（asset_summaries）：≤80 字形态闸 → 过审 → autoclip 展开成提示词 → 投板
+#   · 脚本（asset_scripts）：本身就是提示词，不展开；只过风险词 block 闸 → 投板
+#
+# 四条口径（施工方案 §9.0/§9.1，11-23 评审后定稿）：
+# 1. **只折叠 UI，不旁路逻辑**：投产走同一个 `create_productions`（`ProduceRequest.script_texts`
+#    脚本直投），投板走同一个 `dispatch_productions`——号池「一发即烧」、跨人确认、
+#    风险词重扫、卡片校验全部复用，这里不自判。
+# 2. **定稿即冻结**：`ready` 行的正文不可改，要改就派生新草稿（`based_on_script_id`）。
+#    投出去的永远是对得上号的那一版（审的＝投的，produce 口里逐字校验）。
+# 3. **生产载体**：生产单必须挂在候选文案上（`asset_productions.summary_id` NOT NULL），
+#    所以每个脚本送审时配一个素材壳＋候选行（`carrier_summary_id` 回指）。载体不是钩子
+#    文案，五环的 ②③ 读口默认把它藏起来（`_not_script_carrier`）。
+# 4. **轻量过审**（`/approve`）：角色/职能闸、风险词 block 重扫、审计，全部与审核口同口径；
+#    唯一差别是**不套 ≤80 字的文案形态闸**（那是给钩子文案的）。素材专员没有审核职能，
+#    送审（`/submit`）后等有审核职能的同事点那一下。
+# ═════════════════════════════════════════════════════════════════════════════════════
+
+_SCRIPT_NAME_MAX = 60
+_SCRIPT_BODY_MAX = 20000          # 对齐 prompt-elements/extract 的单篇上限
+_SCRIPT_BATCH_MAX = 50            # 送审/过审/投产单次点名的脚本数上限
+_SCRIPT_CARRIER_SOURCE = SOURCE_LINK   # 文本壳的既有约定（贴文案导入同款：link 且无 url）
+
+
+class ScriptCreateRequest(BaseModel):
+    name: str = Field(..., description="脚本名（≤60 字）")
+    body: str = Field(..., description="脚本正文＝投给豆包的成品提示词（≤20000 字）")
+    category_id: Optional[str] = Field(None, description="钩子原型（可空＝未分类）")
+    source_kind: str = Field(
+        "manual", description="manual 手写／upload 文件上传（reverse 只能走 save-from-asset）"
+    )
+    origin_asset_id: Optional[str] = Field(None, description="稿子来自哪条素材（可空）")
+    based_on_script_id: Optional[str] = Field(None, description="基于哪条脚本派生（别人的也能派生）")
+    note: Optional[str] = Field(None, description="备注（≤500 字）")
+
+
+class ScriptUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, description="不传＝不改")
+    body: Optional[str] = Field(None, description="不传＝不改。对已定稿脚本传了正文＝派生新草稿")
+    category_id: Optional[str] = Field(None, description="不传＝不改")
+    clear_category: bool = Field(False, description="true＝清成未分类（与 category_id 二选一）")
+    note: Optional[str] = Field(None, description="传空串＝清空备注")
+
+
+class ScriptFinalizeRequest(BaseModel):
+    body: Optional[str] = Field(None, description="定稿时的最终正文；不带＝用当前正文")
+    category_id: Optional[str] = Field(None, description="不传＝不改")
+    clear_category: bool = Field(False, description="true＝清成未分类")
+
+
+class ScriptIdsRequest(BaseModel):
+    script_ids: List[str] = Field(default_factory=list)
+    waive_reason: Optional[str] = Field(
+        None, description="仅 approve 口、仅 admin：风险词 block 命中仍过审的豁免理由（进审计）"
+    )
+
+
+class ScriptSaveFromAssetRequest(BaseModel):
+    asset_id: str = Field(..., description="已有反推稿的素材")
+    name: Optional[str] = Field(None, description="不填＝用素材标题")
+    category_id: Optional[str] = Field(None, description="不填＝继承素材的原型")
+
+
+class ScriptProduceRequest(BaseModel):
+    """极简模式屏 2「投豆包」：选好的可投稿脚本 → 建生产单 → 直接投板（后台任务）。"""
+
+    script_ids: List[str] = Field(default_factory=list, description="可投稿且已过审的脚本")
+    board_total: int = Field(1, description="每个脚本出几版（板上 total，1..ASSET_BOARD_TOTAL_MAX）")
+    card_asset_ids: Optional[List[str]] = Field(None, description="人物三视图（第 1 张＝主形象）")
+    hook_codes: Optional[List[str]] = Field(
+        None, description="手工粘的钩子编号（数量须等于脚本数）；不传＝后端自动取号"
+    )
+    cross_person_confirm: bool = Field(False, description="用了别人过审的脚本时要知情确认")
+
+
+def _script_hash(body: Optional[str]) -> str:
+    """正文指纹。只去首尾空白再算——行尾多几个空格/换行不算「另一篇脚本」。"""
+    return hashlib.sha256((body or "").strip().encode("utf-8")).hexdigest()
+
+
+def _check_script_name(name: Optional[str]) -> str:
+    n = (name or "").strip()
+    if not n:
+        raise HTTPException(status_code=422, detail="脚本名不能为空")
+    if len(n) > _SCRIPT_NAME_MAX:
+        raise HTTPException(
+            status_code=422, detail=f"脚本名最长 {_SCRIPT_NAME_MAX} 字（当前 {len(n)}）"
+        )
+    return n
+
+
+def _check_script_body(body: Optional[str]) -> str:
+    b = (body or "").strip()
+    if not b:
+        raise HTTPException(status_code=422, detail="脚本正文不能为空")
+    if len(b) > _SCRIPT_BODY_MAX:
+        raise HTTPException(
+            status_code=413,
+            detail=f"脚本正文最长 {_SCRIPT_BODY_MAX} 字（当前 {len(b)}）——太长的稿子请拆成两条",
+        )
+    return b
+
+
+async def _get_script(db: AsyncSession, script_id: Any) -> AssetScript:
+    row = (
+        await db.execute(select(AssetScript).where(AssetScript.id == _as_uuid(script_id, "script_id")))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="这条脚本不在库里（可能已被删除）")
+    return row
+
+
+def _assert_script_owner(script: AssetScript, user: User) -> bool:
+    """写权限：仅 owner；admin 改别人的要留痕（返回「是否 admin 代改」）。
+
+    别人的脚本**可以取用、可以派生**（读全员可见——11-03 拍板素材内容不分权限），
+    只是不能直接改。要改就基于它建自己的草稿（`based_on_script_id`）。
+    """
+    if script.owner_id == user.id:
+        return False
+    if user.role == UserRole.admin.value:
+        return True
+    raise HTTPException(
+        status_code=403,
+        detail="这条脚本不是你的——别人的脚本可以直接取用投产，要改请先「另存为我的草稿」",
+    )
+
+
+def _script_category_arg(data: Any) -> Any:
+    """create/finalize 口的原型入参：显式清空优先，其次新值，都没有＝None（调用方决定是否继承）。"""
+    if getattr(data, "clear_category", False):
+        return ""
+    return data.category_id
+
+
+async def _ensure_script_carrier(
+    db: AsyncSession, script: AssetScript, *, operator: User
+) -> AssetSummary:
+    """给脚本配生产载体（素材壳＋候选行），幂等。
+
+    为什么要有载体：生产单必须挂在候选文案上（`asset_productions.summary_id`
+    NOT NULL）。载体正文＝脚本正文，审核态记在这条候选行上（待审/已过审）。
+    壳不带批次（`batch_id` 可空是既有设计）——这样五环的批次下拉里不会多出一个
+    「脚本库」批次；代价是投板侧的「替他人批次花钱」闸对它不触发，跨人口径改由
+    载体的过审人承担（`reviewed_by ≠ 操作者` → produce 口的跨人确认，与五环同一条）。
+    """
+    if script.carrier_summary_id:
+        existing = await db.get(AssetSummary, script.carrier_summary_id)
+        if existing is not None:
+            return existing
+    asset = AssetItem(
+        batch_id=None,
+        source_kind=_SCRIPT_CARRIER_SOURCE,
+        source_url=None,
+        media_kind=MEDIA_VIDEO,
+        stage_import=STAGE_SKIPPED,
+        stage_prompt=STAGE_SKIPPED,
+        title=(script.name or "")[:40],
+        category_id=script.category_id,
+        created_by=operator.id,
+    )
+    db.add(asset)
+    await db.flush()
+    carrier = AssetSummary(
+        asset_id=asset.id,
+        seq=1,
+        text=script.body,
+        word_count=svc.count_copy_chars(script.body),
+        is_recommended=True,
+        audit_status=RV_PENDING,
+        category_id=script.category_id,
+    )
+    db.add(carrier)
+    await db.flush()
+    script.carrier_summary_id = carrier.id
+    return carrier
+
+
+async def _serialize_scripts(
+    db: AsyncSession, rows: List[AssetScript], *, with_body: bool = False
+) -> List[dict]:
+    """脚本列表/详情的序列化：原型名、归属名、载体审核态、生产单数——各一次聚合，不在行循环里打库。"""
+    if not rows:
+        return []
+    cat_names = await _category_name_map(db)
+    owner_names = await _user_names(db, {r.owner_id for r in rows})
+    reviewer_names: Dict[str, str] = {}
+    carriers: Dict[str, AssetSummary] = {}
+    carrier_ids = [r.carrier_summary_id for r in rows if r.carrier_summary_id]
+    if carrier_ids:
+        carrier_rows = (
+            await db.execute(select(AssetSummary).where(AssetSummary.id.in_(carrier_ids)))
+        ).scalars().all()
+        carriers = {str(c.id): c for c in carrier_rows}
+        reviewer_names = await _user_names(db, {c.reviewed_by for c in carrier_rows if c.reviewed_by})
+    prod_by_carrier: Dict[str, List[AssetProduction]] = {}
+    if carrier_ids:
+        prows = (
+            await db.execute(
+                select(AssetProduction)
+                .where(AssetProduction.summary_id.in_(carrier_ids))
+                .order_by(AssetProduction.created_at.asc(), AssetProduction.seq.asc())
+            )
+        ).scalars().all()
+        for p in prows:
+            prod_by_carrier.setdefault(str(p.summary_id), []).append(p)
+
+    _state_label = {SCRIPT_DRAFT: "库稿", SCRIPT_READY: "可投稿", SCRIPT_RETIRED: "已下架"}
+    out: List[dict] = []
+    for r in rows:
+        c = carriers.get(str(r.carrier_summary_id)) if r.carrier_summary_id else None
+        prods = prod_by_carrier.get(str(r.carrier_summary_id), []) if r.carrier_summary_id else []
+        last = prods[-1] if prods else None
+        preview = " ".join((r.body or "").split())[:100]
+        item = {
+            "id": str(r.id),
+            "name": r.name,
+            "state": r.state,
+            "state_label": _state_label.get(r.state, r.state),
+            "category_id": str(r.category_id) if r.category_id else None,
+            "category_name": cat_names.get(str(r.category_id)) if r.category_id else None,
+            "source_kind": r.source_kind,
+            "origin_asset_id": str(r.origin_asset_id) if r.origin_asset_id else None,
+            "based_on_script_id": str(r.based_on_script_id) if r.based_on_script_id else None,
+            "owner_id": str(r.owner_id),
+            "owner_name": owner_names.get(str(r.owner_id)),
+            "note": r.note,
+            "body_chars": len(r.body or ""),
+            "preview": preview,
+            "carrier": (
+                {
+                    "summary_id": str(c.id),
+                    "audit_status": c.audit_status,
+                    "reviewed_by_name": reviewer_names.get(str(c.reviewed_by)) if c.reviewed_by else None,
+                }
+                if c
+                else None
+            ),
+            "production_count": len(prods),
+            "last_production": (
+                {
+                    "id": str(last.id),
+                    "status": last.status,
+                    "hook_code": last.hook_code,
+                    "board_total": last.board_total,
+                    "is_trial": bool(getattr(last, "is_trial", False)),
+                }
+                if last
+                else None
+            ),
+            "created_at": utc_iso(r.created_at),
+            "updated_at": utc_iso(r.updated_at),
+        }
+        if with_body:
+            item["body"] = r.body
+        out.append(item)
+    return out
+
+
+async def _load_scripts(db: AsyncSession, script_ids: List[str]) -> Dict[str, AssetScript]:
+    """按 id 批量取脚本（去重、保持传入顺序由调用方处理）。非法 id 当场 400 点名。"""
+    uuids = [_as_uuid(x, "script_id") for x in dict.fromkeys(script_ids)]
+    if not uuids:
+        return {}
+    rows = (
+        await db.execute(select(AssetScript).where(AssetScript.id.in_(uuids)))
+    ).scalars().all()
+    return {str(r.id): r for r in rows}
+
+
+async def _find_twin_ready(db: AsyncSession, owner_id: Any, body_hash: str, *, exclude_id: Any = None):
+    """同一人名下、正文相同的那条**可投稿**脚本（没有＝None）。定稿/新建的幂等依据。"""
+    conds = [AssetScript.owner_id == owner_id, AssetScript.body_hash == body_hash, AssetScript.state == SCRIPT_READY]
+    if exclude_id is not None:
+        conds.append(AssetScript.id != exclude_id)
+    return (await db.execute(select(AssetScript).where(and_(*conds)).limit(1))).scalar_one_or_none()
+
+
+async def _find_twin_draft(db: AsyncSession, owner_id: Any, body_hash: str, *, based_on: Any = None):
+    """同一人名下、正文相同的草稿（可再按「基于哪条派生」收窄）。"""
+    conds = [AssetScript.owner_id == owner_id, AssetScript.body_hash == body_hash, AssetScript.state == SCRIPT_DRAFT]
+    if based_on is not None:
+        conds.append(AssetScript.based_on_script_id == based_on)
+    return (await db.execute(select(AssetScript).where(and_(*conds)).limit(1))).scalar_one_or_none()
+
+
+async def _take_hook_codes_audited(db: AsyncSession, operator: User, count: int) -> Tuple[List[str], List[str], Optional[str]]:
+    """取号＋留痕（与 `POST /assets/hook-codes/take` 同一条纪律）：取号是「一发即烧」的
+    外部动作，成没成都要有一条 `asset.hook_code.take` 审计——号在共享台账烧掉了，
+    系统里却查无此号，是没法对账的。"""
+    codes, overflow, err = await _take_hook_codes(count)
+    await _write_audit(
+        db,
+        action="asset.hook_code.take",
+        operator=operator,
+        target_type="asset_production",
+        target_id=None,
+        after={
+            "count": int(count),
+            "codes": list(codes[:20]),
+            "overflow_discarded": list(overflow[:20]),
+            "error": (err or "")[:200],
+            "via": "script_produce",
+        },
+    )
+    return codes, overflow, err
+
+
+@router.post("/assets/scripts", status_code=201)
+async def create_script(
+    data: ScriptCreateRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """新建脚本（草稿）。手写或文件上传（前端读文件后把正文贴过来）都走这里。
+
+    幂等：自己名下已有**内容相同的在用脚本**（优先可投稿）→ 不新建，原样返回那条
+    （HTTP 200 ＋ `reused: true`）。
+    `based_on_script_id`：基于别人的脚本派生自己的草稿——读全员可见，派生不用问人。
+    """
+    name = _check_script_name(data.name)
+    body = _check_script_body(data.body)
+    if data.source_kind not in ("manual", "upload"):
+        raise HTTPException(
+            status_code=400, detail="新建脚本的 source_kind 只能是 manual（手写）或 upload（文件上传）"
+        )
+    cid = await _resolve_category_or_400(db, data.category_id)
+    based_on = None
+    if (data.based_on_script_id or "").strip():
+        parent = await _get_script(db, data.based_on_script_id)
+        if parent.state == SCRIPT_RETIRED:
+            raise HTTPException(status_code=400, detail="母稿已下架，不能基于它新建脚本")
+        based_on = parent.id
+    origin_asset = None
+    if (data.origin_asset_id or "").strip():
+        origin_asset = (await _get_asset_or_404(db, _as_uuid(data.origin_asset_id, "origin_asset_id"))).id
+    note = (data.note or "").strip()[:500] or None
+
+    body_hash = _script_hash(body)
+    twin = await _find_twin_ready(db, current_user.id, body_hash)
+    if twin is None:
+        twin = await _find_twin_draft(db, current_user.id, body_hash)
+    if twin is not None:
+        payload = (await _serialize_scripts(db, [twin], with_body=True))[0]
+        return JSONResponse(status_code=200, content={**payload, "reused": True})
+
+    row = AssetScript(
+        owner_id=current_user.id,
+        name=name,
+        body=body,
+        state=SCRIPT_DRAFT,
+        category_id=cid,
+        source_kind=data.source_kind,
+        origin_asset_id=origin_asset,
+        based_on_script_id=based_on,
+        body_hash=body_hash,
+        note=note,
+    )
+    db.add(row)
+    await db.flush()
+    await _write_audit(
+        db,
+        action="asset.script.create",
+        operator=current_user,
+        target_type="asset_script",
+        target_id=str(row.id),
+        after={"name": name, "state": SCRIPT_DRAFT, "source_kind": data.source_kind,
+               "category_id": str(cid) if cid else None, "based_on_script_id": str(based_on) if based_on else None,
+               "body_chars": len(body)},
+    )
+    await db.commit()
+    payload = (await _serialize_scripts(db, [row], with_body=True))[0]
+    return {**payload, "reused": False}
+
+
+@router.get("/assets/scripts")
+async def list_scripts(
+    owner: Optional[str] = "me",
+    state: Optional[str] = Query(None, description="逗号多值；不传＝在用的（库稿＋可投稿），已下架要显式点名"),
+    category_id: Optional[str] = None,
+    carrier_status: Optional[str] = Query(
+        None, description="按载体的审核态筛：pending 待审／approved 已过审／none 还没送审；不传＝不限"
+    ),
+    q: Optional[str] = Query(None, description="按脚本名或正文模糊搜"),
+    page: int = 1,
+    page_size: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """脚本库列表。读全员可见（11-03 拍板素材内容不分权限，脚本库沿用同一条）：
+    `owner=me` 只看自己的（默认），`owner=all` 看所有人的。正文不随列表回（列表只给
+    前 100 字预览与字数），要全文走单条详情口。"""
+    page = max(1, page)
+    conds: List[Any] = []
+    states = [s.strip() for s in (state or "").split(",") if s.strip()] or [SCRIPT_DRAFT, SCRIPT_READY]
+    bad = [s for s in states if s not in SCRIPT_STATES]
+    if bad:
+        raise HTTPException(
+            status_code=400, detail=f"state 里有不认的值：{'、'.join(bad)}（只认 {'/'.join(SCRIPT_STATES)}）"
+        )
+    conds.append(AssetScript.state.in_(states))
+    if owner == "me":
+        conds.append(AssetScript.owner_id == current_user.id)
+    elif owner not in ("all", "", None):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的）或 all（全部），缺省=me")
+    if category_id:
+        if category_id == "none":
+            conds.append(AssetScript.category_id.is_(None))
+        else:
+            conds.append(AssetScript.category_id == _as_uuid(category_id, "category_id"))
+    if carrier_status:
+        if carrier_status == "none":
+            conds.append(AssetScript.carrier_summary_id.is_(None))
+        elif carrier_status == "pending":
+            conds.append(
+                AssetScript.carrier_summary_id.in_(
+                    select(AssetSummary.id).where(AssetSummary.audit_status == RV_PENDING)
+                )
+            )
+        elif carrier_status == "approved":
+            conds.append(
+                AssetScript.carrier_summary_id.in_(
+                    select(AssetSummary.id).where(AssetSummary.audit_status.in_(REVIEW_PASSED_STATES))
+                )
+            )
+        else:
+            raise HTTPException(
+                status_code=400, detail="carrier_status 只支持 pending（待审）／approved（已过审）／none（未送审）"
+            )
+    if q and q.strip():
+        kw = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = f"%{kw}%"
+        conds.append(or_(AssetScript.name.ilike(like), AssetScript.body.ilike(like)))
+
+    total = int(
+        (await db.execute(select(func.count(AssetScript.id)).where(and_(*conds)))).scalar_one() or 0
+    )
+    order_rank = case(
+        (AssetScript.state == SCRIPT_READY, 0),
+        (AssetScript.state == SCRIPT_DRAFT, 1),
+        else_=2,
+    )
+    rows = (
+        await db.execute(
+            select(AssetScript)
+            .where(and_(*conds))
+            .order_by(order_rank, AssetScript.updated_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).scalars().all()
+    return {
+        "items": await _serialize_scripts(db, list(rows)),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.post("/assets/scripts/save-from-asset", status_code=201)
+async def save_script_from_asset(
+    data: ScriptSaveFromAssetRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """把某条素材**已有的反推稿**收进我的脚本库（0 元：不调模型，读的是库里那份 success 的反推任务）。
+
+    素材还没有可用的反推稿时如实拒绝——任务在跑／失败／没发起过，各说各的下一步。
+    """
+    asset = await _get_asset_or_404(db, _as_uuid(data.asset_id, "asset_id"))
+    task = await get_prompt_task(db, asset.prompt_task_id) if asset.prompt_task_id else None
+    body = ""
+    if task is not None and task.status == PT_SUCCESS:
+        body = (task.content or "").strip()
+    if not body:
+        why = (
+            "反推任务还在跑，等它出结果再来收"
+            if task is not None and task.status not in (PT_SUCCESS, PT_FAILED)
+            else "上次反推失败了，先重跑反推"
+            if task is not None
+            else "这条素材还没反推过"
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=f"该素材还没有可用的反推稿（{why}）——也可以直接上传脚本",
+        )
+    try:
+        body = _check_script_body(body)
+    except HTTPException:
+        raise HTTPException(
+            status_code=413,
+            detail=f"这条素材的反推稿有 {len(body)} 字，超过脚本上限 {_SCRIPT_BODY_MAX} 字——请精简后再存",
+        )
+    name = _check_script_name(data.name) if (data.name or "").strip() else _check_script_name(
+        (asset.title or asset.code or "反推稿")[:_SCRIPT_NAME_MAX]
+    )
+    cid = (
+        await _resolve_category_or_400(db, data.category_id)
+        if (data.category_id or "").strip()
+        else asset.category_id
+    )
+    body_hash = _script_hash(body)
+    twin = await _find_twin_ready(db, current_user.id, body_hash)
+    if twin is None:
+        twin = await _find_twin_draft(db, current_user.id, body_hash)
+    if twin is not None:
+        payload = (await _serialize_scripts(db, [twin], with_body=True))[0]
+        return JSONResponse(status_code=200, content={**payload, "reused": True})
+
+    row = AssetScript(
+        owner_id=current_user.id,
+        name=name,
+        body=body,
+        state=SCRIPT_DRAFT,
+        category_id=cid,
+        source_kind="reverse",
+        origin_asset_id=asset.id,
+        body_hash=body_hash,
+    )
+    db.add(row)
+    await db.flush()
+    await _write_audit(
+        db,
+        action="asset.script.create",
+        operator=current_user,
+        target_type="asset_script",
+        target_id=str(row.id),
+        after={"name": name, "state": SCRIPT_DRAFT, "source_kind": "reverse",
+               "origin_asset_id": str(asset.id), "origin_asset_code": asset.code, "body_chars": len(body)},
+    )
+    await db.commit()
+    payload = (await _serialize_scripts(db, [row], with_body=True))[0]
+    return {**payload, "reused": False}
+
+
+@router.post("/assets/scripts/submit")
+async def submit_scripts(
+    data: ScriptIdsRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """送审：给可投稿脚本建生产载体（候选行，待审）。幂等——已建过的原样返回。
+
+    谁会用到：没有审核职能的账号（素材专员）定稿之后点「送审」，等有审核职能的同事
+    在屏 2 的「待过审」里点那一下轻量过审。
+    """
+    if not data.script_ids:
+        raise HTTPException(status_code=400, detail="请点名要送审的脚本（script_ids 为空）")
+    if len(data.script_ids) > _SCRIPT_BATCH_MAX:
+        raise HTTPException(
+            status_code=400, detail=f"一次最多送审 {_SCRIPT_BATCH_MAX} 条（当前 {len(data.script_ids)}）——分批来"
+        )
+    found = await _load_scripts(db, data.script_ids)
+    results: List[dict] = []
+    submitted = 0
+    for raw in dict.fromkeys(data.script_ids):
+        row = found.get(str(_as_uuid(raw, "script_id")))
+        if row is None:
+            results.append({"script_id": str(raw), "ok": False, "error": "这条脚本不在库里（可能已被删除）"})
+            continue
+        if row.state != SCRIPT_READY:
+            results.append({
+                "script_id": str(row.id), "ok": False, "code": row.name,
+                "error": f"还没定稿（当前：{row.state}）——先定稿再送审",
+            })
+            continue
+        if row.carrier_summary_id is None:
+            submitted += 1
+        carrier = await _ensure_script_carrier(db, row, operator=current_user)
+        results.append({
+            "script_id": str(row.id), "ok": True, "code": row.name,
+            "carrier_summary_id": str(carrier.id), "audit_status": carrier.audit_status,
+        })
+    if submitted:
+        await _write_audit(
+            db,
+            action="asset.script.submit",
+            operator=current_user,
+            target_type="asset_script",
+            target_id=None,
+            after={"count": submitted, "script_ids": [r["script_id"] for r in results if r["ok"]][:50]},
+        )
+    await db.commit()
+    ok = sum(1 for r in results if r["ok"])
+    return {
+        "results": results,
+        "submitted": submitted,
+        "message": f"已送审 {ok} 条" + (f"；{len(results) - ok} 条没送成（看逐条原因）" if len(results) > ok else ""),
+    }
+
+
+async def _approve_script_carrier(
+    db: AsyncSession,
+    *,
+    script: AssetScript,
+    carrier: AssetSummary,
+    operator: User,
+    is_admin: bool,
+    self_allowed: bool,
+    waive_reason: Optional[str],
+    book: Dict[str, List[str]],
+    exemptions: Dict[str, Any],
+) -> dict:
+    """轻量过审的单条判定（与 `POST /assets/summaries/review` 的 approve 同口径）。
+
+    同的部分：审核态迁移表、自审闸（读 `ASSET_SELF_PRODUCE_ALLOWED`，放开时写
+    `self_review` 审计）、风险词 block 重扫、admin 豁免必须带理由并进审计、
+    审计动作名同为 `asset.summary_review.approve`（admin 撤审抽检用的是同一个动作）。
+    不同的部分只有一处：**不跑 ≤80 字的文案形态闸**——脚本正文是整篇提示词，
+    形态闸是给钩子文案的，套上来必拦。返回 dict 直接进响应的 `results`。
+    """
+    if carrier.audit_status in REVIEW_PASSED_STATES:
+        return {"ok": True, "already": True, "audit_status": carrier.audit_status}
+    try:
+        svc.assert_review_transition(carrier.audit_status, RV_APPROVED)
+    except ValueError as e:
+        return {"ok": False, "error_code": "ASSET_REVIEW_TRANSITION", "error": str(e)}
+
+    asset = await db.get(AssetItem, carrier.asset_id)
+    is_self = asset is not None and asset.created_by == operator.id
+    self_review_waiver = None
+    if is_self and not is_admin:
+        if not self_allowed:
+            return {
+                "ok": False,
+                "error_code": "ASSET_SELF_REVIEW_BLOCKED",
+                "error": (
+                    "生产者不能审核自己导入的素材（ASSET_SELF_PRODUCE_ALLOWED=false 时执行"
+                    "「质检与投产分离」纪律）：换个人过审，或由管理员放开该旋钮后重发"
+                ),
+            }
+        self_review_waiver = {
+            "self": True,
+            "code": "self_review",
+            "note": "自审豁免（ASSET_SELF_PRODUCE_ALLOWED=true）：素材与审核为同一人",
+        }
+
+    block_hits = svc.risk_block_hits(
+        svc.scan_risk(script.body, lexicon=book, exemptions=exemptions)
+    )
+    waived = None
+    if block_hits:
+        if is_admin and (waive_reason or "").strip():
+            waived = {
+                "problems": [
+                    {"code": "risk", "message": f"含高风险词「{h.get('word')}」", **h} for h in block_hits
+                ],
+                "codes": ["risk"],
+                "reason": waive_reason.strip()[:500],
+            }
+        else:
+            detail = [
+                {"code": "risk", "message": f"含高风险词「{h.get('word')}」", **h} for h in block_hits
+            ]
+            return {
+                "ok": False,
+                "error_code": "ASSET_RECHECK_FAILED",
+                "problems": detail,
+                "waivable_codes": ["risk"],
+                "error": "复核未过：" + "；".join(p["message"] for p in detail)
+                         + ("（管理员可填豁免理由强过，会记入审计）" if is_admin else "（改掉脚本里的这些词再定稿）"),
+            }
+
+    before = {"audit_status": carrier.audit_status, "text": carrier.text}
+    carrier.audit_status = RV_APPROVED
+    carrier.reviewed_by = operator.id
+    carrier.reviewed_at = datetime.utcnow()
+    carrier.reject_reason = None
+    carrier.resubmit_note = None
+    carrier.risk_hit = svc.format_risk_hits(
+        svc.scan_risk(script.body, lexicon=book, exemptions=exemptions)
+    )
+    if asset is not None:
+        asset.has_approved_copy = True
+        svc.apply_stage(asset, "summary", STAGE_SUCCESS, has_approved_copy=True)
+    await _write_audit(
+        db,
+        action="asset.summary_review.approve",
+        operator=operator,
+        target_type="asset_summary",
+        target_id=carrier.id,
+        before=before,
+        after={
+            "audit_status": carrier.audit_status,
+            "text": carrier.text,
+            "reason": None,
+            "waived": waived,
+            "self_review": self_review_waiver,
+            "via": "simple_script",
+            "script": {"id": str(script.id), "name": script.name, "owner_id": str(script.owner_id)},
+        },
+        # 与审核口同一条纪律：豁免/自审这类「绕闸」动作的审计必须落定，写失败就拒绝这次过审
+        strict=bool(waived or self_review_waiver),
+    )
+    return {"ok": True, "already": False, "audit_status": RV_APPROVED}
+
+
+@router.post("/assets/scripts/approve")
+async def approve_scripts(
+    data: ScriptIdsRequest,
+    current_user: Annotated[User, Depends(require_functions("review"))],
+    db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
+):
+    """轻量过审：给已送审的脚本点那一下「过」（极简模式屏 2）。
+
+    权限与审核口完全一致（审核职能＋运营/管理员角色）；**响应里逐条带 ok/error**——
+    界面必须把 `ok:false` 的条数念出来，别让人以为整批都过了（HTTP 200 ≠ 全过）。
+    """
+    if not data.script_ids:
+        raise HTTPException(status_code=400, detail="请点名要过审的脚本（script_ids 为空）")
+    if len(data.script_ids) > _SCRIPT_BATCH_MAX:
+        raise HTTPException(
+            status_code=400, detail=f"一次最多过审 {_SCRIPT_BATCH_MAX} 条（当前 {len(data.script_ids)}）——分批来"
+        )
+    is_admin = current_user.role == UserRole.admin.value
+    self_allowed = bool(getattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", True))
+    book, exemptions = await _risk_lexicon(db)
+    found = await _load_scripts(db, data.script_ids)
+    results: List[dict] = []
+    for raw in dict.fromkeys(data.script_ids):
+        row = found.get(str(_as_uuid(raw, "script_id")))
+        if row is None:
+            results.append({"script_id": str(raw), "ok": False, "error": "这条脚本不在库里（可能已被删除）"})
+            continue
+        if row.state != SCRIPT_READY:
+            results.append({
+                "script_id": str(row.id), "ok": False, "code": row.name,
+                "error": f"还没定稿（当前：{row.state}）——先定稿再过审",
+            })
+            continue
+        carrier = await _ensure_script_carrier(db, row, operator=current_user)
+        verdict = await _approve_script_carrier(
+            db,
+            script=row,
+            carrier=carrier,
+            operator=current_user,
+            is_admin=is_admin,
+            self_allowed=self_allowed,
+            waive_reason=data.waive_reason,
+            book=book,
+            exemptions=exemptions,
+        )
+        results.append({
+            "script_id": str(row.id),
+            "code": row.name,
+            "carrier_summary_id": str(carrier.id),
+            **verdict,
+        })
+    await db.commit()
+    ok = sum(1 for r in results if r["ok"])
+    failed = len(results) - ok
+    return {
+        "results": results,
+        "message": f"轻量过审：通过 {ok} 条" + (f"，未通过 {failed} 条（看逐条原因）" if failed else ""),
+    }
+
+
+@router.post("/assets/scripts/produce")
+async def produce_from_scripts(
+    data: ScriptProduceRequest,
+    current_user: Annotated[User, Depends(require_functions("produce"))],
+    db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
+):
+    """极简模式屏 2「投豆包」：选好的脚本 → 建生产单 → 直接投板（后台任务，受理即回）。
+
+    - 一脚本一单：脚本正文就是提示词（不展开、不调模型），`board_total`＝出几版；
+    - 走**同一个** `create_productions`（脚本直投入参）与同一个 `dispatch_productions`：
+      钩子号「一发即烧」、跨人确认、风险词重扫、卡片校验一条不少，这里不自判；
+    - 只吃**已过审**的脚本（审的＝投的；produce 口里还会逐字比对载体正文）；
+    - 受理即回任务号：豆包出片约 25 分钟，成片回到成片墙。
+    """
+    if not data.script_ids:
+        raise HTTPException(status_code=400, detail="请先勾选要投的脚本")
+    cap = int(settings.ASSET_DISPATCH_MAX_PER_CALL)
+    if len(data.script_ids) > cap:
+        raise HTTPException(status_code=400, detail=f"一次最多投 {cap} 个脚本（当前 {len(data.script_ids)}）——分批来")
+    total_cap = int(settings.ASSET_BOARD_TOTAL_MAX)
+    board_total = int(data.board_total or 1)
+    if not 1 <= board_total <= total_cap:
+        raise HTTPException(
+            status_code=400, detail=f"每个脚本出几版只能是 1..{total_cap}（收到 {data.board_total}）"
+        )
+    ordered = list(dict.fromkeys(data.script_ids))
+    found = await _load_scripts(db, ordered)
+    problems: List[str] = []
+    picked: List[AssetScript] = []
+    carrier_of: Dict[str, AssetSummary] = {}
+    for raw in ordered:
+        row = found.get(str(_as_uuid(raw, "script_id")))
+        if row is None:
+            problems.append(f"{str(raw)[:8]}…：不在库里")
+        elif row.state != SCRIPT_READY:
+            problems.append(f"「{row.name}」还没定稿")
+        elif not row.carrier_summary_id:
+            problems.append(f"「{row.name}」还没过审")
+        else:
+            carrier = await db.get(AssetSummary, row.carrier_summary_id)
+            if carrier is None or carrier.audit_status not in REVIEW_PASSED_STATES:
+                problems.append(f"「{row.name}」还没过审")
+            else:
+                picked.append(row)
+                carrier_of[str(row.id)] = carrier
+    if problems:
+        raise HTTPException(
+            status_code=400,
+            detail="这几条还不能投：" + "；".join(problems[:4]) + (f"；另有 {len(problems) - 4} 条" if len(problems) > 4 else "")
+            + "——先定稿、过审再来",
+        )
+
+    # ── 会 400 的闸先过，再取号：号是「一发即烧」，先取号再被闸拦下＝白烧 ──
+    # 这里只是把 create_productions 里同三道闸的判定**提前**（话术与白话一致，前端靠
+    # _CROSS_OWNER_MARKER 识别跨人确认）；真正的闸仍在 create_productions 里照跑一遍。
+    if data.card_asset_ids:
+        await _resolve_card_assets(db, data.card_asset_ids)   # 脏卡 id 当场 400
+    _cross = [s for s in picked if carrier_of[str(s.id)].reviewed_by is not None
+              and str(carrier_of[str(s.id)].reviewed_by) != str(current_user.id)]
+    if _cross and not data.cross_person_confirm:
+        _names = await _user_names(db, {carrier_of[str(s.id)].reviewed_by for s in _cross})
+        _shown = "；".join(
+            f"「{s.name}」（过审人 {_names.get(str(carrier_of[str(s.id)].reviewed_by), '未知')}）"
+            for s in _cross[:5]
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"投产涉及{_CROSS_OWNER_MARKER}：{_shown}"
+                f"{'（另有 ' + str(len(_cross) - 5) + ' 条，本条只列前 5 条）' if len(_cross) > 5 else ''}。"
+                "谁投账算谁（生产单记你名下、过审人留审计）——请确认确实是替同事补单/代班："
+                "界面弹窗点「确认替他人投产」后再发一次（带 cross_person_confirm=true），这一次没有建单、没有取号。"
+            ),
+        )
+    _self_rows = [s for s in picked if carrier_of[str(s.id)].reviewed_by == current_user.id]
+    if _self_rows and not bool(getattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", True)):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"这 {len(_self_rows)} 条是你自己过审的脚本，而自审自投闸门当前是关着的"
+                "（ASSET_SELF_PRODUCE_ALLOWED=false）。质检与投产分离是三角色模型的纪律——"
+                "确需一人包干（小团队/应急），由管理员把该旋钮设为 true 后重发。"
+            ),
+        )
+
+    # 取号：一脚本一号（一发即烧）。手工粘了号就用手工的，没粘就后端代取。
+    codes: List[str] = []
+    if data.hook_codes:
+        codes = [c.strip().upper() for c in data.hook_codes if (c or "").strip()]
+        if len(codes) != len(picked):
+            raise HTTPException(
+                status_code=400,
+                detail=f"手工填的钩子编号数量不对：{len(picked)} 个脚本要 {len(picked)} 个号，收到 {len(codes)} 个",
+            )
+    else:
+        codes, _overflow, err = await _take_hook_codes_audited(db, current_user, len(picked))
+        if len(codes) < len(picked):
+            await db.commit()
+            raise HTTPException(
+                status_code=502,
+                detail=f"钩子编号没取够（要 {len(picked)} 个、得 {len(codes)} 个）：{err or '脚本没给原因'}"
+                       + "——这批没有建单，稍后重试；已取到的号已记在共享台账里",
+            )
+
+    bodies = {str(s.carrier_summary_id): s.body for s in picked}
+    produce_res = await create_productions(
+        ProduceRequest(
+            summary_ids=list(bodies.keys()),
+            script_texts=bodies,
+            n=1,
+            board_total=board_total,
+            expand=False,
+            hook_codes=codes,
+            card_asset_ids=data.card_asset_ids,
+            cross_person_confirm=data.cross_person_confirm,
+            async_mode=False,
+        ),
+        current_user,
+        db,
+        current_user,
+    )
+    production_ids = list(produce_res.get("production_ids") or [])
+    by_summary = {str(r.get("summary_id")): r for r in (produce_res.get("results") or [])}
+    prod_rows = (
+        (
+            await db.execute(
+                select(AssetProduction).where(AssetProduction.id.in_([uuid.UUID(p) for p in production_ids]))
+            )
+        ).scalars().all()
+        if production_ids
+        else []
+    )
+    prod_by_summary = {str(p.summary_id): p for p in prod_rows}
+    results: List[dict] = []
+    for s in picked:
+        p = prod_by_summary.get(str(s.carrier_summary_id))
+        r = by_summary.get(str(s.carrier_summary_id)) or {}
+        results.append({
+            "script_id": str(s.id),
+            "code": s.name,
+            "ok": p is not None,
+            "production_id": str(p.id) if p is not None else None,
+            "hook_code": p.hook_code if p is not None else None,
+            "error": None if p is not None else (r.get("error") or "没建成生产单"),
+        })
+    if not production_ids:
+        await db.commit()
+        first_err = next((x["error"] for x in results if x["error"]), None)
+        raise HTTPException(
+            status_code=400,
+            detail=f"一条都没投出去：{first_err or '生产单没建成'}",
+        )
+
+    # 建完直接投板：后台任务，受理即回。逐批人工确认＝屏 2 那一下「投豆包」按钮本身
+    #（与五环 11-12 钱面下架后的口径一致：按钮就是那一下人工确认）。
+    dispatch_ack = await dispatch_productions(
+        DispatchRequest(
+            ids=production_ids,
+            confirm=True,
+            async_mode=True,
+            cross_person_confirm=data.cross_person_confirm,
+        ),
+        current_user,
+        db,
+        current_user,
+    )
+    await _write_audit(
+        db,
+        action="asset.script.produce",
+        operator=current_user,
+        target_type="asset_script",
+        target_id=None,
+        before={"script_ids": [str(s.id) for s in picked], "board_total": board_total},
+        after={
+            "production_ids": production_ids,
+            "hook_codes": [x["hook_code"] for x in results],
+            "card_asset_ids": list(data.card_asset_ids or []),
+            "dispatch_job_id": (dispatch_ack or {}).get("job_id"),
+        },
+    )
+    await db.commit()
+    failed = [x for x in results if not x["ok"]]
+    return {
+        "production_ids": production_ids,
+        "results": results,
+        "dispatch": dispatch_ack,
+        "message": (
+            f"已投出 {len(production_ids)} 个脚本（每个出 {board_total} 版）——豆包出片约 25 分钟，成片回到成片墙"
+            + (f"；{len(failed)} 个没投成（看逐条原因）" if failed else "")
+        ),
+    }
+
+
+@router.get("/assets/scripts/{script_id}")
+async def get_script(
+    script_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """脚本全文（读全员可见）。"""
+    row = await _get_script(db, script_id)
+    return (await _serialize_scripts(db, [row], with_body=True))[0]
+
+
+@router.put("/assets/scripts/{script_id}")
+async def update_script(
+    script_id: str,
+    data: ScriptUpdateRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """改脚本。草稿：原地改（仅本人）。已定稿：正文冻结——任何改动都**派生一条新草稿**
+    （HTTP 201，`forked: true`），原定稿原封不动，出处链由 `based_on_script_id` 记着。
+
+    派生不用问人：别人的定稿脚本也可以基于它派生自己的草稿（读全员可见）。
+    """
+    row = await _get_script(db, script_id)
+    if row.state == SCRIPT_RETIRED:
+        raise HTTPException(
+            status_code=409, detail="这条脚本已下架，不能再改——要沿用它的内容请基于它新建"
+        )
+    new_body = _check_script_body(data.body) if (data.body or "").strip() else None
+    new_name = _check_script_name(data.name) if (data.name or "").strip() else None
+    new_cid: Optional[uuid.UUID] = None
+    clear_cat = bool(getattr(data, "clear_category", False))
+    if data.category_id is not None:
+        if clear_cat:
+            raise HTTPException(status_code=400, detail="category_id 与 clear_category 只能二选一")
+        new_cid = await _resolve_category_or_400(db, data.category_id)
+
+    if row.state == SCRIPT_DRAFT:
+        admin_edit = _assert_script_owner(row, current_user)
+        before = {"name": row.name, "body": row.body, "category_id": str(row.category_id) if row.category_id else None,
+                  "note": row.note}
+        if new_body is not None:
+            row.body = new_body
+            row.body_hash = _script_hash(new_body)
+        if new_name is not None:
+            row.name = new_name
+        if clear_cat:
+            row.category_id = None
+        elif new_cid is not None:
+            row.category_id = new_cid
+        if data.note is not None:
+            row.note = data.note.strip()[:500] or None
+        await db.flush()
+        await _write_audit(
+            db,
+            action="asset.script.update",
+            operator=current_user,
+            target_type="asset_script",
+            target_id=str(row.id),
+            before=before,
+            after={"name": row.name, "body": row.body, "category_id": str(row.category_id) if row.category_id else None,
+                   "note": row.note, "admin_edit": admin_edit or None},
+        )
+        await db.commit()
+        payload = (await _serialize_scripts(db, [row], with_body=True))[0]
+        return {**payload, "forked": False}
+
+    # 已定稿：派生新草稿（不覆盖原稿）。同一个人对同一条定稿、同样的新正文重复点「另存」
+    # → 幂等返回已有的那条派生草稿，不堆一排一样的草稿。
+    body = new_body if new_body is not None else row.body
+    body_hash = _script_hash(body)
+    twin = await _find_twin_draft(db, current_user.id, body_hash, based_on=row.id)
+    if twin is not None:
+        payload = (await _serialize_scripts(db, [twin], with_body=True))[0]
+        return JSONResponse(status_code=200, content={**payload, "reused": True, "forked": True})
+    name = new_name or row.name
+    if new_name is None and current_user.id != row.owner_id:
+        name = f"{row.name}（副本）"[:_SCRIPT_NAME_MAX]
+    forked = AssetScript(
+        owner_id=current_user.id,
+        name=name,
+        body=body,
+        state=SCRIPT_DRAFT,
+        category_id=None if clear_cat else (new_cid if new_cid is not None else row.category_id),
+        source_kind=row.source_kind,
+        origin_asset_id=row.origin_asset_id,
+        based_on_script_id=row.id,
+        body_hash=body_hash,
+        note=row.note if data.note is None else (data.note.strip()[:500] or None),
+    )
+    db.add(forked)
+    await db.flush()
+    await _write_audit(
+        db,
+        action="asset.script.fork",
+        operator=current_user,
+        target_type="asset_script",
+        target_id=str(forked.id),
+        before={"from_script_id": str(row.id), "from_state": row.state},
+        after={"name": forked.name, "based_on_script_id": str(row.id), "body_changed": new_body is not None,
+               "owner_id": str(current_user.id)},
+    )
+    await db.commit()
+    payload = (await _serialize_scripts(db, [forked], with_body=True))[0]
+    return JSONResponse(status_code=201, content={**payload, "reused": False, "forked": True})
+
+
+@router.delete("/assets/scripts/{script_id}")
+async def retire_script(
+    script_id: str,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """下架脚本（软删，`state=retired`）。不硬删：被生产单引用过的脚本硬删会让出处链断掉
+    （谁用哪一版脚本投的片，事后查不回来）。幂等——已下架的再点一次还是 ok。"""
+    row = await _get_script(db, script_id)
+    admin_edit = _assert_script_owner(row, current_user)
+    if row.state != SCRIPT_RETIRED:
+        before = {"state": row.state}
+        row.state = SCRIPT_RETIRED
+        await _write_audit(
+            db,
+            action="asset.script.retire",
+            operator=current_user,
+            target_type="asset_script",
+            target_id=str(row.id),
+            before=before,
+            after={"state": SCRIPT_RETIRED, "name": row.name, "admin_edit": admin_edit or None},
+        )
+        await db.commit()
+    return {"ok": True, "id": str(row.id), "state": SCRIPT_RETIRED}
+
+
+@router.post("/assets/scripts/{script_id}/finalize")
+async def finalize_script(
+    script_id: str,
+    data: ScriptFinalizeRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """定稿：库稿 → 可投稿（仅本人）。定稿后正文冻结，投板时就用这一版。
+
+    三道关卡，缺一不可：
+    1. **风险词 block 重扫**（与审核/投板同一张词表）——命中即 409 点名是哪几个词；
+    2. **同一人不留两条内容相同的可投稿脚本**——内容与已有定稿相同则幂等返回那一行
+       （草稿随之收起），不堆重复；这是库级唯一索引 `(owner_id, body_hash) WHERE state='ready'`
+       的应用层前置提示，并发窗口由索引兜底；
+    3. **审计**（strict）——改前原文、改后正文、谁点的，一样不落。
+    """
+    row = await _get_script(db, script_id)
+    admin_edit = _assert_script_owner(row, current_user)
+    if row.state == SCRIPT_RETIRED:
+        raise HTTPException(status_code=409, detail="这条脚本已下架，不能再定稿")
+    body = _check_script_body(data.body) if (data.body or "").strip() else row.body
+    body_hash = _script_hash(body)
+    if row.state == SCRIPT_READY:
+        if body_hash == row.body_hash:
+            payload = (await _serialize_scripts(db, [row], with_body=True))[0]
+            return {**payload, "reused": True}
+        raise HTTPException(
+            status_code=409,
+            detail="这条已定稿、正文已冻结——要改请先「另存为草稿」再定稿（投出去的永远是过审的那一版）",
+        )
+    if data.category_id is not None and getattr(data, "clear_category", False):
+        raise HTTPException(status_code=400, detail="category_id 与 clear_category 只能二选一")
+    new_cid = await _resolve_category_or_400(db, data.category_id) if data.category_id is not None else None
+
+    book, exemptions = await _risk_lexicon(db)
+    block_hits = svc.risk_block_hits(svc.scan_risk(body, lexicon=book, exemptions=exemptions))
+    if block_hits:
+        words = "、".join(sorted({str(h.get("word")) for h in block_hits})[:6])
+        raise HTTPException(
+            status_code=409,
+            detail=f"脚本含高风险词：{words}——改掉再定稿（block 级风险词投板侧也会拦）",
+        )
+    before = {"state": row.state, "body": row.body, "category_id": str(row.category_id) if row.category_id else None}
+    twin = await _find_twin_ready(db, row.owner_id, body_hash, exclude_id=row.id)
+    if twin is not None:
+        # 内容已经有定稿版：这条草稿收起，直接用那一行（不堆两条一样的可投稿脚本）
+        row.state = SCRIPT_RETIRED
+        await _write_audit(
+            db,
+            action="asset.script.finalize",
+            operator=current_user,
+            target_type="asset_script",
+            target_id=str(row.id),
+            before=before,
+            after={"state": SCRIPT_RETIRED, "reused_script_id": str(twin.id), "admin_edit": admin_edit or None},
+            strict=True,
+        )
+        await db.commit()
+        payload = (await _serialize_scripts(db, [twin], with_body=True))[0]
+        return JSONResponse(status_code=200, content={**payload, "reused": True})
+
+    row.body = body
+    row.body_hash = body_hash
+    if getattr(data, "clear_category", False):
+        row.category_id = None
+    elif new_cid is not None:
+        row.category_id = new_cid
+    row.state = SCRIPT_READY
+    try:
+        await db.flush()
+    except IntegrityError:
+        # 并发：两次定稿撞了「同一人不留两条同内容定稿」的唯一索引——回滚这次，指回已有那条
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="你刚定稿了一条内容相同的脚本——刷新脚本库，用那一行就好",
+        )
+    await _write_audit(
+        db,
+        action="asset.script.finalize",
+        operator=current_user,
+        target_type="asset_script",
+        target_id=str(row.id),
+        before=before,
+        after={"state": SCRIPT_READY, "body": body, "body_hash": body_hash,
+               "category_id": str(row.category_id) if row.category_id else None,
+               "admin_edit": admin_edit or None},
+        strict=True,
+    )
+    await db.commit()
+    payload = (await _serialize_scripts(db, [row], with_body=True))[0]
+    return {**payload, "reused": False}
+
+
+# ── 界面偏好（极简模式 S2）：用户级开关，跨设备/浏览器持久化 ──────────────────────────
+# 拍板③：开关＝用户级偏好（UserPreference.ui_config）＋页内随时切；现有五环页签一行不改。
+# 不复用 slice_config（那是切片配置，语义互相污染）。端点形状照 GET/PUT /slice/preferences。
+_UI_PREF_MAX_BYTES = 4096
+_UI_MODES = ("simple", "full")
+
+
+class UiPreferencesUpdateRequest(BaseModel):
+    ui_config: Dict[str, Any] = Field(..., description="界面偏好（JSON 对象）；整体覆盖")
+
+
+def _ui_config_default(user: User) -> Dict[str, Any]:
+    """没存过偏好时的默认值：素材专员/运营默认极简，管理员默认全量（施工方案 §9.1B）。"""
+    mode = "full" if user.role == UserRole.admin.value else "simple"
+    return {"asset_library_mode": mode}
+
+
+def _ui_config_validate(cfg: Any) -> Dict[str, Any]:
+    """只收「字符串键的对象」，并校验已知键的取值——未知键原样留着（前端以后加偏好不用改后端）。"""
+    if not isinstance(cfg, dict):
+        raise HTTPException(status_code=422, detail="ui_config 必须是一个 JSON 对象")
+    if any(not isinstance(k, str) for k in cfg.keys()):
+        raise HTTPException(status_code=422, detail="ui_config 的键必须是字符串")
+    try:
+        raw = json.dumps(cfg, ensure_ascii=False)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="ui_config 里有没法序列化的值")
+    if len(raw.encode("utf-8")) > _UI_PREF_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"ui_config 最大 {_UI_PREF_MAX_BYTES} 字节")
+    mode = cfg.get("asset_library_mode")
+    if mode is not None and mode not in _UI_MODES:
+        raise HTTPException(
+            status_code=422, detail=f"asset_library_mode 只认 {'/'.join(_UI_MODES)}（收到 {mode!r}）"
+        )
+    return cfg
+
+
+@router.get("/assets/ui/preferences")
+async def get_ui_preferences(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """当前用户的素材库界面偏好（没存过的键按角色给默认值）。"""
+    pref = (
+        await db.execute(select(UserPreference).where(UserPreference.user_id == current_user.id))
+    ).scalar_one_or_none()
+    return {"ui_config": {**_ui_config_default(current_user), **((pref.ui_config if pref else None) or {})}}
+
+
+@router.put("/assets/ui/preferences")
+async def save_ui_preferences(
+    data: UiPreferencesUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """保存当前用户的素材库界面偏好（整体覆盖，只动自己那一行）。"""
+    cfg = _ui_config_validate(data.ui_config)
+    pref = (
+        await db.execute(select(UserPreference).where(UserPreference.user_id == current_user.id))
+    ).scalar_one_or_none()
+    if pref is None:
+        pref = UserPreference(user_id=current_user.id)
+        db.add(pref)
+    pref.ui_config = cfg
+    await db.commit()
+    return {"ok": True, "ui_config": cfg}
 
 
 @router.get("/assets/{asset_id}")
