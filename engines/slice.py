@@ -989,9 +989,17 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
     if copy_if_possible and all(_is_copy_segment(p) for p in parts):
         _concat_demuxer(parts, out)
         return
-    # 统一所有输入的分辨率/SAR/音频格式，避免 concat filter 因参数不一致失败
-    # target尺寸取竖屏标准 720x1280（hook封面叠加尺寸），源视频 scale 后可能非整数高度
+    # 统一所有输入的分辨率/SAR/音频格式，避免 concat filter 因参数不一致失败。
+    # 目标几何取**首段实际尺寸**（修复 2026-11-23：此前硬编码竖屏 720x1280，
+    # 竖屏转横屏+片尾场景会把横屏本体整体 pad 回竖屏）。首段=本体/已归一化钩子，
+    # 代表成品主导几何；探测失败回退竖屏标准。
     TW, TH = 720, 1280
+    try:
+        _tw, _th = ffprobe_resolution(parts[0])
+        if _tw and _th:
+            TW, TH = int(_tw), int(_th)
+    except Exception:
+        pass
     uniform_filter = "".join(
         f"[{i}:v]scale={TW}:{TH}:force_original_aspect_ratio=decrease,"
         f"pad={TW}:{TH}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{i}];"
