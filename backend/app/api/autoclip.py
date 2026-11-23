@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.slice_helpers import _refresh_episode_status
 from app.auth import get_current_user
 from app.database import get_db
+import hashlib
+
 from app.models.models import (
     Episode,
     AutoClipProject,
@@ -40,6 +42,23 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+_FP_EXCLUDE_KEYS = {"llm_api_key", "vision_api_key", "timeout_ms"}
+
+
+def _config_fingerprint(config: Optional[dict]) -> str:
+    """选点参数指纹：排序序列化后 sha256 前 32 位。
+
+    密钥类字段不参与（同模型不同密钥不改变候选结果）；其余影响候选产出的
+    字段（模型/时长区间/评分阈值/双配开关/画面理解/max_clips 等）全量参与。
+    """
+    import json as _json
+    clean = {k: v for k, v in (config or {}).items()
+             if k not in _FP_EXCLUDE_KEYS and v not in (None, "", [])}
+    return hashlib.sha256(
+        _json.dumps(clean, sort_keys=True, ensure_ascii=False, default=str).encode()
+    ).hexdigest()[:32]
 
 
 async def _merge_default_autoclip_config(db, config: Optional[dict]) -> dict:
@@ -335,8 +354,73 @@ async def run_autoclip(
     # 锁 TTL 1800s 覆盖上传视频 + 10 分钟轮询 + 收尾；崩溃未释放时自动过期兜底。
     from app.services.distributed_lock import acquire_lock, release_lock
 
+    # 选点复用（2026-11-23 用户提议）：同一剧集 + 同一源片 + 参数指纹与最近一次
+    # 已完成选点一致，且候选仍在候选表中 → 直接复用候选，跳过 15-25 分钟选点。
+    # 显式指定 slice_autoclip_run_id 时不介入（用户明确选了某次历史）。
+    reuse_fp = _config_fingerprint(config)
+    src_row = await db.execute(select(Episode.source_file_key).where(Episode.id == eid))
+    reuse_src_key = src_row.scalar_one_or_none()
+    if not data.slice_autoclip_run_id:
+        last_run = (await db.execute(
+            select(AutoClipRun)
+            .where(
+                AutoClipRun.episode_id == eid,
+                AutoClipRun.config_fp == reuse_fp,
+                AutoClipRun.status == "completed",
+            )
+            .order_by(AutoClipRun.created_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        cand_cnt = (await db.execute(
+            select(func.count(ClipCandidate.id)).where(ClipCandidate.episode_id == eid)
+        )).scalar() or 0
+        if last_run and cand_cnt > 0:
+            reused = AutoClipRun(
+                episode_id=eid,
+                autoclip_project_id=last_run.autoclip_project_id,
+                status="completed",
+                progress=100.0,
+                message="复用选点结果：参数与最近一次选点一致，跳过选点（候选未变化）",
+                config=config,
+                config_fp=reuse_fp,
+                source_key=reuse_src_key,
+            )
+            db.add(reused)
+            # AutoClipProject 状态置 completed：切片流程的选点轮询即刻通过
+            proj_result = await db.execute(
+                select(AutoClipProject).where(AutoClipProject.episode_id == eid)
+            )
+            proj = proj_result.scalar_one_or_none()
+            if proj:
+                proj.autoclip_project_id = last_run.autoclip_project_id
+                proj.pipeline_status = "completed"
+                proj.error_message = None
+            await db.commit()
+            logger.info("Episode %s 选点复用命中（fp=%s），跳过选点流程", eid, reuse_fp)
+            return AutoClipRunResponse(
+                celery_task_id=f"reused-{reused.id}",
+                autoclip_project_id=last_run.autoclip_project_id,
+                message="选点参数与最近一次一致，已直接复用选点结果（候选未变化）",
+                fallback_whole_video=False,
+            )
+
+
     lock_key = f"autoclip:lock:{eid}"
     lock_token = await acquire_lock(lock_key, ttl=1800)
+    if not lock_token:
+        # 孤儿锁自愈（2026-11-23）：锁存在但该剧集没有任何进行中选点 →
+        # 持有方已被容器重启连带杀死（celery 任务随容器死亡，token 丢失），
+        # 删锁重试一次；仍失败才 409
+        running_runs = (await db.execute(
+            select(func.count(AutoClipRun.id)).where(
+                AutoClipRun.episode_id == eid,
+                AutoClipRun.status.in_(("running", "pending")),
+            )
+        )).scalar() or 0
+        if running_runs == 0:
+            from app.services.distributed_lock import force_release_lock
+            await force_release_lock(lock_key)
+            lock_token = await acquire_lock(lock_key, ttl=1800)
     if not lock_token:
         raise HTTPException(
             status_code=409,
@@ -347,6 +431,7 @@ async def run_autoclip(
     # 合并系统设置 default_autoclip_config（模型名/评分阈值等），使系统设置生效
     config = await _merge_default_autoclip_config(db, data.config)
 
+    # （选点复用检查已前移至拿锁之前——只读操作无需持锁）
     # 模型仓库解析（2026-11-23 用户需求「保存多个模型可供选择」）：前端只传
     # llm_model_name（仓库条目名），密钥等敏感字段由服务端从 llm_config.models
     # 解析注入，不下发前端。找不到名称时安全降级为跟随系统默认。
@@ -474,6 +559,8 @@ async def run_autoclip(
         progress=0.0,
         message="选点任务排队中，等待处理…",
         config=config,
+        config_fp=reuse_fp,
+        source_key=reuse_src_key,
     )
     db.add(autoclip_run)
     # 先提交历史记录，避免 Celery 任务抢先查询时找不到记录而重复建一条

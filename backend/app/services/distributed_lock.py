@@ -70,3 +70,11 @@ async def release_lock(key: str, token: str) -> bool:
     except Exception:
         # 释放失败不影响主流程：锁最终由 EX 兜底过期
         return False
+
+
+async def force_release_lock(key: str) -> bool:
+    """无条件删除锁（孤儿锁自愈专用：持有方已死且无进行中任务时才允许调用）。"""
+    try:
+        return bool(await _get_client().delete(key))
+    except Exception:
+        return False
