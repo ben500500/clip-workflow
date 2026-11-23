@@ -525,7 +525,7 @@ const EpisodeDetail: React.FC = () => {
       const raw = localStorage.getItem('slice_open_lines');
       if (raw) return JSON.parse(raw);
     } catch { /* 坏数据走默认 */ }
-    return ['🎬 选片线 · AI 智能选点', '⚙ 切片执行 · 汇聚提交'];
+    return ['⚙ 切片执行 · 汇聚提交'];
   });
   // 一键切片（免审核直接出片，位于工作台入口）
   const [oneClickSlicing, setOneClickSlicing] = useState(false);
@@ -2119,8 +2119,8 @@ const EpisodeDetail: React.FC = () => {
               rowKey="id"
               size="small"
               pagination={false}
-              dataSource={autoclipHistory.slice(0, 8)}
-              scroll={{ x: 640 }}
+              dataSource={autoclipHistory}
+              scroll={{ x: 640, y: 260 }}
               columns={[
                 {
                   title: '状态',
@@ -4091,25 +4091,38 @@ const EpisodeDetail: React.FC = () => {
 
       {/* 2026-11-21 业务线重组：3 张动作卡 → 6 条业务线纵排（选片/混剪方式/营销钩子/画面包装/防搬运/执行提交），
           纯 JSX 重排，所有 state 留在原地；各线卡头带「已开启」徽标，跨线冲突在「切片执行」卡顶部体检条汇总 */}
-      {/* 2026-11-23 用户反馈：选点历史多时左栏被撑得非常靠下——全部业务线改为
-          下拉折叠（折叠态只显示标题+状态徽标，展开才见配置），选片/混剪/钩子并排
-          进入右侧同一列；默认展开选片线起点与切片执行提交点，偏好记忆 localStorage */}
-      <Collapse
-        size="small"
-        style={{ marginBottom: 16 }}
-        activeKey={openLines}
-        onChange={(keys) => {
-          const arr = Array.isArray(keys) ? keys : [keys];
-          setOpenLines(arr);
-          localStorage.setItem('slice_open_lines', JSON.stringify(arr));
-        }}
-        items={actions.map((a) => ({
-          key: a.title,
-          label: a.title,
-          extra: a.extra,
-          children: a.node,
-        }))}
-      />
+      {/* 2026-11-23 布局定稿：左栏=选片线（选点历史固定高度滚动，不再撑长页面）；
+          右栏=混剪方式/营销钩子/画面包装/防搬运均下拉折叠（默认收起）+切片执行常驻展开 */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} md={12}>
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {actions
+              .filter((a) => a.title.startsWith('🎬'))
+              .map((a) => (
+                <Card size="small" key={a.title} title={a.title} extra={a.extra}>{a.node}</Card>
+              ))}
+          </Space>
+        </Col>
+        <Col xs={24} md={12}>
+          <Collapse
+            size="small"
+            activeKey={openLines}
+            onChange={(keys) => {
+              const arr = Array.isArray(keys) ? keys : [keys];
+              setOpenLines(arr);
+              localStorage.setItem('slice_open_lines', JSON.stringify(arr));
+            }}
+            items={actions
+              .filter((a) => !a.title.startsWith('🎬'))
+              .map((a) => ({
+                key: a.title,
+                label: a.title,
+                extra: a.extra,
+                children: a.node,
+              }))}
+          />
+        </Col>
+      </Row>
     </div>
   );
 };
