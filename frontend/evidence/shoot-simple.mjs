@@ -24,7 +24,7 @@ import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 // 本机 clip 栈（frontend 127.0.0.1:3000）；端口避开 9223（用户隧道口）与 9341（capture-guide-frames）
-const BASE = 'http://127.0.0.1:3000';
+const BASE = process.env.SHOOT_BASE || 'http://127.0.0.1:3000';  // 现网复验传 SHOOT_BASE=http://192.168.1.163
 const OUT = '/tmp/shots-simple';
 mkdirSync(OUT, { recursive: true });
 const ADMIN_TOK = readFileSync(process.argv[2] || '/tmp/.cdp_tok_local', 'utf8').trim();
