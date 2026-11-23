@@ -140,3 +140,4 @@ frontend/vite.config.d.ts
 
 # 自签证书（服务器本地生成，scripts/gen_selfsigned_cert.sh，严禁入库）
 certs/
+hf-cache/
