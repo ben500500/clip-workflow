@@ -929,6 +929,9 @@ async def normalize_episode_source(
     if not episode.source_file_key:
         raise HTTPException(status_code=404, detail="该剧集没有已上传的原片")
 
+    if tier.lower() == "original":
+        # original=不处理：无转码必要，直接同步返回（不起后台任务）
+        return {"status": "compliant", "message": "档位 original=保留原始分辨率，无需处理"}
     _src_norm_jobs[episode_id] = {"status": "running", "message": "下载源片到本地", "old_key": episode.source_file_key}
 
     async def _run():
