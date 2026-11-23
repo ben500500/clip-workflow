@@ -178,6 +178,10 @@ async def llm_test(payload: dict, db: AsyncSession = Depends(get_db)):
                 payload.setdefault("api_base", m.get("api_base") or "")
         except Exception:
             pass
+    # 修复（2026-11-23）：解析出的仓库密钥必须注入转发 payload，否则服务端
+    # 回退 env 密钥导致按名称测试恒 401（局部变量 api_key 此前未写回 payload）
+    if api_key:
+        payload["api_key"] = api_key
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             resp = await client.post(f"{settings.AUTOCLIP_URL}/llm-test", json=payload)
