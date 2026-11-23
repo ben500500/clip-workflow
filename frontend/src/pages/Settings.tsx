@@ -30,6 +30,9 @@ const Settings: React.FC = () => {
   const [llmKey, setLlmKey] = useState('');
   const [llmKeySet, setLlmKeySet] = useState(false); // 库里是否已存密钥
   const [llmSaving, setLlmSaving] = useState(false);
+  // 模型仓库（llm_config.models）：供选点界面「选点模型」下拉的命名模型列表
+  const [llmRepoEntries, setLlmRepoEntries] = useState<{ name: string; model: string; api_base?: string; api_key?: string }[]>([]);
+  const [llmNewEntry, setLlmNewEntry] = useState<{ name: string; model: string; api_base: string; api_key: string }>({ name: '', model: '', api_base: '', api_key: '' });
 
   const fetchAll = () => {
     configApi.getAll().then((list) => {
@@ -43,6 +46,11 @@ const Settings: React.FC = () => {
       setLlmBase(typeof lv.llm_api_base === 'string' ? lv.llm_api_base : '');
       setLlmModel(typeof lv.llm_model === 'string' ? lv.llm_model : '');
       setLlmKeySet(Boolean(lv.llm_api_key));
+      const models = Array.isArray(lv.models) ? lv.models : [];
+      setLlmRepoEntries(models.map((m: Record<string, unknown>) => ({
+        name: String(m.name || ''), model: String(m.model || ''),
+        api_base: String(m.api_base || ''), api_key: m.api_key ? '●已保存' : '',
+      })));
     }).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformProfiles().then(setProfiles).catch((err: unknown) => message.error(err instanceof Error ? err.message : '加载失败'));
     configApi.getPlatformPresets().then((r) => setPresets(r.presets || {})).catch(() => undefined);
@@ -170,6 +178,25 @@ const Settings: React.FC = () => {
       const existing = configs.find((c: SystemConfig) => c.key === 'llm_config');
       const base = (existing && typeof existing.value === 'object' && existing.value ? existing.value : {}) as Record<string, unknown>;
       const next: Record<string, unknown> = { ...base };
+      if (llmRepoEntries.length > 0) {
+        next.models = llmRepoEntries
+          .filter((e) => e.name.trim() && e.model.trim())
+          .map((e) => ({
+            name: e.name.trim(), model: e.model.trim(), api_base: e.api_base?.trim() || '',
+            api_key: e.api_key && !e.api_key.startsWith('●') ? e.api_key : (base as Record<string, never> && 0, undefined),
+          }));
+        // api_key 占位（●已保存）保留原值：从 base.models 按名回填
+        const baseModels = Array.isArray(base.models) ? base.models : [];
+        next.models = (next.models as { name: string; api_key?: string }[]).map((e) => {
+          if (e.api_key === undefined) {
+            const old = baseModels.find((o: Record<string, unknown>) => o.name === e.name);
+            e.api_key = old && old.api_key ? String(old.api_key) : undefined;
+          }
+          return e;
+        }).filter((e) => e.api_key !== undefined || true);
+      } else {
+        next.models = [];
+      }
       if (llmBase.trim()) next.llm_api_base = llmBase.trim(); else delete next.llm_api_base;
       if (llmModel.trim()) next.llm_model = llmModel.trim(); else delete next.llm_model;
       if (llmKey.trim()) next.llm_api_key = llmKey.trim();
@@ -362,6 +389,52 @@ const Settings: React.FC = () => {
             />
             <Button type="primary" loading={llmSaving} onClick={handleLlmSave}>保存 LLM 配置</Button>
           </Space>
+          <div style={{ borderTop: '1px dashed #e8e8e8', paddingTop: 12, marginTop: 4 }}>
+            <Text strong style={{ fontSize: 13 }}>模型仓库（保存多个命名模型，供选点界面下拉选择）</Text>
+            {llmRepoEntries.length > 0 && (
+              <Table
+                size="small"
+                style={{ marginTop: 8 }}
+                pagination={false}
+                rowKey={(r) => r.name}
+                dataSource={llmRepoEntries}
+                columns={[
+                  { title: '名称', dataIndex: 'name', width: 160,
+                    render: (v: string, _r, idx: number) => (
+                      <Input size="small" value={v} onChange={(e) => setLlmRepoEntries((prev) => prev.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x)))} />) },
+                  { title: '模型名', dataIndex: 'model', width: 180,
+                    render: (v: string, _r, idx: number) => (
+                      <Input size="small" value={v} onChange={(e) => setLlmRepoEntries((prev) => prev.map((x, i) => (i === idx ? { ...x, model: e.target.value } : x)))} />) },
+                  { title: 'API 地址', dataIndex: 'api_base',
+                    render: (v: string, _r, idx: number) => (
+                      <Input size="small" value={v} onChange={(e) => setLlmRepoEntries((prev) => prev.map((x, i) => (i === idx ? { ...x, api_base: e.target.value } : x)))} />) },
+                  { title: 'API 密钥', dataIndex: 'api_key', width: 200,
+                    render: (v: string, _r, idx: number) => (
+                      <Input.Password size="small" placeholder={v ? '已保存（留空保持不变）' : '可选'} value={v} onChange={(e) => setLlmRepoEntries((prev) => prev.map((x, i) => (i === idx ? { ...x, api_key: e.target.value } : x)))} />) },
+                  { title: '', width: 60,
+                    render: (_v: unknown, _r: unknown, idx: number) => (
+                      <Button size="small" danger type="text" onClick={() => setLlmRepoEntries((prev) => prev.filter((_, i) => i !== idx))}>删除</Button>) },
+                ]}
+              />
+            )}
+            <Space wrap align="center" style={{ marginTop: 8 }}>
+              <Input size="small" placeholder="名称（如 通义qwen）" style={{ width: 160 }} value={llmNewEntry.name}
+                onChange={(e) => setLlmNewEntry((p) => ({ ...p, name: e.target.value }))} />
+              <Input size="small" placeholder="模型名" style={{ width: 180 }} value={llmNewEntry.model}
+                onChange={(e) => setLlmNewEntry((p) => ({ ...p, model: e.target.value }))} />
+              <Input size="small" placeholder="API 地址（可选）" style={{ width: 240 }} value={llmNewEntry.api_base}
+                onChange={(e) => setLlmNewEntry((p) => ({ ...p, api_base: e.target.value }))} />
+              <Input.Password size="small" placeholder="API 密钥（可选）" style={{ width: 180 }} value={llmNewEntry.api_key}
+                onChange={(e) => setLlmNewEntry((p) => ({ ...p, api_key: e.target.value }))} />
+              <Button size="small" icon={<PlusOutlined />} disabled={!llmNewEntry.name.trim() || !llmNewEntry.model.trim()}
+                onClick={() => { setLlmRepoEntries((prev) => [...prev, { ...llmNewEntry }]); setLlmNewEntry({ name: '', model: '', api_base: '', api_key: '' }); }}>
+                添加模型
+              </Button>
+            </Space>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              保存后，剧集详情页「选片线 · 选点模型」下拉即可选择这些命名模型；密钥由服务端保管，不下发前端。
+            </Text>
+          </div>
         </Space>
       </Card>
       <Card title="Remotion 渲染（高光混剪增强）" style={{ marginBottom: 16 }}>

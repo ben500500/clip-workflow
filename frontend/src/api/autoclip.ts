@@ -2,6 +2,9 @@ import client from './client';
 import type { AutoClipConfig, AutoClipRunRecord, ClipCandidate } from '../types';
 
 export const autoclipApi = {
+  llmModels: () =>
+    client.get('/autoclip/llm-models') as Promise<{ name: string; model: string; api_base?: string }[]>,
+
   run: (episodeId: string, config?: AutoClipConfig) =>
     client.post(`/episodes/${episodeId}/autoclip/run`, { config }) as Promise<{
       celery_task_id: string;

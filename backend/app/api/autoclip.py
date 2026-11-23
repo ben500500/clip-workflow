@@ -101,6 +101,24 @@ async def _merge_default_autoclip_config(db, config: Optional[dict]) -> dict:
 
 
 
+@router.get("/autoclip/llm-models")
+async def list_llm_models(
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """返回系统设置 llm_config.models 模型仓库（不含密钥），供选点界面下拉。"""
+    result = await db.execute(select(SystemConfig).where(SystemConfig.key == "llm_config"))
+    cfg = result.scalar_one_or_none()
+    entries = (
+        cfg.value.get("models") if cfg and isinstance(cfg.value, dict) else None
+    ) or []
+    return [
+        {"name": e.get("name"), "model": e.get("model"), "api_base": e.get("api_base")}
+        for e in entries
+        if isinstance(e, dict) and e.get("name") and e.get("model")
+    ]
+
+
 class AutoClipRunRequest(BaseModel):
     config: Optional[dict] = None
     video_path: Optional[str] = None
@@ -257,6 +275,41 @@ async def run_autoclip(
     # Create AutoClip project
     # 合并系统设置 default_autoclip_config（模型名/评分阈值等），使系统设置生效
     config = await _merge_default_autoclip_config(db, data.config)
+
+    # 模型仓库解析（2026-11-23 用户需求「保存多个模型可供选择」）：前端只传
+    # llm_model_name（仓库条目名），密钥等敏感字段由服务端从 llm_config.models
+    # 解析注入，不下发前端。找不到名称时安全降级为跟随系统默认。
+    model_name = (data.config or {}).get("llm_model_name")
+    if model_name:
+        try:
+            llm_cfg_row = await db.execute(
+                select(SystemConfig).where(SystemConfig.key == "llm_config")
+            )
+            llm_cfg = llm_cfg_row.scalar_one_or_none()
+            entries = (
+                llm_cfg.value.get("models") if llm_cfg and isinstance(llm_cfg.value, dict) else None
+            ) or []
+            entry = next(
+                (e for e in entries if isinstance(e, dict) and e.get("name") == model_name),
+                None,
+            )
+            if entry:
+                for cfg_key, entry_key in (
+                    ("llm_model", "model"),
+                    ("llm_api_base", "api_base"),
+                    ("llm_api_key", "api_key"),
+                ):
+                    val = entry.get(entry_key)
+                    if val:
+                        config[cfg_key] = val
+                config.pop("llm_model_name", None)
+                logger.info("选点使用仓库模型 %s（%s @ %s）", model_name, entry.get("model"), entry.get("api_base"))
+            else:
+                config.pop("llm_model_name", None)
+                logger.warning("仓库中不存在模型 %s，降级为跟随系统默认", model_name)
+        except Exception as e:  # noqa: BLE001 - 仓库解析失败不阻塞选点
+            logger.warning("模型仓库解析失败: %s", e)
+            config.pop("llm_model_name", None)
     autoclip_project_id = await create_autoclip_project(
         name=f"episode_{episode_id}",
         config=config,

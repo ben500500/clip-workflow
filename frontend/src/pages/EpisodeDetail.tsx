@@ -534,6 +534,9 @@ const EpisodeDetail: React.FC = () => {
     setLlmPreset(v);
     localStorage.setItem('ac_llm_preset', v);
   };
+  // 模型仓库（系统设置 llm_config.models，服务端保管密钥；下拉按名称选择，
+  // 选点时只发 llm_model_name，密钥由服务端解析注入）
+  const [llmRepo, setLlmRepo] = useState<{ name: string; model: string; api_base?: string }[]>([]);
   const setLlmCustomPersist = (patch: Partial<{ model: string; base: string; key: string }>) => {
     setLlmCustom((prev) => {
       const next = { ...prev, ...patch };
@@ -901,6 +904,11 @@ const EpisodeDetail: React.FC = () => {
     }
     message.success('已删除配置');
   };
+
+  // 拉取模型仓库（下拉项；失败静默走快捷预设）
+  useEffect(() => {
+    autoclipApi.llmModels().then((list) => setLlmRepo(list || [])).catch(() => undefined);
+  }, []);
 
   // 进入页面时从个人账号加载已保存配置，覆盖默认值（保证下次进入不恢复初始状态）
   useEffect(() => {
@@ -1403,6 +1411,10 @@ const EpisodeDetail: React.FC = () => {
       ? autoclipHistory.find((h) => h.id === sliceAutoclipRunId)
       : undefined;
     const llmExtra = (): Record<string, unknown> => {
+      if (llmPreset.startsWith('saved:')) {
+        // 仓库模型：只发名称，服务端解析注入（含密钥，不经过前端）
+        return { llm_model_name: llmPreset.slice(6) };
+      }
       if (llmPreset === 'mimo') {
         return { llm_model: 'mimo-v2.6-flash', llm_api_base: 'https://token-plan-cn.xiaomimimo.com/v1' };
       }
@@ -2154,6 +2166,7 @@ const EpisodeDetail: React.FC = () => {
               onChange={(v) => setLlmPresetPersist(v as string)}
               options={[
                 { value: 'system', label: '跟随系统设置' },
+                ...llmRepo.map((m) => ({ value: `saved:${m.name}`, label: `${m.name}（${m.model}）` })),
                 { value: 'mimo', label: '小米 MiMo（mimo-v2.6-flash）' },
                 { value: 'qwen', label: '通义 qwen-plus' },
                 { value: 'custom', label: '自定义…' },
