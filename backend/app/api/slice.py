@@ -2007,6 +2007,7 @@ async def retry_slice_task(
             getattr(task, "output_tier", None) or "auto",
             getattr(task, "hook_video_key", None),
             getattr(task, "hook_video_keys", None),
+            getattr(task, "outro_video_key", None),
             getattr(task, "hook_mix_mode", None),
             getattr(task, "hook_mix_output_count", None),
             getattr(task, "hook_position", None),

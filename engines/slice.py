@@ -1745,7 +1745,7 @@ def _watermark_style_exprs(style: str, base_y: str) -> tuple[str, str, str]:
 # 竖屏视频因显式设置 PlayResY 抵消了 libass 默认的放大，ASR 字幕会偏小，
 # 故对竖屏按下方 PORTRAIT_SUBTITLE_HEIGHT_RATIO 补偿（见 burn_subtitle）。
 # 用户可通过配置调大或调小。
-SUBTITLE_FONT_RATIO = 0.07
+SUBTITLE_FONT_RATIO = 0.09  # 2026-11-23 用户反馈横屏成品字幕偏小：7%→9%（竖屏 PORTRAIT 比例不动）
 # 竖屏字幕目标字号占画面高度比例：0.055→1080x1920 时 FontSize≈106px、720x1280 时≈70px，
 # 竖屏手机全屏观看字幕需更醒目，约 5.5% 画面高度清晰可读且不挡脸。仅作用于走默认字号的竖屏视频。
 PORTRAIT_SUBTITLE_HEIGHT_RATIO = 0.055
