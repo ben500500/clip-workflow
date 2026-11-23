@@ -157,7 +157,7 @@ async def save_llm_model(
 
 
 @router.post("/autoclip/llm-test")
-async def llm_test(payload: dict):
+async def llm_test(payload: dict, db: AsyncSession = Depends(get_db)):
     """LLM 连通性测试代理：转发 AutoClip 服务发起一次最小补全（45s 上限）。
 
     密钥语义与选点一致：显式传入优先；不传则解析仓库同名条目密钥；
