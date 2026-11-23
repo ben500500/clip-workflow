@@ -2537,6 +2537,114 @@ const UPLOAD_TIMEOUT = 0;
  */
 const MODEL_WAIT_TIMEOUT = 960000;
 
+// ─────────────────────────  极简模式（2026-11-23）：脚本库 ＋ 界面偏好  ─────────────────────────
+// 用户原话：「个人可自定义脚本库，把想要的脚本添加到个人脚本库，并可打开脚本修改。」
+// 这里的「脚本」＝直接投给豆包的成品提示词，**不是**钩子文案（不展开、不过 ≤80 字形态闸）。
+
+export type AssetScriptState = 'draft' | 'ready' | 'retired';
+export type AssetScriptSourceKind = 'manual' | 'upload' | 'reverse';
+
+export interface AssetScript {
+  id: string;
+  name: string;
+  state: AssetScriptState;
+  state_label: string;
+  category_id: string | null;
+  category_name: string | null;
+  source_kind: AssetScriptSourceKind;
+  /** 稿子来自哪条素材（素材删了脚本还在） */
+  origin_asset_id: string | null;
+  /** 派生链：这条是从哪条脚本派生的（定稿即冻结，要改＝派生新草稿） */
+  based_on_script_id: string | null;
+  owner_id: string;
+  owner_name: string | null;
+  note: string | null;
+  body_chars: number;
+  /** 正文前 100 字（列表不随全文，全文走 getScript） */
+  preview: string;
+  /** 仅详情/新建/派生响应带全文 */
+  body?: string;
+  /**
+   * 生产载体：生产单必须挂在候选文案上，所以每个脚本送审时配一条候选行。
+   * 载体的 audit_status＝这条脚本的审核态（pending 待审 / approved 已过审）。
+   * null＝还没送审。五环的 ②③ 列表默认看不到载体（它不是钩子文案）。
+   */
+  carrier: {
+    summary_id: string;
+    audit_status: string;
+    reviewed_by_name: string | null;
+  } | null;
+  production_count: number;
+  last_production: {
+    id: string;
+    status: string;
+    hook_code: string | null;
+    board_total: number | null;
+    is_trial: boolean;
+  } | null;
+  created_at: string;
+  updated_at: string;
+  /** 新建/派生/定稿口：true＝内容已存在，返回的是原有那条（幂等） */
+  reused?: boolean;
+  /** PUT 口：true＝原稿已定稿，返回的是派生出的新草稿 */
+  forked?: boolean;
+}
+
+export interface AssetScriptListParams {
+  /** me（默认，我的）｜all（所有人的） */
+  owner?: 'me' | 'all';
+  /** 逗号多值；不传＝在用的（库稿＋可投稿） */
+  state?: string;
+  category_id?: string;
+  /** 按审核态筛：pending 待审／approved 已过审／none 还没送审 */
+  carrier_status?: 'pending' | 'approved' | 'none';
+  q?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface AssetScriptListResult {
+  items: AssetScript[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+/** 送审/过审/投产的逐条结果。⚠️ HTTP 200 ≠ 全过——界面必须把 ok:false 的条数念出来 */
+export interface AssetScriptVerdictItem {
+  script_id: string;
+  ok: boolean;
+  code?: string;
+  error?: string;
+  error_code?: string;
+  problems?: { code: string; message: string }[];
+  waivable_codes?: string[];
+  carrier_summary_id?: string;
+  audit_status?: string;
+  /** 过审口：这条本来就已过审（幂等重放） */
+  already?: boolean;
+}
+
+export interface AssetScriptProduceResult {
+  production_ids: string[];
+  results: {
+    script_id: string;
+    code: string;
+    ok: boolean;
+    production_id: string | null;
+    hook_code: string | null;
+    error: string | null;
+  }[];
+  /** 投板后台任务回执（受理即回；null＝一张单都没建成） */
+  dispatch: AssetJobAck | null;
+  message: string;
+}
+
+export interface UiPreferences {
+  /** simple 极简（脚本屏＋钩子视频屏）｜full 完整五环 */
+  asset_library_mode: 'simple' | 'full';
+}
+
 export const assetApi = {
   // 素材列表：一行 = 一条素材（批次只是筛选维度，不做批次父行页）
   listAssets: (params?: AssetListParams) =>
@@ -2974,6 +3082,83 @@ export const assetApi = {
   // 批次列表（含成本预估/实扣，对账页用；只有 items，没有 total）
   listBatches: (params?: { limit?: number }) =>
     client.get('/assets/batches', { params }) as Promise<AssetBatchListResult>,
+
+  // ─────────────────────────  极简模式：脚本库 ＋ 界面偏好（2026-11-23）  ─────────────────────────
+  listScripts: (params?: AssetScriptListParams) =>
+    client.get('/assets/scripts', { params }) as Promise<AssetScriptListResult>,
+
+  getScript: (scriptId: string) =>
+    client.get(`/assets/scripts/${scriptId}`) as Promise<AssetScript>,
+
+  /** 新建草稿（手写／文件上传读出的正文）。同内容已存在 → 200＋reused 回原行 */
+  createScript: (data: {
+    name: string;
+    body: string;
+    category_id?: string | null;
+    source_kind?: 'manual' | 'upload';
+    origin_asset_id?: string | null;
+    based_on_script_id?: string | null;
+    note?: string | null;
+  }) => client.post('/assets/scripts', data) as Promise<AssetScript>,
+
+  /**
+   * 改脚本。草稿＝原地改；**已定稿＝派生新草稿**（201＋forked），原稿不动。
+   * category_id 不传＝不改；clear_category＝清成未分类；note 传空串＝清空。
+   */
+  updateScript: (
+    scriptId: string,
+    data: {
+      name?: string;
+      body?: string;
+      category_id?: string | null;
+      clear_category?: boolean;
+      note?: string | null;
+    },
+  ) => client.put(`/assets/scripts/${scriptId}`, data) as Promise<AssetScript>,
+
+  /** 下架（软删，state=retired）——被生产单引用过的脚本不硬删，出处链才查得回 */
+  retireScript: (scriptId: string) =>
+    client.delete(`/assets/scripts/${scriptId}`) as Promise<{ ok: boolean; id: string; state: string }>,
+
+  /** 定稿：库稿 → 可投稿。风险词 block 命中 409；正文冻结，之后要改只能派生 */
+  finalizeScript: (
+    scriptId: string,
+    data?: { body?: string; category_id?: string | null; clear_category?: boolean },
+  ) => client.post(`/assets/scripts/${scriptId}/finalize`, data ?? {}) as Promise<AssetScript>,
+
+  /** 把素材已有的反推稿收进脚本库（0 元）。素材还没有可用反推稿 → 404 */
+  saveScriptFromAsset: (data: { asset_id: string; name?: string | null; category_id?: string | null }) =>
+    client.post('/assets/scripts/save-from-asset', data) as Promise<AssetScript>,
+
+  /** 送审：给可投稿脚本建生产载体（待审）。没有审核职能的账号走到这一步 */
+  submitScripts: (scriptIds: string[]) =>
+    client.post('/assets/scripts/submit', { script_ids: scriptIds }) as Promise<{
+      results: AssetScriptVerdictItem[];
+      submitted: number;
+      message: string;
+    }>,
+
+  /** 轻量过审：与审核口同口径（角色/职能/自审旋钮/风险词 block/审计），逐条带 ok */
+  approveScripts: (scriptIds: string[], waiveReason?: string) =>
+    client.post('/assets/scripts/approve', {
+      script_ids: scriptIds,
+      waive_reason: waiveReason || undefined,
+    }) as Promise<{ results: AssetScriptVerdictItem[]; message: string }>,
+
+  /** 屏 2「投豆包」：建单＋直投板，受理即回任务号。用了别人过审的脚本要先确认 */
+  produceFromScripts: (data: {
+    script_ids: string[];
+    board_total?: number;
+    card_asset_ids?: string[] | null;
+    hook_codes?: string[] | null;
+    cross_person_confirm?: boolean;
+  }) => client.post('/assets/scripts/produce', data) as Promise<AssetScriptProduceResult>,
+
+  getUiPreferences: () =>
+    client.get('/assets/ui/preferences') as Promise<{ ui_config: UiPreferences }>,
+
+  saveUiPreferences: (uiConfig: UiPreferences) =>
+    client.put('/assets/ui/preferences', { ui_config: uiConfig }) as Promise<{ ok: boolean; ui_config: UiPreferences }>,
 };
 
 // ──────────────────────────────────────────────

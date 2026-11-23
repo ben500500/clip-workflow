@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Badge, Button, Card, Drawer, Modal, Popover, Space, Table, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
+import { Alert, Badge, Button, Card, Drawer, Modal, Popover, Segmented, Space, Table, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
 import { ApartmentOutlined, BellOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import client from '../api/client';
@@ -17,7 +17,8 @@ import {
   toggleDeskNotify,
   type DeskNotifyState,
 } from '../components/assets/deskNotify';
-import type { AssetJobInfo } from '../api/assets';
+import { assetApi, type AssetJobInfo, type UiPreferences } from '../api/assets';
+import SimpleLibrary from '../components/assets/simple/SimpleLibrary';
 
 const { Text, Paragraph } = Typography;
 
@@ -80,6 +81,36 @@ const AssetLibrary: React.FC = () => {
     setActiveTabState(k);
     if (user) localStorage.setItem(`asset-library-tab:${user.id}`, k);
   }, [user]);
+
+  // ── 极简模式开关（2026-11-23，用户原话「太繁琐，做成极简模式（开关控制）」）──
+  // 用户级偏好＋页内随时切（拍板③）：存 UserPreference.ui_config，跨设备/浏览器跟着账号走。
+  // 没存过按角色给默认值（素材/运营＝极简、管理员＝全量，后端给）。
+  // null＝偏好还没读到：这时**先不渲染页签**，否则运营每次进页面都会先闪一下五环再跳极简。
+  const [mode, setMode] = useState<'simple' | 'full' | null>(null);
+  const modeRef = useRef<'simple' | 'full' | null>(null);
+  modeRef.current = mode;
+  useEffect(() => {
+    let alive = true;
+    assetApi.getUiPreferences()
+      .then((r) => { if (alive) setMode(r.ui_config?.asset_library_mode === 'simple' ? 'simple' : 'full'); })
+      .catch(() => { if (alive) setMode('full'); });   // 读不到偏好＝按全量走，别把人挡在空白页
+    return () => { alive = false; };
+  }, []);
+  const switchMode = (next: 'simple' | 'full') => {
+    setMode(next);
+    const body: UiPreferences = { asset_library_mode: next };
+    assetApi.saveUiPreferences(body).catch(() => message.warning('界面偏好没存上（本次切换仍然有效）'));
+  };
+  /**
+   * 任务横幅的「去看」要跳到某个五环页签：极简模式下没有页签，所以**先切到完整视图再落页签**
+   * （只是一次性跳转，不改用户存的偏好）。投板完成的落点在极简下改成成片墙——极简模式的人
+   * 不经过 ④，给他看的是片子不是单。
+   */
+  const jumpToTab = useCallback((tab: string) => {
+    const want = modeRef.current === 'simple' && tab === 'production' ? 'outputs' : tab;
+    if (modeRef.current === 'simple') setMode('full');
+    setActiveTab(want);
+  }, [setActiveTab]);
   /**
    * 钩子原型字典抽屉：入口只在这张顶部卡片放**一处**（四个页签都看得到），
    * 面板里只做筛选和点原型，不再各挂一份抽屉——两处入口迟早变成一个新版本一个旧版本。
@@ -158,7 +189,7 @@ const AssetLibrary: React.FC = () => {
         return false;
       })();
       if (isTrial) {
-        setActiveTab('review');
+        jumpToTab('review');
       }
     }
     // 11-06 承诺审计③：后端把逐条 note/error 都备在 job.result.results 里，此前前端
@@ -208,7 +239,7 @@ const AssetLibrary: React.FC = () => {
                       size="small"
                       type="link"
                       style={{ padding: '0 0 0 6px', fontSize: 12 }}
-                      onClick={() => setActiveTab(target.tab)}
+                      onClick={() => jumpToTab(target.tab)}
                     >
                       {target.label} →
                     </Button>
@@ -234,7 +265,7 @@ const AssetLibrary: React.FC = () => {
                   type="link"
                   style={{ padding: 0, fontSize: 12 }}
                   onClick={() => {
-                    setActiveTab(target.tab);
+                    jumpToTab(target.tab);
                     notification.destroy(`asset-job-done-${job.id}`);
                   }}
                 >
@@ -262,7 +293,7 @@ const AssetLibrary: React.FC = () => {
         8,
       );
     }
-  }, [setActiveTab]);
+  }, [setActiveTab, jumpToTab]);
 
   const role = user?.role;
   // A′：页签待办计数（轻量 total 探针；20s 一轮＋动作后事件触发，够跟手不刷爆）
@@ -463,6 +494,18 @@ const AssetLibrary: React.FC = () => {
             </Button>
           </Popover>
           {roleHint}
+          {/* 极简｜完整 切换：极简＝脚本库＋投豆包一页走完；完整＝下面的五环页签（原样不动） */}
+          <Tooltip title="极简：脚本库＋投豆包一页走完｜完整：导入→出文案→审核→开单→投板→成片墙。选择跟着你的账号走">
+            <Segmented
+              size="small"
+              value={mode ?? 'full'}
+              onChange={(v) => switchMode(v as 'simple' | 'full')}
+              options={[
+                { label: '极简', value: 'simple' },
+                { label: '完整', value: 'full' },
+              ]}
+            />
+          </Tooltip>
           {batchId && (
             <Tag closable onClose={() => setBatchId(undefined)} color="geekblue">
               批次：{batchNames[batchId] || batchId.slice(0, 8)}
@@ -505,9 +548,21 @@ const AssetLibrary: React.FC = () => {
         </Space>
       </Card>
 
-      <AssetJobBanner onSettled={onJobSettled} onGoToTab={setActiveTab} />
+      <AssetJobBanner onSettled={onJobSettled} onGoToTab={jumpToTab} />
 
-      <Tabs items={items} activeKey={activeTab} onChange={setActiveTab} />
+      {mode === 'simple' ? (
+        <SimpleLibrary
+          canImport={canProduce}
+          canProduce={canReview && fnProduce}
+          canReview={canReview}
+          isAdmin={isAdmin}
+          userId={user?.id ?? null}
+          reloadToken={reloadToken}
+          onOpenFullTab={jumpToTab}
+        />
+      ) : mode === 'full' ? (
+        <Tabs items={items} activeKey={activeTab} onChange={setActiveTab} />
+      ) : null}
 
       {/* 桌面通知说明弹窗（用户口径 2026-11-09）：权限怎么开、为什么点不动，一次说清 */}
       <Modal
