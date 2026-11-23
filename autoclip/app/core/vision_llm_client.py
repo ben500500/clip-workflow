@@ -30,6 +30,17 @@ VISION_MAX_RETRIES = int(os.getenv("VISION_MAX_RETRIES", "2"))
 class VisionLLMClient:
     """OpenAI 兼容在线视觉模型客户端（/chat/completions，image_url base64）。"""
 
+    # 类级失败切换链（2026-11-23 用户需求）：frame_analyzer 每 clip 新建实例，
+    # 链与状态 hook 必须挂类上才能跨实例生效；条目 {model, api_base, api_key}
+    _failover_chain: list = []
+    _status_hook = None
+
+    @classmethod
+    def set_failover_chain(cls, chain: list, status_hook=None) -> None:
+        """设置视觉失败切换链（main.py 每次选点前注入）与状态回调。"""
+        cls._failover_chain = list(chain or [])
+        cls._status_hook = status_hook
+
     def __init__(
         self,
         base_url: Optional[str] = None,
@@ -67,6 +78,35 @@ class VisionLLMClient:
         if not self.available:
             return None
 
+        # 失败切换：主模型耗尽重试仍失败 → 依链切换下一个视觉模型重试同一帧
+        chain = type(self)._failover_chain or []
+        for entry in [None] + list(chain):
+            if entry is not None:
+                self._apply_failover_entry(entry)
+            result = self._describe_once(image_bytes, prompt)
+            if result is not None:
+                return result
+        return None
+
+    def _apply_failover_entry(self, entry: dict) -> None:
+        """切换到链中下一个视觉模型并经 status_hook 实时透出。"""
+        prev = self.model
+        self.model = entry.get("model") or self.model
+        if entry.get("api_base"):
+            self.base_url = entry["api_base"].rstrip("/")
+        if entry.get("api_key"):
+            self.api_key = entry["api_key"]
+        detail = f"视觉模型 {prev} 无响应，已切换到 {self.model}"
+        logger.warning(detail)
+        hook = type(self)._status_hook
+        if hook:
+            try:
+                hook(detail)
+            except Exception:
+                pass
+
+    def _describe_once(self, image_bytes: bytes, prompt: str) -> Optional[Dict[str, Any]]:
+        """单模型尝试（含 VISION_MAX_RETRIES 重试）；失败返回 None。"""
         b64 = base64.b64encode(image_bytes).decode()
         data_url = f"data:image/jpeg;base64,{b64}"
         payload = {
@@ -96,7 +136,9 @@ class VisionLLMClient:
             return None
 
         last_err: Optional[Exception] = None
-        for attempt in range(VISION_MAX_RETRIES + 1):
+        # 有切换链时每模型最多 2 次尝试（快速让位给下一模型），无链维持原重试数
+        max_attempts = (VISION_MAX_RETRIES + 1) if not (type(self)._failover_chain or []) else 2
+        for attempt in range(max_attempts):
             try:
                 resp = cfrequests.post(
                     url,

@@ -522,7 +522,13 @@ const EpisodeDetail: React.FC = () => {
   // ── 选点 LLM 快捷配置（2026-11-23 用户需求：选点界面直接配置 LLM）──
   // preset: system=跟随系统设置；mimo=小米 MiMo；qwen=通义 qwen-plus；custom=自定义
   // 密钥不落盘（仅本次会话内存），模型/地址记忆在浏览器
-  const [llmPreset, setLlmPreset] = useState<string>(() => localStorage.getItem('ac_llm_preset') || 'system');
+  const [llmPreset, setLlmPreset] = useState<string>(() => {
+    // 迁移历史值：'mimo' 预设已被仓库条目取代；'qwen' 预设指向已删除条目
+    const stored = localStorage.getItem('ac_llm_preset') || 'system';
+    if (stored === 'mimo') return 'saved:小米 MiMo';
+    if (stored === 'qwen') return 'system';
+    return stored;
+  });
   const [llmCustom, setLlmCustom] = useState<{ model: string; base: string; key: string }>(() => {
     try {
       const raw = localStorage.getItem('ac_llm_custom');
@@ -1457,12 +1463,6 @@ const EpisodeDetail: React.FC = () => {
         // 仓库模型：只发名称，服务端解析注入（含密钥，不经过前端）
         return { llm_model_name: llmPreset.slice(6) };
       }
-      if (llmPreset === 'mimo') {
-        return { llm_model: 'mimo-v2.6-flash', llm_api_base: 'https://token-plan-cn.xiaomimimo.com/v1' };
-      }
-      if (llmPreset === 'qwen') {
-        return { llm_model: 'qwen-plus', llm_api_base: 'https://dashscope.aliyuncs.com/compatible-mode/v1' };
-      }
       if (llmPreset === 'custom') {
         return {
           ...(llmCustom.model ? { llm_model: llmCustom.model } : {}),
@@ -2209,8 +2209,6 @@ const EpisodeDetail: React.FC = () => {
               options={[
                 { value: 'system', label: '跟随系统设置' },
                 ...llmRepo.map((m) => ({ value: `saved:${m.name}`, label: `${m.name}（${m.model}）` })),
-                { value: 'mimo', label: '小米 MiMo（mimo-v2.6-flash）' },
-                { value: 'qwen', label: '通义 qwen-plus' },
                 { value: 'custom', label: '自定义…' },
               ]}
             />
@@ -2231,7 +2229,7 @@ const EpisodeDetail: React.FC = () => {
                 </Button>
               </>
             )}
-            <Tooltip title="选点用的文本 LLM，对「启动选点」和「一键切片」的自动补选点同样生效。默认跟随系统设置；MiMo/通义预设只覆盖模型与地址（密钥沿用系统）；自定义可临时填密钥（仅本次会话，不落盘）。">
+            <Tooltip title="选点用的文本 LLM，对「启动选点」和「一键切片」的自动补选点同样生效。跟随系统设置=用系统设置里的「默认使用模型」；其余选项来自系统设置的模型仓库；自定义可临时填密钥（仅本次会话，不落盘）。">
               <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
             </Tooltip>
           </Space>

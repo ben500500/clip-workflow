@@ -413,6 +413,30 @@ async def run_autoclip(
                 config.get("llm_model"),
                 [c["model"] for c in chain[1:]],
             )
+
+    # 视觉（画面理解）失败切换链：主=frame_analysis_model/vision_base，
+    # 兜底=仓库其余模型（密钥同批下发服务侧内存，不出后端边界）
+    fa_model = (config.get("frame_analysis_model") or "").strip()
+    if fa_model and repo_entries:
+        vis_chain = []
+        for e in repo_entries:
+            same = (
+                e.get("model") == fa_model
+                and (not config.get("vision_base") or e.get("api_base") == config.get("vision_base"))
+            )
+            if not same and e.get("model"):
+                vis_chain.append({
+                    "model": e["model"],
+                    "api_base": e.get("api_base") or "",
+                    "api_key": e.get("api_key") or "",
+                })
+        if vis_chain:
+            config["vision_failovers"] = vis_chain
+            logger.info(
+                "画面理解失败切换链已组装：主=%s，备用=%s",
+                fa_model,
+                [c["model"] for c in vis_chain],
+            )
     autoclip_project_id = await create_autoclip_project(
         name=f"episode_{episode_id}",
         config=config,

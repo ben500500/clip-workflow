@@ -425,6 +425,16 @@ async def _run_pipeline(project_id: str, steps: list[int],
             )
             logger.info(f"[project={project_id}] LLM 失败切换链已注入（{len(failovers)} 个备用模型）")
 
+        # 视觉（画面理解）失败切换链：同一 proj.detail 通道实时透出切换事件
+        vision_failovers = (config.get("vision_failovers") or []) if isinstance(config, dict) else []
+        if vision_failovers:
+            from app.core.vision_llm_client import VisionLLMClient
+            VisionLLMClient.set_failover_chain(
+                vision_failovers,
+                status_hook=lambda d: proj.update({"detail": d, "detail_at": time.time()}),
+            )
+            logger.info(f"[project={project_id}] 视觉失败切换链已注入（{len(vision_failovers)} 个备用模型）")
+
         api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
         if not api_key:
             raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量，无法调用阿里云百炼 DashScope")
