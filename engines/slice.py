@@ -4417,6 +4417,11 @@ def main():
         help="钩子视频路径（可选，可重复）。将钩子视频作为片头，拼接在封面首帧与本体视频之间（[封面][钩子][本体]）。传多个时每个成品切片按顺序循环取一个（round-robin，确保所有钩子都被用到）",
     )
     parser.add_argument(
+        "--outro",
+        default=None,
+        help="片尾视频路径（可选）。拼接到每个成品视频的末尾（[...][本体][片尾]），与钩子独立；归一化到输出档位后 concat",
+    )
+    parser.add_argument(
         "--hook-target",
         default=None,
         help="钩子注入的目标切片名（name）。默认自动取首个切片组，若指定则按 name 精确匹配并在其前拼接钩子视频",
@@ -4797,6 +4802,37 @@ def main():
     # cleanupOrphanDirs 的 UUID 清扫，也不会被当成成品上传。finally 里兜底 rmtree。
     combine_hook_part = None
     combine_hook_dur = 0.0
+    # 片尾视频（2026-11-23 用户需求）：任务级缓存——只归一化转码一次，所有成品
+    # 组末尾复用同一段（与钩子同规格对齐：scale+crop 到档位、同 vf 链、同 af）
+    outro_part = None
+    outro_dur = 0.0
+    outro_cache_dir = None
+    outro_path_arg = args.outro
+    if outro_path_arg and os.path.isfile(outro_path_arg):
+        outro_dur = ffprobe_duration(outro_path_arg) or 0.0
+        if outro_dur > 0:
+            outro_cache_dir = tempfile.mkdtemp(
+                prefix="outro_",
+                dir=os.path.dirname(os.path.abspath(args.output_dir)) or None,
+            )
+            outro_part = os.path.join(outro_cache_dir, "outro_part.mp4")
+            o_w = tier_w or 1280
+            o_h = tier_h or 720
+            o_fps = _fps_value(tier_fps) if tier_fps else 25.0
+            outro_vf = (
+                f"scale={o_w}:{o_h}:force_original_aspect_ratio=increase,"
+                f"crop={o_w}:{o_h},fps={o_fps:.3f},setsar=1,format=yuv420p"
+            )
+            if vf:
+                outro_vf = f"{outro_vf},{vf}"
+            slice_segment(outro_path_arg, 0.0, outro_dur, outro_part,
+                          vf=outro_vf, af=af, threads=threads, encoder=encoder,
+                          bgm=bgm_audio)
+            print(f"片尾拼接: {os.path.basename(outro_path_arg)} (时长 {outro_dur:.3f}s) [任务级缓存，所有成品复用]", file=sys.stderr)
+        else:
+            print("警告: 片尾视频时长探测失败，跳过片尾拼接", file=sys.stderr)
+    elif outro_path_arg:
+        print("警告: 片尾视频文件不存在，跳过片尾拼接", file=sys.stderr)
     chain_cache_dir = None
     # 钩子视频：--hook 可重复传入多个路径（文件夹方式，切片时按顺序循环取用）。
     # 过滤出不存在的文件，保留有效钩子列表。
@@ -4993,10 +5029,12 @@ def main():
                 print(f"PROGRESS:{min(99, int((processed + 0.6) * 100 / total))}")
                 if tail_hook_part:
                     parts.append(tail_hook_part)
-                # 含钩子段时强制走 filter_complex 重编码 concat（各段参数已归一化对齐），
+                if outro_part:
+                    parts.append(outro_part)
+                # 含钩子/片尾段时强制走 filter_complex 重编码 concat（各段参数已归一化对齐），
                 # 不做 concat demuxer 免重编码拼接，避免钩子与本体规格差异导致坏片。
                 concat_segments(parts, out_path, threads=threads, encoder=encoder,
-                                copy_if_possible=(not hook_injected))
+                                copy_if_possible=(not hook_injected and outro_part is None))
                 seg_times = [(s, e) for s, e, _ in group]
                 print(f"PROGRESS:{min(99, int((processed + 0.7) * 100 / total))}")
                 # 源字幕打码：打掉片源自带字幕（在烧录自己的新字幕之前）
@@ -5137,6 +5175,9 @@ def main():
         # 清理 combine 钩子链任务级缓存目录（正常由任务目录级联清理，这里兜底防残留）
         if chain_cache_dir and os.path.isdir(chain_cache_dir):
             shutil.rmtree(chain_cache_dir, ignore_errors=True)
+        # 清理片尾视频任务级缓存目录（同上兜底）
+        if outro_cache_dir and os.path.isdir(outro_cache_dir):
+            shutil.rmtree(outro_cache_dir, ignore_errors=True)
         # 清理竖屏转横屏临时文件
         if source_path != args.source and os.path.isfile(source_path):
             try:

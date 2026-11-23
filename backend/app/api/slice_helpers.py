@@ -1165,6 +1165,7 @@ async def _publish_to_worker(
     output_tier: Optional[str] = None,
     hook_video_key: Optional[str] = None,
     hook_video_keys: Optional[List[str]] = None,
+    outro_video_key: Optional[str] = None,
     hook_mix_mode: Optional[str] = None,
     hook_mix_output_count: Optional[int] = None,
     hook_position: Optional[str] = None,
@@ -1240,6 +1241,16 @@ async def _publish_to_worker(
         if url:
             hook_urls.append(url)
 
+    # 片尾视频（2026-11-23）：拼接到每个成品末尾，与钩子独立
+    outro_url = None
+    if outro_video_key:
+        outro_url = await get_presigned_url(
+            settings.MINIO_BUCKET_RAW,
+            outro_video_key,
+            expires_seconds=7200,
+            internal=True,
+        )
+
     # 每次任务生成独立的回调/上传鉴权 Token
     callback_token = secrets.token_hex(16)
 
@@ -1277,6 +1288,7 @@ async def _publish_to_worker(
         "cover": {"url": cover_url or ""} if cover_url else None,
         # 钩子视频列表（可选，Go Worker 下载后透传给引擎 --hook，引擎每个成品按顺序循环取一个）
         "hook": [{"url": u} for u in hook_urls] if hook_urls else None,
+        "outro": {"url": outro_url} if outro_url else None,
         # 钩子混搭模式（sequential/random/combine，可选；Worker 透传给引擎 --hook-mix-mode）
         "hook_mix_mode": hook_mix_mode,
         # 钩子混搭输出数量（可选；Worker 透传给引擎 --hook-mix-output-count）

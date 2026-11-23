@@ -369,6 +369,86 @@ async def upload_hook_folder(
     }
 
 
+
+
+@router.post("/slice/outro-upload")
+async def upload_outro_video(
+    file: UploadFile = File(...),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """上传片尾视频（mp4/avi/mov/mkv/webm），存入 raw-footage 桶 outro/ 前缀。
+
+    返回 file_key，前端作为 outro_video_key 传入切片请求；
+    引擎把片尾视频拼接到每个成品末尾（[...][本体][片尾]），与钩子独立。
+    上传后进入「已保存片尾库」，可跨剧集/项目复用。
+    """
+    import posixpath
+
+    raw_name = file.filename or ""
+    safe_name = posixpath.basename(raw_name.replace("\\", "/")).strip()
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="empty file name")
+
+    ext = os.path.splitext(safe_name)[1].lower()
+    allowed_video = {e.strip().lower() for e in settings.ALLOWED_VIDEO_EXTENSIONS.split(",")}
+    if ext not in allowed_video:
+        raise HTTPException(status_code=400, detail=f"片尾仅支持视频文件（{settings.ALLOWED_VIDEO_EXTENSIONS}）")
+
+    upload_id = str(uuid.uuid4())
+    local_path = f"/tmp/outro_upload/{upload_id}_{safe_name}"
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+    size = 0
+    with open(local_path, "wb") as out:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > settings.UPLOAD_MAX_SIZE:
+                out.close()
+                os.unlink(local_path)
+                raise HTTPException(status_code=413, detail="文件超过大小上限")
+            out.write(chunk)
+
+    if size == 0:
+        os.unlink(local_path)
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    file_key = f"outro/{upload_id}_{safe_name}"
+    ok = await upload_file_from_path(
+        settings.MINIO_BUCKET_RAW,
+        file_key,
+        local_path,
+        content_type=file.content_type or "video/mp4",
+    )
+    os.unlink(local_path)
+    if not ok:
+        raise HTTPException(status_code=500, detail="片尾视频上传存储失败")
+
+    return {"file_name": safe_name, "file_key": file_key, "file_size": size, "upload_id": upload_id}
+
+
+@router.get("/slice/outro-videos")
+async def list_outro_videos(
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+):
+    """列出已保存的片尾视频库（raw-footage 桶 outro/ 前缀），供前端下拉选择。"""
+    try:
+        objs = await list_files(settings.MINIO_BUCKET_RAW, prefix="outro/")
+        items = [
+            {"file_key": o.get("key"), "file_name": os.path.basename(o.get("key") or ""),
+             "file_size": o.get("size") or 0, "last_modified": o.get("last_modified")}
+            for o in (objs or [])
+        ]
+        items.sort(key=lambda x: x.get("last_modified") or "", reverse=True)
+        return items
+    except Exception as e:
+        logger.warning("列片尾视频库失败: %s", e)
+        return []
+
+
 @router.get("/slice/raw-preview")
 async def get_raw_preview_url(
     file_key: str = Query(..., description="raw-footage 桶内的文件 key（封面/钩子视频/角标等）"),
@@ -949,6 +1029,8 @@ async def _create_slice_task_record(
     # 否则回退到单钩子 hook_video_key。
     slice_task.hook_video_key = data.hook_video_key or None
     slice_task.hook_video_keys = data.hook_video_keys or None
+    # 片尾视频：拼接到每个成品末尾（重试时保留，同钩子语义）
+    slice_task.outro_video_key = data.outro_video_key or None
     # 钩子混搭模式（sequential/random/combine，重试时保留）
     # 双批混拼配置持久化（审计/重试参考；0072 迁移列）
     try:
@@ -1057,6 +1139,7 @@ async def _dispatch_slice_task(
             data.output_tier,
             data.hook_video_key,
             data.hook_video_keys,
+            getattr(data, "outro_video_key", None),
             data.hook_mix_mode,
             data.hook_mix_output_count,
             data.hook_position,
@@ -1108,6 +1191,7 @@ async def _dispatch_slice_task(
                 data.output_tier,
                 data.hook_video_key,
                 data.hook_video_keys,
+            getattr(data, "outro_video_key", None),
             )
         except HTTPException:
             raise
@@ -1139,6 +1223,7 @@ async def _dispatch_slice_task(
                 data.output_tier,
                 data.hook_video_key,
                 data.hook_video_keys,
+            getattr(data, "outro_video_key", None),
             )
         except Exception as e:
             logger.error("Celery 分发切片任务失败: %s", e)
@@ -1843,6 +1928,7 @@ async def retry_slice_task(
         cover_image_key=task.cover_image_key,
         hook_video_key=getattr(task, "hook_video_key", None),
         hook_video_keys=getattr(task, "hook_video_keys", None),
+        outro_video_key=getattr(task, "outro_video_key", None),
         hook_mix_mode=getattr(task, "hook_mix_mode", None),
         hook_mix_output_count=getattr(task, "hook_mix_output_count", None),
         hook_position=getattr(task, "hook_position", None),

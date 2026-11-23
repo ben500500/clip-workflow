@@ -852,6 +852,22 @@ func (w *Worker) runTask(msg *StreamMessage) {
 		task.Hooks[i].Path = hookPath
 	}
 
+	// 1.8 下载片尾视频（如有），写入本地 path 供引擎拼接到每个成品末尾（[...][本体][片尾]）
+	if task.Outro.URL != "" {
+		outroExt := ".mp4"
+		if u, err := url.Parse(task.Outro.URL); err == nil && u.Path != "" {
+			if e := filepath.Ext(u.Path); e != "" {
+				outroExt = e
+			}
+		}
+		outroPath := filepath.Join(taskDir, "outro"+outroExt)
+		if err := w.transfer.DownloadFile(taskCtx, task.Outro.URL, outroPath, task.TaskID); err != nil {
+			w.handleTaskError(taskCtx, task, msg, fmt.Errorf("下载片尾视频失败: %w", err))
+			return
+		}
+		task.Outro.Path = outroPath
+	}
+
 	// 2. 执行切片（引擎内部会解析 PROGRESS 并回调真实进度）
 	w.emitProgress(task.TaskID, "ffmpeg", 0, "开始切片")
 	outputDir := filepath.Join(taskDir, "output")

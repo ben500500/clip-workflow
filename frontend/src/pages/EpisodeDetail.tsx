@@ -7,7 +7,7 @@ import {
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
   CheckCircleOutlined, ClockCircleOutlined, InfoCircleOutlined, PlayCircleOutlined,
-  UploadOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined, StopOutlined, PictureOutlined,
+  UploadOutlined, VideoCameraOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined, StopOutlined, PictureOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
@@ -231,6 +231,15 @@ const EpisodeDetail: React.FC = () => {
   const [coverImageKey, setCoverImageKey] = useState<string | null>(null);
   const [coverImageName, setCoverImageName] = useState<string | null>(null);
   const [coverUploading, setCoverUploading] = useState(false);
+  // ── 片尾视频（2026-11-23 用户需求）：拼接到每个成品末尾，与钩子独立 ──
+  const [outroKey, setOutroKey] = useState<string | null>(() => localStorage.getItem('slice_outro_key') || null);
+  const [outroList, setOutroList] = useState<{ file_key: string; file_name: string; file_size: number }[]>([]);
+  const [outroUploading, setOutroUploading] = useState(false);
+  const setOutroKeyPersist = (k: string | null) => {
+    setOutroKey(k);
+    if (k) localStorage.setItem('slice_outro_key', k);
+    else localStorage.removeItem('slice_outro_key');
+  };
 
   const handleCoverUpload = async (file: File) => {
     setCoverUploading(true);
@@ -972,6 +981,11 @@ const EpisodeDetail: React.FC = () => {
     message.success('已删除配置');
   };
 
+  // 拉取已保存片尾视频库（失败静默）
+  useEffect(() => {
+    sliceApi.outroVideos().then((list) => setOutroList(list || [])).catch(() => undefined);
+  }, []);
+
   // 拉取模型仓库（下拉项；失败静默走快捷预设）
   useEffect(() => {
     autoclipApi.llmModels().then((list) => setLlmRepo(list || [])).catch(() => undefined);
@@ -1542,6 +1556,8 @@ const EpisodeDetail: React.FC = () => {
     cover_image_key: coverImageKey || undefined,
     // 钩子视频：作为片头/片尾拼接（[封面][钩子][本体] 或 [封面][本体][钩子]）
     hook_video_keys: args.hooksActive ? args.hookKeys : undefined,
+    // 片尾视频：拼接到每个成品末尾（与钩子独立）
+    outro_video_key: outroKey || undefined,
     hook_video_key: args.hooksActive && args.hookKeys.length === 1 ? args.hookKeys[0] : undefined,
     // 钩子混搭模式：多钩子时生效（sequential/random/combine）
     hook_mix_mode: args.hooksActive ? (hookMixMode || 'sequential') : undefined,
@@ -2603,6 +2619,46 @@ const EpisodeDetail: React.FC = () => {
               </Tag>
               </FileHoverPreview>
             )}
+          </Space>
+          {/* 视频结尾：拼接到每个成品末尾（可上传新视频或从已保存库选择） */}
+          <Space wrap align="center" size={8}>
+            <Text strong style={{ fontSize: 13 }}>视频结尾（片尾）</Text>
+            <Select
+              size="small"
+              style={{ minWidth: 200 }}
+              allowClear
+              placeholder="不拼接片尾"
+              value={outroKey ?? undefined}
+              onChange={(v) => setOutroKeyPersist((v as string) || null)}
+              options={outroList.map((o) => ({ value: o.file_key, label: o.file_name }))}
+            />
+            <Upload
+              accept="video/mp4,video/avi,video/mov,video/mkv,video/webm"
+              showUploadList={false}
+              beforeUpload={(file) => {
+                setOutroUploading(true);
+                sliceApi.outroUpload(file as File)
+                  .then((r) => {
+                    setOutroKeyPersist(r.file_key);
+                    setOutroList((prev) => [{ file_key: r.file_key, file_name: r.file_name, file_size: r.file_size }, ...prev.filter((x) => x.file_key !== r.file_key)]);
+                    message.success(`片尾视频已上传：${r.file_name}`);
+                  })
+                  .catch((err: unknown) => message.error(err instanceof Error ? err.message : '片尾上传失败'))
+                  .finally(() => setOutroUploading(false));
+                return false;
+              }}
+              disabled={outroUploading}
+            >
+              <Button size="small" icon={<VideoCameraOutlined />} loading={outroUploading}>上传片尾视频</Button>
+            </Upload>
+            {outroKey && (
+              <Tag closable onClose={() => setOutroKeyPersist(null)}>
+                片尾：{outroList.find((x) => x.file_key === outroKey)?.file_name || '已选择'}
+              </Tag>
+            )}
+            <Tooltip title="选中的小视频会拼接到每个成品视频的末尾（[...][本体][片尾]），与钩子独立；上传后进入已保存库可跨剧集复用。">
+              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+            </Tooltip>
           </Space>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 8, alignItems: 'start' }}>
             {/* ── 竖屏转横屏智能裁切开关 ── */}

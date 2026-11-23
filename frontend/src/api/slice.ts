@@ -242,6 +242,17 @@ export const sliceApi = {
   },
 
   // 更新剧集封面（按剧集独立存储，作为切片首帧叠加；传 null 清除该集封面）
+  outroUpload: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return client.post('/slice/outro-upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }) as Promise<{ file_name: string; file_key: string; file_size: number; upload_id: string }>;
+  },
+
+  outroVideos: () =>
+    client.get('/slice/outro-videos') as Promise<{ file_key: string; file_name: string; file_size: number; last_modified?: string }[]>,
+
   updateEpisodeCover: (episodeId: string, coverImageKey: string | null) =>
     client.put(`/episodes/${episodeId}`, { cover_image_key: coverImageKey }) as Promise<{
       id: string;

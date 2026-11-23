@@ -224,6 +224,8 @@ class SliceTask(Base):
     hook_mix_mode = Column(String(20), nullable=True)
     # 双批混拼配置快照（2026-11-23：高光×N + 正片×M 混拼参数 JSON，审计/重试参考）
     dual_mix_config = Column(Text, nullable=True)
+    # 片尾视频 key（2026-11-23 用户需求）：拼接到每个成品末尾，与钩子独立
+    outro_video_key = Column(String(500), nullable=True)
     # 钩子混搭输出数量：当 hook_mix_mode 为 random/combine 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）
     hook_mix_output_count = Column(Integer, nullable=True)
     # 钩子拼接位置：head（默认，[封面][钩子][本体]）/ tail（[封面][本体][钩子]）；重试时保留

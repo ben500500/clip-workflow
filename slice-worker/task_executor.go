@@ -188,6 +188,10 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		hookArgs++
 	}
 	// 钩子注入所有切片片段：每个候选片段都带 [封面][钩子][本体] 片头
+	// 片尾视频（可选）：拼接到每个成品末尾，与钩子独立
+	if task.Outro.Path != "" {
+		args = append(args, "--outro", task.Outro.Path)
+	}
 	if hookArgs > 0 {
 		args = append(args, "--hook-all")
 		// 钩子混搭模式：透传给引擎（sequential/random/combine，可选）
