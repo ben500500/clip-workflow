@@ -472,10 +472,17 @@ async def _run_pipeline(project_id: str, steps: list[int],
 
         # Step 2: 时间线定位
         duration_config = proj.get("config") or {}
+        # step2 逐块进度：detail 透出 + 进度条在 40~59% 区间随块完成推进
+        def _step2_progress(detail: str, frac: Optional[float] = None) -> None:
+            upd = {"detail": detail, "detail_at": time.time()}
+            if frac is not None:
+                upd["progress"] = max(40, min(59, int(40 + 20 * frac)))
+            proj.update(upd)
+
         timeline = await asyncio.to_thread(
             run_step2_timeline, meta_dir / "step1_outline.json", meta_dir, None, PROMPT_FILES,
             duration_config=duration_config,
-            progress_cb=lambda detail: proj.update({"detail": detail, "detail_at": time.time()}))
+            progress_cb=_step2_progress)
         _update_progress(proj, "running", 60,
                          f"时间线定位完成（{len(timeline)} 个片段），开始评分")
 

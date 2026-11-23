@@ -2,6 +2,7 @@
 Step 2: 时间线提取 - 为大纲中的每个话题定位具体时间区间
 """
 import json
+import time
 import logging
 import re
 from typing import List, Dict, Any, Optional
@@ -145,13 +146,22 @@ class TimelineExtractor:
         # 3. 遍历每个块，批量处理，并将结果存为独立的JSON文件
         chunk_items = list(outlines_by_chunk.items())
         total_chunks = len(chunk_items)
+        chunk_durations: list = []  # 每块用时（秒），用于 ETA 估算
         for pos, (chunk_index, chunk_outlines) in enumerate(chunk_items, 1):
             logger.info(f"处理块 {chunk_index}，其中包含 {len(chunk_outlines)} 个话题...")
-            # 逐块进度回调（2026-11-23：LLM 调用可能长达数分钟，块级状态透出到
-            # progress 接口的 detail 字段，让选点页能看到卡在哪一块）
+            chunk_start = time.time()
+            # 逐块进度回调（2026-11-23：LLM 调用可能长达数分钟，块级状态+ETA+完成度
+            # 透出到 progress 接口的 detail 字段，进度条在 40~59% 区间随块推进）
             if progress_cb:
                 try:
-                    progress_cb(f"时间线定位：处理块 {pos}/{total_chunks}（{len(chunk_outlines)} 个话题）")
+                    eta_part = ""
+                    if chunk_durations:
+                        eta = sum(chunk_durations) / len(chunk_durations) / 60
+                        eta_part = f"，预计 ~{eta:.0f} 分钟"
+                    progress_cb(
+                        f"时间线定位：正在处理块 {pos}/{total_chunks}（{len(chunk_outlines)} 个话题{eta_part}）",
+                        (pos - 1) / total_chunks,
+                    )
                 except Exception:
                     pass
             
@@ -239,6 +249,15 @@ class TimelineExtractor:
                                     json.dump(parsed_items, f, ensure_ascii=False, indent=2)
                                 
                                 logger.info(f"  > 块 {chunk_index} 成功解析 {len(parsed_items)} 个时间段")
+                                chunk_durations.append(time.time() - chunk_start)
+                                if progress_cb:
+                                    try:
+                                        progress_cb(
+                                            f"时间线定位：已完成块 {pos}/{total_chunks}（本块用时 {(time.time() - chunk_start) / 60:.0f} 分钟）",
+                                            pos / total_chunks,
+                                        )
+                                    except Exception:
+                                        pass
                                 break  # 成功解析，跳出重试循环
                             else:
                                 if retry_count < max_parse_retries:
@@ -261,6 +280,12 @@ class TimelineExtractor:
                     
                     if not parsed_items:
                          logger.warning(f"  > 块 {chunk_index} 最终解析失败，跳过")
+                         chunk_durations.append(time.time() - chunk_start)
+                         if progress_cb:
+                             try:
+                                 progress_cb(f"时间线定位：块 {pos}/{total_chunks} 解析失败已跳过", pos / total_chunks)
+                             except Exception:
+                                 pass
                          continue
 
             except LLMCallError:
