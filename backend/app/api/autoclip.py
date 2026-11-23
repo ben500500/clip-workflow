@@ -353,38 +353,36 @@ async def run_autoclip(
     model_name = (data.config or {}).get("llm_model_name")
     repo_entries = []
     selected_repo_name = None
+    # 仓库清单始终加载（2026-11-23 修复）：即使按裸 llm_model 字段选择，
+    # 失败切换链也需要仓库其余模型做兜底（此前仅在按名选择时加载，链恒为空）
+    try:
+        llm_cfg_row = await db.execute(
+            select(SystemConfig).where(SystemConfig.key == "llm_config")
+        )
+        llm_cfg = llm_cfg_row.scalar_one_or_none()
+        entries = (
+            llm_cfg.value.get("models") if llm_cfg and isinstance(llm_cfg.value, dict) else None
+        ) or []
+        repo_entries = [e for e in entries if isinstance(e, dict)]
+    except Exception as e:  # noqa: BLE001
+        logger.warning("读取模型仓库失败: %s", e)
     if model_name:
-        try:
-            llm_cfg_row = await db.execute(
-                select(SystemConfig).where(SystemConfig.key == "llm_config")
-            )
-            llm_cfg = llm_cfg_row.scalar_one_or_none()
-            entries = (
-                llm_cfg.value.get("models") if llm_cfg and isinstance(llm_cfg.value, dict) else None
-            ) or []
-            repo_entries = [e for e in entries if isinstance(e, dict)]
-            entry = next(
-                (e for e in entries if isinstance(e, dict) and e.get("name") == model_name),
-                None,
-            )
-            if entry:
-                selected_repo_name = model_name
-                for cfg_key, entry_key in (
-                    ("llm_model", "model"),
-                    ("llm_api_base", "api_base"),
-                    ("llm_api_key", "api_key"),
-                ):
-                    val = entry.get(entry_key)
-                    if val:
-                        config[cfg_key] = val
-                config.pop("llm_model_name", None)
-                logger.info("选点使用仓库模型 %s（%s @ %s）", model_name, entry.get("model"), entry.get("api_base"))
-            else:
-                config.pop("llm_model_name", None)
-                logger.warning("仓库中不存在模型 %s，降级为跟随系统默认", model_name)
-        except Exception as e:  # noqa: BLE001 - 仓库解析失败不阻塞选点
-            logger.warning("模型仓库解析失败: %s", e)
+        entry = next((e for e in repo_entries if e.get("name") == model_name), None)
+        if entry:
+            selected_repo_name = model_name
+            for cfg_key, entry_key in (
+                ("llm_model", "model"),
+                ("llm_api_base", "api_base"),
+                ("llm_api_key", "api_key"),
+            ):
+                val = entry.get(entry_key)
+                if val:
+                    config[cfg_key] = val
             config.pop("llm_model_name", None)
+            logger.info("选点使用仓库模型 %s（%s @ %s）", model_name, entry.get("model"), entry.get("api_base"))
+        else:
+            config.pop("llm_model_name", None)
+            logger.warning("仓库中不存在模型 %s，降级为跟随系统默认", model_name)
 
     # 失败切换链（2026-11-23 用户需求：当前模型长时间无响应自动切换下一个）：
     # 主模型在前、仓库其余模型依次兜底；密钥一并下发服务侧内存（不出后端边界）。

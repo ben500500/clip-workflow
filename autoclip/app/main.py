@@ -393,16 +393,14 @@ async def _run_pipeline(project_id: str, steps: list[int],
     # 把下发的网关地址/密钥/视觉模型临时写入环境变量（本次运行期间有效），
     # 供 llm_providers / vision_llm_client 等读环境变量的模块使用；结束时恢复，避免影响后续运行。
     _env_snapshot: dict = {}
+    # 修复（2026-11-23）：文本 LLM 网关优先；视觉网关仅在文本未下发时兜底。
+    # 此前视觉网关无条件覆写 LLM_API_BASE，导致「qwen 模型+MiMo 网关」混搭 401
+    # （视觉客户端本就经显式 vision_base/vision_key 参数构造，不依赖这两个 env）。
     _overrides = {
-        "LLM_API_BASE": llm_api_base,
-        "LLM_API_KEY": llm_api_key,
+        "LLM_API_BASE": llm_api_base or frame_vision_base,
+        "LLM_API_KEY": llm_api_key or frame_vision_key,
         "FRAME_ANALYSIS_MODEL": frame_analysis_model,
     }
-    # 画面理解在线视觉网关地址/密钥（未单独下发时复用 llm_api_base / llm_api_key）
-    if frame_vision_base:
-        _overrides["LLM_API_BASE"] = frame_vision_base
-    if frame_vision_key:
-        _overrides["LLM_API_KEY"] = frame_vision_key
 
     try:
         for _k, _v in _overrides.items():
