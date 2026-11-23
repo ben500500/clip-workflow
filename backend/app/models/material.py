@@ -117,6 +117,10 @@ class AutoClipRun(Base):
     message = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
     config = Column(JSON, nullable=True)
+    # 选点复用（2026-11-23）：参数指纹 + 源片指针——同剧集同源片同参数的
+    # 已完成选点可直接复用候选，跳过 15-25 分钟的选点流程
+    config_fp = Column(String(64), nullable=True, index=True)
+    source_key = Column(String(500), nullable=True)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
