@@ -523,7 +523,9 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
                     state="PROGRESS",
                     meta={"progress": pct, "message": f"Pipeline step {i + 1}/{max_polls}"},
                 )
-            import time
+            # 修复（2026-11-23）：此处局部 import time 会把整个 autoclip_task 的
+            # time 变成局部变量，导致轮询循环前注释块的 time.time() 触发
+            # UnboundLocalError（选点启动即失败）。模块级已有 import time。
             time.sleep(5)
 
         clips = run_async(get_clips(
