@@ -171,6 +171,21 @@ const Settings: React.FC = () => {
     }
   };
 
+  const [llmTesting, setLlmTesting] = useState(false);
+  // 连通性测试：网关字段（或指定仓库名按已存密钥）
+  const handleLlmTest = async (payload: { model?: string; api_base?: string; api_key?: string; name?: string }) => {
+    setLlmTesting(true);
+    try {
+      const r = await configApi.llmTest(payload);
+      if (r.ok) message.success(`连通正常（${r.latency_ms}ms，回复：${(r.reply || '').slice(0, 20)}）`);
+      else message.error(`连通失败（${r.latency_ms}ms）：${r.error || '未知错误'}`);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '测试请求失败');
+    } finally {
+      setLlmTesting(false);
+    }
+  };
+
   // 保存 AI 选点 LLM 网关配置（合并保留未知字段；密钥留空=保持原值不变）
   const handleLlmSave = async () => {
     setLlmSaving(true);
@@ -388,6 +403,7 @@ const Settings: React.FC = () => {
               onChange={(e) => setLlmKey(e.target.value)}
             />
             <Button type="primary" loading={llmSaving} onClick={handleLlmSave}>保存 LLM 配置</Button>
+            <Button loading={llmTesting} onClick={() => handleLlmTest({ model: llmModel, api_base: llmBase, api_key: llmKey || undefined })}>测试连通</Button>
           </Space>
           <div style={{ borderTop: '1px dashed #e8e8e8', paddingTop: 12, marginTop: 4 }}>
             <Text strong style={{ fontSize: 13 }}>模型仓库（保存多个命名模型，供选点界面下拉选择）</Text>
@@ -411,9 +427,12 @@ const Settings: React.FC = () => {
                   { title: 'API 密钥', dataIndex: 'api_key', width: 200,
                     render: (v: string, _r, idx: number) => (
                       <Input.Password size="small" placeholder={v ? '已保存（留空保持不变）' : '可选'} value={v} onChange={(e) => setLlmRepoEntries((prev) => prev.map((x, i) => (i === idx ? { ...x, api_key: e.target.value } : x)))} />) },
-                  { title: '', width: 60,
-                    render: (_v: unknown, _r: unknown, idx: number) => (
-                      <Button size="small" danger type="text" onClick={() => setLlmRepoEntries((prev) => prev.filter((_, i) => i !== idx))}>删除</Button>) },
+                  { title: '测试', width: 90,
+                    render: (_v: unknown, r: { name: string; model: string; api_base?: string }, idx: number) => (
+                      <Button size="small" loading={llmTesting}
+                        onClick={() => handleLlmTest({ name: r.name, model: r.model, api_base: r.api_base || undefined, api_key: (llmRepoEntries[idx] && llmRepoEntries[idx].api_key && !llmRepoEntries[idx].api_key.startsWith('●')) ? llmRepoEntries[idx].api_key : undefined })}>
+                        测试
+                      </Button>) },
                 ]}
               />
             )}

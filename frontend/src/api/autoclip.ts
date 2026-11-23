@@ -2,6 +2,14 @@ import client from './client';
 import type { AutoClipConfig, AutoClipRunRecord, ClipCandidate } from '../types';
 
 export const autoclipApi = {
+  saveLlmModel: (payload: { name: string; model: string; api_base?: string; api_key?: string }) =>
+    client.post('/autoclip/llm-models', payload) as Promise<{ ok: boolean; count: number }>,
+
+  llmTest: (payload: { model?: string; api_base?: string; api_key?: string; name?: string }) =>
+    client.post('/autoclip/llm-test', payload) as Promise<{
+      ok: boolean; latency_ms: number; reply?: string; error?: string;
+    }>,
+
   llmModels: () =>
     client.get('/autoclip/llm-models') as Promise<{ name: string; model: string; api_base?: string }[]>,
 

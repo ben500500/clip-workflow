@@ -530,6 +530,44 @@ const EpisodeDetail: React.FC = () => {
     } catch { /* 坏数据走默认 */ }
     return { model: '', base: '', key: '' };
   });
+  // 自定义模型：连通性测试 + 保存进仓库（用户需求 2026-11-23）
+  const [llmTesting, setLlmTesting] = useState(false);
+  const [llmSavingRepo, setLlmSavingRepo] = useState(false);
+  const handleLlmTest = async () => {
+    if (!llmCustom.model.trim()) { message.warning('请先填写模型名'); return; }
+    setLlmTesting(true);
+    try {
+      const r = await autoclipApi.llmTest({
+        model: llmCustom.model, api_base: llmCustom.base, api_key: llmCustom.key || undefined,
+      });
+      if (r.ok) message.success(`连通正常（${r.latency_ms}ms，回复：${(r.reply || '').slice(0, 20)}）`);
+      else message.error(`连通失败（${r.latency_ms}ms）：${r.error || '未知错误'}`);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '测试请求失败');
+    } finally {
+      setLlmTesting(false);
+    }
+  };
+  const handleLlmSaveRepo = async () => {
+    if (!llmCustom.model.trim()) { message.warning('请先填写模型名'); return; }
+    setLlmSavingRepo(true);
+    try {
+      const name = llmCustom.model; // 仓库名称默认=模型名，同名覆盖
+      await autoclipApi.saveLlmModel({
+        name, model: llmCustom.model, api_base: llmCustom.base, api_key: llmCustom.key || undefined,
+      });
+      setLlmPresetPersist(`saved:${name}`);
+      refreshLlmRepo();
+      message.success(`已保存到模型仓库：${name}`);
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '保存失败');
+    } finally {
+      setLlmSavingRepo(false);
+    }
+  };
+  const refreshLlmRepo = () => {
+    autoclipApi.llmModels().then((list) => setLlmRepo(list || [])).catch(() => undefined);
+  };
   const setLlmPresetPersist = (v: string) => {
     setLlmPreset(v);
     localStorage.setItem('ac_llm_preset', v);
@@ -2177,6 +2215,13 @@ const EpisodeDetail: React.FC = () => {
                 <Input size="small" placeholder="模型名（必填）" style={{ width: 150 }} value={llmCustom.model} onChange={(e) => setLlmCustomPersist({ model: e.target.value })} />
                 <Input size="small" placeholder="API 地址（OpenAI 兼容）" style={{ width: 220 }} value={llmCustom.base} onChange={(e) => setLlmCustomPersist({ base: e.target.value })} />
                 <Input.Password size="small" placeholder="API 密钥（留空沿用系统，仅本次有效）" style={{ width: 200 }} value={llmCustom.key} onChange={(e) => setLlmCustomPersist({ key: e.target.value })} />
+                <Button size="small" loading={llmTesting} onClick={handleLlmTest}>测试连通</Button>
+                <Button size="small" icon={<PlusOutlined />} loading={llmSavingRepo}
+                  disabled={!llmCustom.model.trim()}
+                  onClick={handleLlmSaveRepo}
+                  title="把该自定义模型保存进系统模型仓库（密钥由服务端保管），以后可在下拉直接选择">
+                  保存到仓库
+                </Button>
               </>
             )}
             <Tooltip title="选点用的文本 LLM，对「启动选点」和「一键切片」的自动补选点同样生效。默认跟随系统设置；MiMo/通义预设只覆盖模型与地址（密钥沿用系统）；自定义可临时填密钥（仅本次会话，不落盘）。">

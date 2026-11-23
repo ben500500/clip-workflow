@@ -2,6 +2,9 @@ import client from './client';
 import type { PlatformProfile, SystemConfig } from '../types';
 
 export const configApi = {
+  llmTest: (payload: { model?: string; api_base?: string; api_key?: string; name?: string }) =>
+    client.post('/autoclip/llm-test', payload) as Promise<{ ok: boolean; latency_ms: number; reply?: string; error?: string }>,
+
   getAll: () => client.get('/config') as Promise<SystemConfig[]>,
 
   update: (key: string, value: unknown) =>

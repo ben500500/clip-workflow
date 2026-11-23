@@ -6,6 +6,9 @@ from typing import Annotated, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
+from app.database import async_session_factory
+from app.config import settings
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.slice_helpers import _refresh_episode_status
@@ -117,6 +120,70 @@ async def list_llm_models(
         for e in entries
         if isinstance(e, dict) and e.get("name") and e.get("model")
     ]
+
+
+@router.post("/autoclip/llm-models")
+async def save_llm_model(
+    payload: dict,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """新增/更新一个命名模型进仓库（llm_config.models）。同名=覆盖。"""
+    name = (payload.get("name") or "").strip()
+    model = (payload.get("model") or "").strip()
+    if not name or not model:
+        raise HTTPException(status_code=400, detail="名称与模型名必填")
+    result = await db.execute(select(SystemConfig).where(SystemConfig.key == "llm_config"))
+    cfg = result.scalar_one_or_none()
+    base = dict(cfg.value) if cfg and isinstance(cfg.value, dict) else {}
+    models = [m for m in (base.get("models") or []) if isinstance(m, dict)]
+    old_key = next((m.get("api_key") for m in models if m.get("name") == name), "")
+    entry = {
+        "name": name,
+        "model": model,
+        "api_base": (payload.get("api_base") or "").strip(),
+        "api_key": (payload.get("api_key") or "").strip() or (old_key or ""),
+    }
+    models = [m for m in models if m.get("name") != name]
+    models.append(entry)
+    base["models"] = models
+    if cfg:
+        cfg.value = base
+    else:
+        db.add(SystemConfig(key="llm_config", value=base,
+                            description="在线 LLM 网关配置（含模型仓库 models）"))
+    await db.commit()
+    return {"ok": True, "count": len(models)}
+
+
+@router.post("/autoclip/llm-test")
+async def llm_test(payload: dict):
+    """LLM 连通性测试代理：转发 AutoClip 服务发起一次最小补全（45s 上限）。
+
+    密钥语义与选点一致：显式传入优先；不传则解析仓库同名条目密钥；
+    仍无则沿用服务 env（LLM_API_KEY / DASHSCOPE_API_KEY）。
+    """
+    name = (payload.get("name") or "").strip()
+    api_key = (payload.get("api_key") or "").strip()
+    if name and not api_key:
+        try:
+            row = (await db.execute(
+                select(SystemConfig).where(SystemConfig.key == "llm_config")
+            )).scalar_one_or_none()
+            models = (row.value.get("models") if row and isinstance(row.value, dict) else None) or []
+            m = next((x for x in models if x.get("name") == name), None)
+            if m:
+                api_key = m.get("api_key") or ""
+                payload.setdefault("model", m.get("model") or "")
+                payload.setdefault("api_base", m.get("api_base") or "")
+        except Exception:
+            pass
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            resp = await client.post(f"{settings.AUTOCLIP_URL}/llm-test", json=payload)
+            return resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"AutoClip 服务不可达: {e}")
 
 
 class AutoClipRunRequest(BaseModel):
@@ -280,6 +347,8 @@ async def run_autoclip(
     # llm_model_name（仓库条目名），密钥等敏感字段由服务端从 llm_config.models
     # 解析注入，不下发前端。找不到名称时安全降级为跟随系统默认。
     model_name = (data.config or {}).get("llm_model_name")
+    repo_entries = []
+    selected_repo_name = None
     if model_name:
         try:
             llm_cfg_row = await db.execute(
@@ -289,11 +358,13 @@ async def run_autoclip(
             entries = (
                 llm_cfg.value.get("models") if llm_cfg and isinstance(llm_cfg.value, dict) else None
             ) or []
+            repo_entries = [e for e in entries if isinstance(e, dict)]
             entry = next(
                 (e for e in entries if isinstance(e, dict) and e.get("name") == model_name),
                 None,
             )
             if entry:
+                selected_repo_name = model_name
                 for cfg_key, entry_key in (
                     ("llm_model", "model"),
                     ("llm_api_base", "api_base"),
@@ -310,6 +381,34 @@ async def run_autoclip(
         except Exception as e:  # noqa: BLE001 - 仓库解析失败不阻塞选点
             logger.warning("模型仓库解析失败: %s", e)
             config.pop("llm_model_name", None)
+
+    # 失败切换链（2026-11-23 用户需求：当前模型长时间无响应自动切换下一个）：
+    # 主模型在前、仓库其余模型依次兜底；密钥一并下发服务侧内存（不出后端边界）。
+    # 无仓库条目时不组链=行为与旧版一致。
+    if config.get("llm_model") and repo_entries:
+        chain = [{
+            "model": config.get("llm_model"),
+            "api_base": config.get("llm_api_base") or "",
+            "api_key": config.get("llm_api_key") or "",
+            "provider": config.get("llm_provider") or "",
+        }]
+        for e in repo_entries:
+            if selected_repo_name and e.get("name") == selected_repo_name:
+                continue
+            if e.get("model"):
+                chain.append({
+                    "model": e["model"],
+                    "api_base": e.get("api_base") or "",
+                    "api_key": e.get("api_key") or "",
+                    "provider": config.get("llm_provider") or "",
+                })
+        if len(chain) > 1:
+            config["llm_failovers"] = chain[1:]
+            logger.info(
+                "选点失败切换链已组装：主=%s，备用=%s",
+                config.get("llm_model"),
+                [c["model"] for c in chain[1:]],
+            )
     autoclip_project_id = await create_autoclip_project(
         name=f"episode_{episode_id}",
         config=config,

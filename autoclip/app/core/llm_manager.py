@@ -28,6 +28,11 @@ class LLMManager:
         self.current_provider: Optional[LLMProvider] = None
         self.settings = self._load_settings()
         self._initialize_provider()
+        # 失败切换链（2026-11-23 用户需求）：主模型无响应/连不通时按序切换；
+        # status_hook(detail) 把切换事件实时透出到选点进度详情
+        self._failover_chain: list = []
+        self._failover_pos = 0
+        self._status_hook = None
 
     def _get_default_settings_file(self) -> Path:
         """获取默认设置文件路径"""
@@ -192,6 +197,11 @@ class LLMManager:
             except ValueError:  # API Key 或参数错误，不重试
                 raise
             except Exception as e:
+                err_snip = str(e)[:80]
+                # 失败切换（2026-11-23）：链上有下一模型则切换后继续本重试循环，
+                # 切换事件经 status_hook 实时透出到选点进度详情
+                if self._apply_failover(err_snip):
+                    continue
                 if attempt == max_retries - 1:
                     logger.error(f"LLM调用在{max_retries}次重试后彻底失败。")
                     raise
@@ -208,6 +218,49 @@ class LLMManager:
         except Exception as e:
             logger.error(f"测试{provider_type.value}连接失败: {e}")
             return False
+
+    def set_failover_chain(self, chain: List[Dict], status_hook=None):
+        """设置失败切换链与状态回调（每次 pipeline 运行前由 main 注入）。
+
+        chain 条目：{"model", "api_base", "api_key", "provider"}；
+        call_with_retry 失败时按序切换到下一模型；status_hook(detail) 实时
+        把「模型无响应→已切换」事件透出到选点进度详情。
+        """
+        self._failover_chain = list(chain or [])
+        self._failover_pos = 0
+        self._status_hook = status_hook
+
+    def _apply_failover(self, err_snip: str) -> bool:
+        """切换到链中下一个模型；返回是否切换成功。
+
+        api_base 通过 LLM_API_BASE 环境变量注入（DashScopeProvider 构造时读取）；
+        密钥缺省沿用服务 env（_get_api_key_for_provider 回退链）。
+        """
+        if self._failover_pos >= len(self._failover_chain):
+            return False
+        entry = self._failover_chain[self._failover_pos]
+        self._failover_pos += 1
+        prev_model = self.settings.get("model_name", "当前模型")
+        try:
+            provider_type = ProviderType(entry.get("provider") or self.settings.get("llm_provider", "dashscope"))
+            api_key = entry.get("api_key") or self._get_api_key_for_provider(provider_type)
+            if entry.get("api_base"):
+                os.environ["LLM_API_BASE"] = entry["api_base"].rstrip("/")
+            self.current_provider = LLMProviderFactory.create_provider(
+                provider_type, api_key, entry.get("model")
+            )
+            self.settings["model_name"] = entry.get("model")
+        except Exception as e:
+            logger.error(f"切换到备用模型失败: {e}")
+            return False
+        detail = f"模型 {prev_model} 无响应（{err_snip}），已切换到 {entry.get('model')}"
+        logger.warning(detail)
+        if self._status_hook:
+            try:
+                self._status_hook(detail)
+            except Exception:
+                pass
+        return True
 
     def set_runtime_model(self, model_name: Optional[str] = None, provider: Optional[str] = None):
         """运行时覆盖模型（不持久化到 settings.json），用于单次 pipeline 运行。

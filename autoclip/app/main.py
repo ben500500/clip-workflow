@@ -415,6 +415,16 @@ async def _run_pipeline(project_id: str, steps: list[int],
         else:
             logger.info(f"[project={project_id}] 本次选点使用默认模型: {_current_llm_model()}")
 
+        # 失败切换链（2026-11-23 用户需求：模型长时间无响应自动切换下一个，
+        # 切换事件经 status_hook 写入 proj.detail → progress 接口 → 选点页实时可见）
+        failovers = (config.get("llm_failovers") or []) if isinstance(config, dict) else []
+        if failovers:
+            get_llm_manager().set_failover_chain(
+                failovers,
+                status_hook=lambda d: proj.update({"detail": d, "detail_at": time.time()}),
+            )
+            logger.info(f"[project={project_id}] LLM 失败切换链已注入（{len(failovers)} 个备用模型）")
+
         api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
         if not api_key:
             raise RuntimeError("未配置 DASHSCOPE_API_KEY 环境变量，无法调用阿里云百炼 DashScope")
@@ -1017,6 +1027,37 @@ async def progress(project_id: str):
         "detail": proj.get("detail", ""),
         "detail_at": proj.get("detail_at"),
     }
+
+
+@app.post("/api/v1/llm-test")
+async def llm_test(payload: dict):
+    """LLM 连通性测试：按给定 model/api_base/api_key 发起一次最小补全。
+
+    密钥缺省时沿用服务 env（LLM_API_KEY / DASHSCOPE_API_KEY），
+    与正式选点的回退语义一致。测试调用上限 45 秒，超时即判不连通。
+    """
+    api_key = payload.get("api_key") or os.getenv("LLM_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+    base = payload.get("api_base") or os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    model = payload.get("model") or "qwen-plus"
+    start = time.time()
+
+    def _call():
+        from app.core.llm_providers import DashScopeProvider
+        prov = DashScopeProvider(api_key=api_key, model_name=model,
+                                 base_url=base.rstrip("/"), mode="compatible")
+        resp = prov.call("连通性测试，请只回复两个字母：OK")
+        return resp.content or ""
+
+    try:
+        reply = await asyncio.wait_for(asyncio.to_thread(_call), timeout=45)
+        return {"ok": True, "latency_ms": int((time.time() - start) * 1000),
+                "reply": reply.strip()[:50]}
+    except asyncio.TimeoutError:
+        return {"ok": False, "latency_ms": int((time.time() - start) * 1000),
+                "error": "45 秒无响应（超时）"}
+    except Exception as e:
+        return {"ok": False, "latency_ms": int((time.time() - start) * 1000),
+                "error": str(e)[:200]}
 
 
 @app.get("/api/v1/clips")
