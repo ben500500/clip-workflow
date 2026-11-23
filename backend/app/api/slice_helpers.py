@@ -212,6 +212,9 @@ class SliceRunRequest(BaseModel):
     dual_mix_main_count: int = 1
     dual_mix_highlight_position: str = "head"
     dual_mix_output_count: Optional[int] = None
+    # 双配一键切片：强制重跑一轮双配选点（有旧候选也重选，双批整体替换），
+    # 仅 auto_autoclip_if_empty=true 时生效
+    autoclip_force: bool = False
     # 输出总时长上限（秒，可选）。开启混剪时，累计各高光段时长不超过该上限；
     # 最后一段塞入会超额时丢弃该段（不裁剪首尾）。默认 None = 由入选片段自然决定。
     highlight_mix_max_duration: Optional[float] = None

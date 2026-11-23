@@ -1655,6 +1655,15 @@ const EpisodeDetail: React.FC = () => {
       : undefined,
   });
 
+  // 一键切片模式弹窗（2026-11-23 用户简化：双配+双批混拼收进一键切片，
+  // 只需配两套时长范围，其余全默认：高光×2+正片×1、高光在前、条数自动、钩子照旧）
+  const [oneClickModalOpen, setOneClickModalOpen] = useState(false);
+  const [ocMode, setOcMode] = useState<'normal' | 'dual'>('normal');
+  const [ocHlMin, setOcHlMin] = useState<number>(() => Number(localStorage.getItem('oc_hl_min')) || 5);
+  const [ocHlMax, setOcHlMax] = useState<number>(() => Number(localStorage.getItem('oc_hl_max')) || 10);
+  const [ocMainMin, setOcMainMin] = useState<number>(() => Number(localStorage.getItem('oc_main_min')) || 120);
+  const [ocMainMax, setOcMainMax] = useState<number>(() => Number(localStorage.getItem('oc_main_max')) || 240);
+
   const oneClickSlice = async () => {
     setOneClickSlicing(true);
     setOneClickProgress({ status: 'running', progress: 5, message: '正在提交一键切片任务…' });
@@ -1668,13 +1677,33 @@ const EpisodeDetail: React.FC = () => {
       // auto_accept_all=true：后端自动把所有候选片段（含 pending）纳入切片，
       // 无需逐个审核/预览，直接产出成品视频；无候选片段时由后端自动补一轮 AI 选点
       // （auto_autoclip_if_empty）——提交即走，关窗口安全
-      const res = await sliceApi.run(episodeId, dedupeEnabled ? 'dedupe' : 'fast', buildSlicePayload({
+      const payload: Record<string, unknown> = buildSlicePayload({
         hookKeys,
         hooksActive,
         // 一键切片：免审核自动纳入全部候选 + 自动补选点（提交即走、关窗口安全）
         autoAcceptAll: true,
         dedupeOn: dedupeEnabled,
-      }));
+      });
+      if (ocMode === 'dual') {
+        // 双配混拼模式：强制重跑一轮双配选点（正片批+高光批一次出），
+        // 每条成品 = 高光×2 + 正片×1（高光在前），条数按正片自动；钩子照现有配置
+        payload.autoclip_force = true;
+        payload.autoclip_config = {
+          ...(payload.autoclip_config || {}),
+          dual_profile: true,
+          min_duration: ocMainMin,
+          max_duration: ocMainMax,
+          highlight_min_duration: ocHlMin,
+          highlight_max_duration: ocHlMax,
+        };
+        payload.dual_mix_enabled = true;
+        payload.dual_mix_highlight_count = 2;
+        payload.dual_mix_main_count = 1;
+        payload.dual_mix_highlight_position = 'head';
+        payload.dual_mix_output_count = undefined;
+        payload.highlight_mix_enabled = false;
+      }
+      const res = await sliceApi.run(episodeId, dedupeEnabled ? 'dedupe' : 'fast', payload);
       message.success(res.message || '一键切片任务已启动，可直接前往「成品预览」查看结果');
       message.info('切片完成后请到「成品预览」查看并下载结果');
       fetchEpisode();
@@ -2205,17 +2234,6 @@ const EpisodeDetail: React.FC = () => {
               )}
             </Space>
             <Space size={4} align="center">
-              <Switch
-                size="small"
-                checked={dualProfile}
-                onChange={(v) => { setDualProfile(v); if (v) setHighlightMode(false); }}
-              />
-              <Tooltip title="双配模式：单次选点同时产出两批候选——正片段（按最短/最长时长区间）+ 高光爆点（≤高光最大时长）。供「双批混拼」一次取用，无需跑两次选点。">
-                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-              </Tooltip>
-              <Text strong style={{ fontSize: 12 }}>双配模式</Text>
-            </Space>
-            <Space size={4} align="center">
               <Switch size="small" checked={highlightMode} onChange={setHighlightMode} />
               <Text strong style={{ fontSize: 12 }}>高光识别</Text>
               <Tooltip title="开启后，AI 选点改为找出多段 ≤ 单段最大时长的短高光片段（默认 10s），适合高光混剪等需要多段短爆点的场景。">
@@ -2453,36 +2471,6 @@ const EpisodeDetail: React.FC = () => {
       extra: (highlightMixEnabled || remotionMixEnabled) ? <Tag color="purple">已启用</Tag> : undefined,
       node: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          {/* 双批混拼：高光批×N + 正片批×M 组成每条成品（与高光混剪互斥） */}
-          <Space size={4} align="center" wrap>
-            <Switch
-              size="small"
-              checked={dualMixEnabled}
-              onChange={(v) => { setDualMixEnabled(v); if (v) setHighlightMixEnabled(false); }}
-            />
-            <Text strong style={{ fontSize: 12 }}>双批混拼</Text>
-            <Tooltip title="需要「双配模式」选点产出的两批候选：每条成品 = 高光×N + 正片×M（高光在前/在后可配），多条成品轮转取段不重复。与高光混剪互斥。">
-              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-            </Tooltip>
-          </Space>
-          {dualMixEnabled && (
-            <Space size={4} align="center" wrap>
-              <Text type="secondary" style={{ fontSize: 12 }}>高光段数</Text>
-              <InputNumber size="small" min={0} max={6} value={dualMixHighlightCount}
-                onChange={(v) => setDualMixHighlightCount(v ?? 2)} style={{ width: 64 }} />
-              <Text type="secondary" style={{ fontSize: 12 }}>正片段数</Text>
-              <InputNumber size="small" min={1} max={4} value={dualMixMainCount}
-                onChange={(v) => setDualMixMainCount(v ?? 1)} style={{ width: 64 }} />
-              <Text type="secondary" style={{ fontSize: 12 }}>高光位置</Text>
-              <Select size="small" style={{ width: 96 }} value={dualMixHighlightPosition}
-                onChange={(v) => setDualMixHighlightPosition(v as 'head' | 'tail')}
-                options={[{ value: 'head', label: '在前（钩住）' }, { value: 'tail', label: '在后（回味）' }]} />
-              <Text type="secondary" style={{ fontSize: 12 }}>成品条数</Text>
-              <InputNumber size="small" min={1} max={30} value={dualMixOutputCount ?? undefined}
-                onChange={(v) => setDualMixOutputCount(v ?? null)}
-                placeholder="自动" style={{ width: 72 }} />
-            </Space>
-          )}
           {/* Remotion 逐帧渲染提示：开启增强时提醒用户渲染进度特征，避免误判卡死 */}
           {remotionMixEnabled && (
             <Alert
@@ -3857,24 +3845,16 @@ const EpisodeDetail: React.FC = () => {
           <Button type="primary" ghost icon={<ScissorOutlined />} onClick={() => navigate(`/episodes/${episodeId}/slice`)}>切片任务</Button>
           <Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => navigate(`/episodes/${episodeId}/preview`)}>成品预览</Button>
           {/* 一键切片：免审核直接出片，放在工作台入口处，方便快速出片 */}
-          <Popconfirm
-            title="一键切片"
-            description="免审核直接出片：自动把所有候选片段（含待审核）直接切割成成品视频，无需逐个审核/预览。"
-            onConfirm={() => { void oneClickSlice(); }}
-            okText="开始切片"
-            cancelText="取消"
+          <Button
+            type="primary"
+            danger
+            icon={<ScissorOutlined />}
+            loading={oneClickSlicing}
             disabled={oneClickSlicing}
+            onClick={() => setOneClickModalOpen(true)}
           >
-            <Button
-              type="primary"
-              danger
-              icon={<ScissorOutlined />}
-              loading={oneClickSlicing}
-              disabled={oneClickSlicing}
-            >
-              一键切片
-            </Button>
-          </Popconfirm>
+            一键切片
+          </Button>
           <Button
             icon={<SettingOutlined />}
             disabled={oneClickSlicing}
@@ -4318,6 +4298,69 @@ const EpisodeDetail: React.FC = () => {
           />
         </Col>
       </Row>
+      {/* 一键切片模式选择（2026-11-23 简化：双配+双批混拼收进一键切片） */}
+      <Modal
+        title="一键切片"
+        open={oneClickModalOpen}
+        onCancel={() => setOneClickModalOpen(false)}
+        confirmLoading={oneClickSlicing}
+        onOk={() => {
+          setOneClickModalOpen(false);
+          localStorage.setItem('oc_hl_min', String(ocHlMin));
+          localStorage.setItem('oc_hl_max', String(ocHlMax));
+          localStorage.setItem('oc_main_min', String(ocMainMin));
+          localStorage.setItem('oc_main_max', String(ocMainMax));
+          void oneClickSlice();
+        }}
+        okText={ocMode === 'dual' ? '开始双配混拼' : '开始切片'}
+        cancelText="取消"
+      >
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Space size={8} align="center">
+            <Text strong>模式</Text>
+            <Select
+              style={{ width: 220 }}
+              value={ocMode}
+              onChange={(v) => setOcMode(v as 'normal' | 'dual')}
+              options={[
+                { value: 'normal', label: '常规（按当前候选/参数直出）' },
+                { value: 'dual', label: '双配混拼（高光+正片两条流水）' },
+              ]}
+            />
+          </Space>
+          {ocMode === 'dual' ? (
+            <>
+              <Alert
+                type="info"
+                showIcon
+                message="双配混拼：自动重跑一轮双配选点（正片批 + 高光批一次产出），每条成品 = 高光×2 + 正片×1（高光在前，先钩住再展开），条数按正片自动。钩子按现有配置拼接。"
+              />
+              <Space size={6} align="center" wrap>
+                <Text strong style={{ fontSize: 12 }}>高光时长</Text>
+                <InputNumber size="small" min={1} max={60} value={ocHlMin} onChange={(v) => setOcHlMin(v ?? 5)} style={{ width: 70 }} />
+                <Text type="secondary">~</Text>
+                <InputNumber size="small" min={2} max={60} value={ocHlMax} onChange={(v) => setOcHlMax(v ?? 10)} style={{ width: 70 }} />
+                <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
+              </Space>
+              <Space size={6} align="center" wrap>
+                <Text strong style={{ fontSize: 12 }}>正片时长</Text>
+                <InputNumber size="small" min={30} max={600} value={ocMainMin} onChange={(v) => setOcMainMin(v ?? 120)} style={{ width: 80 }} />
+                <Text type="secondary">~</Text>
+                <InputNumber size="small" min={60} max={600} value={ocMainMax} onChange={(v) => setOcMainMax(v ?? 240)} style={{ width: 80 }} />
+                <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
+              </Space>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                提交后自动重跑选点（约 10-30 分钟）再自动切片，全程无需人工介入。
+              </Text>
+            </>
+          ) : (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              免审核直接出片：自动把所有候选片段（含待审核）直接切割成成品视频。
+            </Text>
+          )}
+        </Space>
+      </Modal>
+
     </div>
   );
 };

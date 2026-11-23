@@ -648,7 +648,7 @@ async def _resolve_slice_inputs(
                         "Episode %s 已从选点历史 %s 恢复 %d 个候选片段",
                         eid, data.slice_autoclip_run_id, len(restored),
                     )
-            if not all_clips and data.auto_autoclip_if_empty:
+            if data.auto_autoclip_if_empty and (not all_clips or data.autoclip_force):
                 # 后端兜底：无候选片段时自动补一轮 AI 选点（复用 autoclip run 流程），
                 # 等待选点完成后重新取候选再切片——前端提交即走、关窗口安全。
                 #

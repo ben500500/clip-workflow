@@ -552,13 +552,14 @@ async def _run_pipeline(project_id: str, steps: list[int],
         n_hl = 0
         if dual_highlights:
             hl_cap = float(cfg.get("highlight_max_duration") or 10.0)
+            hl_floor = float(cfg.get("highlight_min_duration") or 1.0)
             hl_clean = []
             for h in dual_highlights:
                 try:
                     hd = _srt_time_to_seconds(h.get("end_time")) - _srt_time_to_seconds(h.get("start_time"))
                 except Exception:
                     hd = 0
-                if 1.0 <= hd <= hl_cap + 2.0:
+                if hl_floor <= hd <= hl_cap + 2.0:
                     h["duration"] = round(hd, 3)
                     hl_clean.append(h)
             hl_clean.sort(key=lambda x: x.get("final_score") or 0, reverse=True)
