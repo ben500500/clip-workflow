@@ -420,6 +420,12 @@ async def _apply_compat_migrations():
         # 0070（试产单标记，2026-11-12）：审核员改提示词投豆包验证预期的单——
         # 成片只进审核台做判定依据，不进成片墙/交付包。存量单回填 false＝非试产。
         ("asset_productions", "is_trial", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        # 钩子拼接位置（2026-11-20）：head=片头（默认）/ tail=片尾；可空不回填，
+        # NULL＝老任务按 head 处理（引擎默认 head，行为不变）。
+        # 2026-11-23 补回仓库：这一行此前只活在 163 主机上的 database.py（手工加、没入库），
+        # 而 models/material.py:237 的列声明和 api/slice.py 的读写都在 git 里——
+        # 谁从 git 重新部署到老库就会缺这列，和 77cbec0 修 config_fp 是同一类坑。
+        ("slice_tasks", "hook_position", "VARCHAR(10)"),
         # 0075（极简模式 S2，2026-11-23）：素材库界面偏好（极简/全量）。新表 asset_scripts
         # 由 create_all 建（163 的迁移容器跑 init_db），这里只管老表补列。
         ("user_preferences", "ui_config", "JSON"),
