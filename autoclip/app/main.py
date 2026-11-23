@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import subprocess
 import tempfile
 import uuid
@@ -103,11 +104,14 @@ def ffprobe_duration(path: str) -> float:
         return 0.0
 
 
-def _update_progress(proj: dict, status: str, progress: int, message: str) -> None:
+def _update_progress(proj: dict, status: str, progress: int, message: str, detail: str = "") -> None:
     proj["status"] = status
     proj["progress"] = progress
     proj["message"] = message
-    logger.info(f"[project={proj.get('id')}] {message}")
+    if detail:
+        proj["detail"] = detail
+        proj["detail_at"] = time.time()
+    logger.info(f"[project={proj.get('id')}] {message}" + (f" | {detail}" if detail else ""))
 
 
 def _fail(proj: dict, message: str) -> None:
@@ -450,7 +454,8 @@ async def _run_pipeline(project_id: str, steps: list[int],
         duration_config = proj.get("config") or {}
         timeline = await asyncio.to_thread(
             run_step2_timeline, meta_dir / "step1_outline.json", meta_dir, None, PROMPT_FILES,
-            duration_config=duration_config)
+            duration_config=duration_config,
+            progress_cb=lambda detail: proj.update({"detail": detail, "detail_at": time.time()}))
         _update_progress(proj, "running", 60,
                          f"时间线定位完成（{len(timeline)} 个片段），开始评分")
 
@@ -1008,6 +1013,9 @@ async def progress(project_id: str):
         "status": proj["status"],
         "progress": proj["progress"],
         "message": proj["message"],
+        # 细粒度实时状态（2026-11-23：step2 逐块进度等；staleness 判断由调用方做）
+        "detail": proj.get("detail", ""),
+        "detail_at": proj.get("detail_at"),
     }
 
 

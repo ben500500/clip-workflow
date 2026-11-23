@@ -486,17 +486,27 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
         max_polls = int(os.getenv("AUTOCLIP_POLL_MAX_POLLS", "360"))
         consecutive_failures = 0
         completed = False
+        # 2026-11-23：进度消息合成细粒度 detail + 停滞时长后缀——LLM 超时重试期间
+        # 用户能实时看到「卡在哪一块、已等待多久」，而非冻结在上一条步骤消息
+        shown_msg, shown_at = None, time.time()
         for i in range(max_polls):
             progress = run_async(get_pipeline_progress(autoclip_project_id))
             if progress:
                 consecutive_failures = 0
                 pct = progress.get("progress", 0)
                 msg = progress.get("message", "Processing...")
+                detail = (progress.get("detail") or "").strip()
+                msg_out = f"{msg}｜{detail}" if detail else msg
+                now = time.time()
+                if msg_out != shown_msg:
+                    shown_msg, shown_at = msg_out, now
+                elif now - shown_at > 120:
+                    msg_out += f"· 已等待 {int((now - shown_at) / 60)} 分钟"
                 self.update_state(
                     state="PROGRESS",
-                    meta={"progress": pct, "message": msg},
+                    meta={"progress": pct, "message": msg_out},
                 )
-                run_async(_update_autoclip_run(episode_id, autoclip_project_id, "running", pct, msg))
+                run_async(_update_autoclip_run(episode_id, autoclip_project_id, "running", pct, msg_out))
                 if progress.get("status") == "completed":
                     completed = True
                     break

@@ -109,7 +109,7 @@ class TimelineExtractor:
         extra += "\n最终输出前，必须确保所有话题片段时长都满足上述用户自定义范围。"
         self.timeline_prompt = self.timeline_prompt + extra
 
-    def extract_timeline(self, outlines: List[Dict]) -> List[Dict]:
+    def extract_timeline(self, outlines: List[Dict], progress_cb=None) -> List[Dict]:
         """
         提取话题时间区间。
         新版特性：
@@ -143,8 +143,17 @@ class TimelineExtractor:
 
         all_timeline_data = []
         # 3. 遍历每个块，批量处理，并将结果存为独立的JSON文件
-        for chunk_index, chunk_outlines in outlines_by_chunk.items():
+        chunk_items = list(outlines_by_chunk.items())
+        total_chunks = len(chunk_items)
+        for pos, (chunk_index, chunk_outlines) in enumerate(chunk_items, 1):
             logger.info(f"处理块 {chunk_index}，其中包含 {len(chunk_outlines)} 个话题...")
+            # 逐块进度回调（2026-11-23：LLM 调用可能长达数分钟，块级状态透出到
+            # progress 接口的 detail 字段，让选点页能看到卡在哪一块）
+            if progress_cb:
+                try:
+                    progress_cb(f"时间线定位：处理块 {pos}/{total_chunks}（{len(chunk_outlines)} 个话题）")
+                except Exception:
+                    pass
             
             # 每次都重新处理，不使用缓存
             chunk_output_path = self.timeline_chunks_dir / f"chunk_{chunk_index}.json"
@@ -420,7 +429,7 @@ class TimelineExtractor:
         with open(input_path, 'r', encoding='utf-8') as f:
             return json.load(f)
 
-def run_step2_timeline(outline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, duration_config: Optional[Dict] = None) -> List[Dict]:
+def run_step2_timeline(outline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, duration_config: Optional[Dict] = None, progress_cb=None) -> List[Dict]:
     """
     运行Step 2: 时间点提取
     """
@@ -433,7 +442,7 @@ def run_step2_timeline(outline_path: Path, metadata_dir: Path = None, output_pat
     with open(outline_path, 'r', encoding='utf-8') as f:
         outlines = json.load(f)
         
-    timeline_data = extractor.extract_timeline(outlines)
+    timeline_data = extractor.extract_timeline(outlines, progress_cb=progress_cb)
     
     # 保存结果
     if output_path is None:
