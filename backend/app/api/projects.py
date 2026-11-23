@@ -966,7 +966,7 @@ async def normalize_episode_source(
             _src_norm_jobs[episode_id]["message"] = "上传新源片"
             old_key = episode.source_file_key
             base, _, ext = old_key.rpartition(".")
-            new_key = f"{base or old_key}_720p30.{ext or 'mp4'}"
+            new_key = f"{base or old_key}_{tier.lower()}.{ext or 'mp4'}"
             from app.services.minio_service import upload_file_from_path as _up
             # 修复（2026-11-23）：upload/delete 是协程函数——此前误塞 to_thread 只创建
             # 协程对象从未执行，假真值导致「已完成」但对象根本没上传
