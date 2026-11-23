@@ -6777,6 +6777,8 @@ async def review_summaries(
         raise HTTPException(status_code=400, detail="改后通过必须提供修改后的文案")
 
     is_admin = current_user.role == UserRole.admin.value
+    # 与投产侧同一个旋钮、同一个默认值（getattr 兜底值与 config 默认一致，别分裂口径）
+    self_allowed = bool(getattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", True))
     book, exemptions = await _risk_lexicon(db)
     results: List[dict] = []
     # 批 J：本次真正过审的文案（含"改后过"）——审核 commit 完之后拿去排提示词预览
@@ -6814,13 +6816,33 @@ async def review_summaries(
                 detail=f"文案 {str(uuid_s)[:8]} 所属素材不在库里（孤儿文案），本批中止未提交",
             )
 
-        # 生产者不得自审（素材是别人导入的就不算自审，这里按「素材创建人」判）
+        # 生产者不得自审（素材是别人导入的就不算自审，这里按「素材创建人」判）。
+        # 2026-11-23 口径闭环（用户原话「自审范围按建议开放到全局」）：审核侧与投产侧
+        # **读同一个旋钮** ASSET_SELF_PRODUCE_ALLOWED（11-09 起默认 True）——
+        # 原来这里硬编码拦死，造成"投产放开、过审仍拦"的半拉子状态：一人包干时
+        # 过审这一步必然撞（asset.created_by == current_user.id），而撞上的表现是
+        # HTTP 200 + 逐条 ok:false，最容易被读成"审过了"。
+        # 放开≠无痕：与投产侧对称，逐条写 self 标记的豁免审计（strict），
+        # admin 撤审抽检照旧；确需纪律（外包/新人）显式设 false 即恢复拦。
+        # 不再开第二个键——"一人包干"是一个语义，配两个开关必然再次分裂。
+        self_review_waiver = None
         if not is_admin and asset.created_by == current_user.id:
-            results.append({
-                "summary_id": str(uuid_s), "ok": False, "code": asset.code,
-                "error": "生产者不能审核自己导入的素材（换个人过审，或由管理员操作）",
-            })
-            continue
+            if not self_allowed:
+                results.append({
+                    "summary_id": str(uuid_s), "ok": False, "code": asset.code,
+                    "error": (
+                        "生产者不能审核自己导入的素材（ASSET_SELF_PRODUCE_ALLOWED=false 时执行"
+                        "「质检与投产分离」纪律）：换个人过审，或由管理员放开该旋钮后重发"
+                    ),
+                    "error_code": "ASSET_SELF_REVIEW_BLOCKED",
+                })
+                continue
+            self_review_waiver = {
+                "self": True,
+                "code": "self_review",
+                "note": "自审豁免（ASSET_SELF_PRODUCE_ALLOWED=true）：素材与审核为同一人",
+            }
+
 
         try:
             svc.assert_review_transition(summary.audit_status, to_state)
@@ -6952,11 +6974,13 @@ async def review_summaries(
                 "text": summary.text,
                 "reason": summary.reject_reason,
                 "waived": waived,
+                # 2026-11-23：自审豁免与"风险豁免"同权留痕（谁自己审了自己的，随时查得到）
+                "self_review": self_review_waiver,
                 "superseded_productions": superseded,
             },
             # 11-06 拍板①：豁免过审是最必须留痕的动作——审计写失败就拒绝这条过审
-            # （整请求回滚），绝不出现「豁免了却查无此事」。
-            strict=bool(waived),
+            # （整请求回滚），绝不出现「豁免了却查无此事」。自审豁免同一条纪律。
+            strict=bool(waived or self_review_waiver),
         )
         results.append({
             "summary_id": str(uuid_s), "ok": True, "code": asset.code, "audit_status": to_state,

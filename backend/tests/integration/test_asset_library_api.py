@@ -1850,9 +1850,17 @@ def _risky(items):
     return next(i for i in items if i["risk_hit"])
 
 
-def test_review_rejects_self_review_and_requires_reason():
-    """生产者不得自审（admin 除外）；驳回/需改写必填理由；发布专员无权审核。"""
+def test_review_self_review_follows_knob_and_requires_reason(monkeypatch):
+    """自审闸跟 ASSET_SELF_PRODUCE_ALLOWED 走（2026-11-23 用户拍板：全局放开）。
+
+    历史口径（11-03/11-08）：生产者不得自审，审核口硬编码拦。
+    2026-11-23 用户原话「自审范围按建议开放到全局」⇒ 审核口改为读**与投产侧同一个旋钮**：
+    - 旋钮 false：拦（保留纪律口径），错误码 ASSET_SELF_REVIEW_BLOCKED；
+    - 旋钮 true（默认）：放行，但**逐条写 self 标记的豁免审计**（放开≠无痕）。
+    另外三条与本闸无关的硬规矩照旧：驳回/需改写必填理由、素材专员无审核权限、admin 恒过。
+    """
     _run(_bootstrap())
+    from app.config import settings
 
     async def _scenario():
         client, h = await _client_and_headers()
@@ -1867,16 +1875,36 @@ def test_review_rejects_self_review_and_requires_reason():
             "/api/assets/summaries/review", json={"summary_ids": [sid], "action": "approve"}, headers=hm)
         assert self_review.status_code == 403, self_review.text
 
-        # operator 自审：自己导入的素材，自己过审 → 挡下（先让它有自己的「反推已成功」素材）
+        # operator 有自己的「反推已成功」素材（自审场景的前提）
         own_asset, _ = await _make_ready_asset(client, ho, url=DOUYIN_1)
         own_items, _ = await _gen_and_list(own_asset, ho, client)
         assert own_items and all(i["asset_id"] == own_asset for i in own_items)
+        # 挑「无风险词 + 一致性 ok」的干净样本：本用例验的是自审闸，不该被复核的
+        # 风险词顺手拦下（own_items 里本来就混着故意造的坏样本）
+        own_sid = _approvable(own_items)["id"]
+
+        # ① 旋钮关：自审被拦（保留「质检与投产分离」纪律口径）
+        monkeypatch.setattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", False, raising=True)
         blocked = await client.post(
             "/api/assets/summaries/review",
-            json={"summary_ids": [own_items[0]["id"]], "action": "approve"}, headers=ho)
+            json={"summary_ids": [own_sid], "action": "approve"}, headers=ho)
         assert blocked.status_code == 200
         assert blocked.json()["results"][0]["ok"] is False
+        assert blocked.json()["results"][0]["error_code"] == "ASSET_SELF_REVIEW_BLOCKED"
         assert "生产者不能审核自己" in blocked.json()["results"][0]["error"]
+
+        # ② 旋钮开（默认）：自审放行，且 after.self_review 留痕（放开≠无痕）
+        monkeypatch.setattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", True, raising=True)
+        allowed = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [own_sid], "action": "approve"}, headers=ho)
+        assert allowed.status_code == 200, allowed.text
+        assert allowed.json()["results"][0]["ok"] is True, allowed.text
+        self_audits = [
+            a for a in await _rows(AuditLog, AuditLog.action == "asset.summary_review.approve")
+            if (a.after or {}).get("self_review")
+        ]
+        assert len(self_audits) == 1 and self_audits[0].after["self_review"]["self"] is True
 
         # 驳回必填理由
         no_reason = await client.post(
@@ -1893,7 +1921,12 @@ def test_review_rejects_self_review_and_requires_reason():
         rows = {str(r.id): r for r in await _rows(AssetSummary)}
         assert rows[sid].audit_status == RV_APPROVED
         assert rows[sid].reviewed_by is not None
-        audits = await _rows(AuditLog, AuditLog.action == "asset.summary_review.approve")
+        # 只数**这条**的审计：本用例前面还让 operator 自审放行了一条（self_review 留痕），
+        # 那条也是同一个 action，按 target_id 收窄才不会把别人的账算进来
+        audits = [
+            a for a in await _rows(AuditLog, AuditLog.action == "asset.summary_review.approve")
+            if str(a.target_id) == sid
+        ]
         assert len(audits) == 1
         assert audits[0].before["audit_status"] == RV_PENDING
         assert audits[0].after["text"] == rows[sid].text
