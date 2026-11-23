@@ -100,10 +100,11 @@ const ProjectDetail: React.FC = () => {
   const [previewExpanded, setPreviewExpanded] = useState<Set<string>>(new Set());
   // 原片降档（2026-11-23）：720P@30 归一化状态表 {episodeId: {status, message}}
   const [srcNorm, setSrcNorm] = useState<Record<string, { status: string; message?: string }>>({});
+  const [srcTier, setSrcTier] = useState<Record<string, string>>({});
   const srcNormTimer = useRef<Record<string, ReturnType<typeof setInterval>>>({});
-  const startSrcNorm = async (epId: string) => {
+  const startSrcNorm = async (epId: string, tier: string) => {
     try {
-      const r = await client.post(`/episodes/${epId}/source/normalize`);
+      const r = await client.post(`/episodes/${epId}/source/normalize`, null, { params: { tier } });
       setSrcNorm((p) => ({ ...p, [epId]: { status: (r.data as { status: string }).status || 'running' } }));
       srcNormTimer.current[epId] = setInterval(async () => {
         try {
@@ -705,22 +706,38 @@ const ProjectDetail: React.FC = () => {
         return (
           <Space size={4} direction="vertical" style={{ display: 'flex' }}>
             {st?.status === 'running' && <Tag color="processing">处理中…</Tag>}
-            {st?.status === 'completed' && <Tag color="success">已降档 720P@30</Tag>}
+            {st?.status === 'completed' && <Tag color="success">已降档</Tag>}
             {st?.status === 'compliant' && <Tag>已是 ≤720P@30</Tag>}
             {st?.status === 'failed' && (
               <Tooltip title={st.message}>
                 <Tag color="error">失败</Tag>
               </Tooltip>
             )}
-            <Button
-              type="link"
-              size="small"
-              icon={<ThunderboltOutlined />}
-              loading={busy}
-              onClick={() => void startSrcNorm(record.id)}
-            >
-              降档 720P@30
-            </Button>
+            <Space size={2} align="center">
+              <Select
+                size="small"
+                style={{ width: 92 }}
+                value={srcTier[record.id] || '720p'}
+                onChange={(v) => setSrcTier((p) => ({ ...p, [record.id]: v as string }))}
+                disabled={busy}
+                options={[
+                  { value: 'original', label: '原始分辨率' },
+                  { value: 'auto', label: '自动' },
+                  { value: '1080p', label: '1080P' },
+                  { value: '720p', label: '720P' },
+                  { value: '480p', label: '480P' },
+                ]}
+              />
+              <Button
+                type="link"
+                size="small"
+                icon={<ThunderboltOutlined />}
+                loading={busy}
+                onClick={() => void startSrcNorm(record.id, srcTier[record.id] || '720p')}
+              >
+                转换
+              </Button>
+            </Space>
             {st?.message && st.status !== 'running' && (
               <Text type="secondary" style={{ fontSize: 11 }}>{st.message?.slice(0, 40)}</Text>
             )}

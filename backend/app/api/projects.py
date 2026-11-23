@@ -708,6 +708,45 @@ async def update_episode(
     return _serialize_episode(episode)
 
 
+
+async def _fallback_download_task_url(db, eid):
+    """孤儿下载任务的预览兜底：源直链优先，其次按 file_key 出 presigned URL。
+
+    历史任务可能标记「下载并入库完成」，但项目/剧集记录与 MinIO 对象已被清理，
+    按 episode 查必然 404。此时优先用任务保存的微信源直链（有时效），
+    否则用 file_key（bucket 名已含在首段）按原逻辑生成 presigned URL。
+    （163 local-overrides 热修收编入仓 2026-11-23）
+    """
+    import logging
+    from sqlalchemy import text
+    log = logging.getLogger(__name__)
+    try:
+        row = (await db.execute(text(
+            "SELECT file_key, video_meta FROM wechat_download_tasks "
+            "WHERE episode_id::text = :eid AND status = 'completed' "
+            "ORDER BY created_at DESC LIMIT 1"
+        ), {"eid": str(eid)})).mappings().first()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fallback download task query failed: %s", exc)
+        return None
+    if not row:
+        return None
+    meta = row.get("video_meta") or {}
+    data = meta.get("data") if isinstance(meta, dict) else None
+    src = (data or {}).get("url") if isinstance(data, dict) else None
+    if isinstance(src, str) and src.startswith("http"):
+        return src
+    file_key = row.get("file_key") or ""
+    if file_key:
+        try:
+            return await get_presigned_url(
+                settings.MINIO_BUCKET_RAW, file_key, expires_seconds=3600
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("fallback presigned url failed: %s", exc)
+    return None
+
+
 @router.get("/episodes/{episode_id}/video-url")
 async def get_episode_video_url(
     episode_id: str,
@@ -723,6 +762,10 @@ async def get_episode_video_url(
     result = await db.execute(select(Episode).where(Episode.id == eid))
     episode = result.scalar_one_or_none()
     if not episode:
+        # 孤儿下载任务：文件与剧集记录已不在，按 episode 查必然 404，走兜底取直链
+        fallback = await _fallback_download_task_url(db, eid)
+        if fallback:
+            return {"url": fallback, "duration": None, "title": ""}
         raise HTTPException(status_code=404, detail="Episode not found")
 
     # 数据隔离
@@ -851,9 +894,12 @@ _src_norm_jobs: dict = {}
 @router.post("/episodes/{episode_id}/source/normalize")
 async def normalize_episode_source(
     episode_id: str,
+    tier: str = Query("720p"),
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
+    """tier 档位与切片输出档位同语义（仅降档不升档）：
+    original=不处理 / auto=宽>720 或 fps>30 才降 / 1080p / 720p（默认）/ 480p。"""
     """把本剧集原片归一化到 720P@30（等比降档+降帧，音频直拷）。
 
     - 已符合（宽≤720 且 fps≤30）→ 直接返回 compliant，不转码
@@ -901,15 +947,19 @@ async def normalize_episode_source(
             if not probe:
                 _src_norm_jobs[episode_id] = {"status": "failed", "message": "ffprobe 探测失败（文件损坏？）"}
                 return
-            if not needs_normalize(probe):
+            _TIER_CAPS = {"auto": (720, 30), "1080p": (1080, 60), "720p": (720, 30), "480p": (480, 30)}
+            cap_w, cap_fps = _TIER_CAPS.get(tier.lower(), _TIER_CAPS["720p"])
+            _src_norm_jobs[episode_id]["message"] = (
+                f"探测规格：{probe['width']}x{probe['height']}@{probe['fps']:.0f}fps，目标档位 {tier}")
+            if not needs_normalize(probe, cap_w=cap_w, cap_fps=cap_fps):
                 _src_norm_jobs[episode_id] = {
                     "status": "compliant",
-                    "message": f"已符合 ≤720P@30（{probe['width']}x{probe['height']} @{probe['fps']:.0f}fps），无需处理",
+                    "message": f"已符合档位 {tier}（{probe['width']}x{probe['height']} @{probe['fps']:.0f}fps），无需处理",
                 }
                 return
             _src_norm_jobs[episode_id]["message"] = (
-                f"转码中：{probe['width']}x{probe['height']}@{probe['fps']:.0f}fps → 720P@30")
-            ok = await _aio.to_thread(normalize_media_file, src_path, dst_path)
+                f"转码中：{probe['width']}x{probe['height']}@{probe['fps']:.0f}fps → 档位 {tier}")
+            ok = await _aio.to_thread(normalize_media_file, src_path, dst_path, cap_w=cap_w, cap_fps=cap_fps)
             if not ok:
                 _src_norm_jobs[episode_id] = {"status": "failed", "message": "ffmpeg 转码失败（保留原片不变）"}
                 return
@@ -943,7 +993,7 @@ async def normalize_episode_source(
             new_size = os.path.getsize(dst_path)
             _src_norm_jobs[episode_id] = {
                 "status": "completed",
-                "message": f"已完成：{probe['width']}x{probe['height']}@{probe['fps']:.0f}fps → 720P@30，"
+                "message": f"已完成：{probe['width']}x{probe['height']}@{probe['fps']:.0f}fps → 档位 {tier}，"
                            f"{old_size // (1024*1024)}MB → {new_size // (1024*1024)}MB",
             }
         except Exception as e:  # noqa: BLE001
