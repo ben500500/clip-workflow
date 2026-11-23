@@ -32,7 +32,8 @@ class ClipScorer:
                  frame_vision_key: Optional[str] = None,
                  highlight_mode: bool = False,
                  highlight_max_duration: float = 10.0,
-                 dual_profile: bool = False):
+                 dual_profile: bool = False,
+                 highlight_min_duration: float = 0.0):
         self.llm_client = LLMClient()
         self.text_processor = TextProcessor()
         # 高光识别模式：从长剧集中找出多段 ≤highlight_max_duration 的短高光片段。
@@ -177,7 +178,7 @@ class ClipScorer:
                 prompt_to_use = (
                     self.recommendation_prompt
                     + "\n\n## 双配提取（本次启用）\n"
-                    + f"除逐片段评分外，请再从每个片段内部挑出时长 ≤ {self.highlight_max_duration:.0f} 秒的短高光爆点"
+                    + f"除逐片段评分外，请再从每个片段内部挑出时长 {self.highlight_min_duration:.0f}~{self.highlight_max_duration:.0f} 秒的短高光爆点"
                     + "（三秒留人、情绪浓度最高、适合信息流黄金前几秒），以 `highlights` 字段附在该片段的返回对象中：\n"
                     + '`"highlights": [{"start_time": "绝对时间,格式与本片段start_time完全一致", "end_time": "同上", '
                     + '"final_score": 0-100整数, "recommend_reason": "爆点理由", "generated_title": "10字内标题"}]，\n'
@@ -432,7 +433,7 @@ class ClipScorer:
             json.dump(scored_clips, f, ensure_ascii=False, indent=2)
         logger.info(f"评分结果已保存到: {output_path}")
 
-def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, frame_analysis_enabled: Optional[bool] = None, frame_analysis_provider: Optional[str] = None, frame_analysis_model: Optional[str] = None, frame_vision_base: Optional[str] = None, frame_vision_key: Optional[str] = None, highlight_mode: bool = False, highlight_max_duration: float = 10.0, dual_profile: bool = False, highlights_out: Optional[List[Dict]] = None) -> List[Dict]:
+def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_path: Optional[Path] = None, prompt_files: Dict = None, frame_analysis_enabled: Optional[bool] = None, frame_analysis_provider: Optional[str] = None, frame_analysis_model: Optional[str] = None, frame_vision_base: Optional[str] = None, frame_vision_key: Optional[str] = None, highlight_mode: bool = False, highlight_max_duration: float = 10.0, highlight_min_duration: float = 0.0, dual_profile: bool = False, highlights_out: Optional[List[Dict]] = None) -> List[Dict]:
     """
     运行Step 3: 内容评分与筛选
     
@@ -472,6 +473,7 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
                         frame_vision_key=frame_vision_key,
                         highlight_mode=highlight_mode,
                         highlight_max_duration=highlight_max_duration,
+                        highlight_min_duration=highlight_min_duration,
                         dual_profile=dual_profile)
     
     # 评分
@@ -495,7 +497,7 @@ def run_step3_scoring(timeline_path: Path, metadata_dir: Path = None, output_pat
                 if len(srt_text) > 120000:
                     srt_text = srt_text[:120000]
                 hl_prompt = (
-                    f"以下是一部短剧的完整字幕（SRT）。请从中挑出时长 ≤ {highlight_max_duration:.0f} 秒的"
+                    f"以下是一部短剧的完整字幕（SRT）。请从中挑出时长 {highlight_min_duration:.0f}~{highlight_max_duration:.0f} 秒的"
                     "短高光爆点片段（三秒留人、情绪浓度最高、名场面/金句、适合信息流黄金前几秒）。\n"
                     "输出**只有一个** JSON 数组（以 [ 开始，以 ] 结束），每个元素：\n"
                     '{"start_time": "HH:MM:SS,mmm", "end_time": "HH:MM:SS,mmm", '

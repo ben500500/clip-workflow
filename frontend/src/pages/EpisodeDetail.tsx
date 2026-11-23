@@ -1679,6 +1679,8 @@ const EpisodeDetail: React.FC = () => {
   const [ocHlMax, setOcHlMax] = useState<number>(() => Number(localStorage.getItem('oc_hl_max')) || 10);
   const [ocMainMin, setOcMainMin] = useState<number>(() => Number(localStorage.getItem('oc_main_min')) || 120);
   const [ocMainMax, setOcMainMax] = useState<number>(() => Number(localStorage.getItem('oc_main_max')) || 240);
+  const [ocHlCount, setOcHlCount] = useState<number>(() => Number(localStorage.getItem('oc_hl_count')) || 2);
+  const [ocMainCount, setOcMainCount] = useState<number>(() => Number(localStorage.getItem('oc_main_count')) || 1);
 
   const oneClickSlice = async () => {
     setOneClickSlicing(true);
@@ -1713,8 +1715,8 @@ const EpisodeDetail: React.FC = () => {
           highlight_max_duration: ocHlMax,
         };
         payload.dual_mix_enabled = true;
-        payload.dual_mix_highlight_count = 2;
-        payload.dual_mix_main_count = 1;
+        payload.dual_mix_highlight_count = ocHlCount;
+        payload.dual_mix_main_count = ocMainCount;
         payload.dual_mix_highlight_position = 'head';
         payload.dual_mix_output_count = undefined;
         payload.highlight_mix_enabled = false;
@@ -4367,6 +4369,8 @@ const EpisodeDetail: React.FC = () => {
           localStorage.setItem('oc_hl_max', String(ocHlMax));
           localStorage.setItem('oc_main_min', String(ocMainMin));
           localStorage.setItem('oc_main_max', String(ocMainMax));
+          localStorage.setItem('oc_hl_count', String(ocHlCount));
+          localStorage.setItem('oc_main_count', String(ocMainCount));
           void oneClickSlice();
         }}
         okText={ocMode === 'dual' ? '开始双配混拼' : '开始切片'}
@@ -4390,7 +4394,7 @@ const EpisodeDetail: React.FC = () => {
               <Alert
                 type="info"
                 showIcon
-                message="双配混拼：自动重跑一轮双配选点（正片批 + 高光批一次产出），每条成品 = 高光×2 + 正片×1（高光在前，先钩住再展开），条数按正片自动。钩子按现有配置拼接。"
+                message="双配混拼：自动重跑一轮双配选点（正片批 + 高光批一次产出），每条成品 = 高光×N + 正片×M（高光在前，先钩住再展开），条数按正片自动。钩子按现有配置拼接。"
               />
               <Space size={6} align="center" wrap>
                 <Text strong style={{ fontSize: 12 }}>高光时长</Text>
@@ -4398,6 +4402,8 @@ const EpisodeDetail: React.FC = () => {
                 <Text type="secondary">~</Text>
                 <InputNumber size="small" min={2} max={60} value={ocHlMax} onChange={(v) => setOcHlMax(v ?? 10)} style={{ width: 70 }} />
                 <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
+                <Text strong style={{ fontSize: 12, marginLeft: 8 }}>每条成品高光段数</Text>
+                <InputNumber size="small" min={1} max={6} value={ocHlCount} onChange={(v) => setOcHlCount(v ?? 2)} style={{ width: 64 }} />
               </Space>
               <Space size={6} align="center" wrap>
                 <Text strong style={{ fontSize: 12 }}>正片时长</Text>
@@ -4405,6 +4411,8 @@ const EpisodeDetail: React.FC = () => {
                 <Text type="secondary">~</Text>
                 <InputNumber size="small" min={60} max={600} value={ocMainMax} onChange={(v) => setOcMainMax(v ?? 240)} style={{ width: 80 }} />
                 <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
+                <Text strong style={{ fontSize: 12, marginLeft: 8 }}>每条成品正片段数</Text>
+                <InputNumber size="small" min={1} max={4} value={ocMainCount} onChange={(v) => setOcMainCount(v ?? 1)} style={{ width: 64 }} />
               </Space>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 提交后自动重跑选点（约 10-30 分钟）再自动切片，全程无需人工介入。

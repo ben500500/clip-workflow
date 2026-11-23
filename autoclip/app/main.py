@@ -500,6 +500,7 @@ async def _run_pipeline(project_id: str, steps: list[int],
             frame_vision_key=frame_vision_key,
             highlight_mode=bool(cfg.get("highlight_mode", False)),
             highlight_max_duration=float(cfg.get("highlight_max_duration") or 10.0),
+            highlight_min_duration=float(cfg.get("highlight_min_duration") or 1.0),
             dual_profile=bool(cfg.get("dual_profile")),
             highlights_out=dual_highlights)
         _update_progress(proj, "running", 80,
