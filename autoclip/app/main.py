@@ -382,7 +382,9 @@ async def _run_pipeline(project_id: str, steps: list[int],
                         llm_api_base: Optional[str] = None,
                         llm_api_key: Optional[str] = None,
                         model_name: Optional[str] = None,
-                        llm_provider: Optional[str] = None) -> None:
+                        llm_provider: Optional[str] = None,
+                        llm_failovers: Optional[list] = None,
+                        vision_failovers: Optional[list] = None) -> None:
     proj = projects.get(project_id)
     if not proj:
         return
@@ -417,7 +419,7 @@ async def _run_pipeline(project_id: str, steps: list[int],
 
         # 失败切换链（2026-11-23 用户需求：模型长时间无响应自动切换下一个，
         # 切换事件经 status_hook 写入 proj.detail → progress 接口 → 选点页实时可见）
-        failovers = (config.get("llm_failovers") or []) if isinstance(config, dict) else []
+        failovers = llm_failovers or []
         if failovers:
             get_llm_manager().set_failover_chain(
                 failovers,
@@ -426,14 +428,14 @@ async def _run_pipeline(project_id: str, steps: list[int],
             logger.info(f"[project={project_id}] LLM 失败切换链已注入（{len(failovers)} 个备用模型）")
 
         # 视觉（画面理解）失败切换链：同一 proj.detail 通道实时透出切换事件
-        vision_failovers = (config.get("vision_failovers") or []) if isinstance(config, dict) else []
-        if vision_failovers:
+        v_failovers = vision_failovers or []
+        if v_failovers:
             from app.core.vision_llm_client import VisionLLMClient
             VisionLLMClient.set_failover_chain(
-                vision_failovers,
+                v_failovers,
                 status_hook=lambda d: proj.update({"detail": d, "detail_at": time.time()}),
             )
-            logger.info(f"[project={project_id}] 视觉失败切换链已注入（{len(vision_failovers)} 个备用模型）")
+            logger.info(f"[project={project_id}] 视觉失败切换链已注入（{len(v_failovers)} 个备用模型）")
 
         api_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
         if not api_key:
@@ -993,6 +995,9 @@ class PipelineRun(BaseModel):
     # 指定后本次运行使用该模型，不修改磁盘上的用户配置
     model_name: Optional[str] = None
     llm_provider: Optional[str] = None
+    # 失败自动切换链（2026-11-23）：主模型无响应时按序切换；由 backend 组装下发
+    llm_failovers: Optional[list] = None
+    vision_failovers: Optional[list] = None
 
 
 @app.post("/api/v1/pipeline/run")
@@ -1020,6 +1025,8 @@ async def pipeline_run(data: PipelineRun):
         llm_api_key=data.llm_api_key,
         model_name=data.model_name,
         llm_provider=data.llm_provider,
+        llm_failovers=data.llm_failovers,
+        vision_failovers=data.vision_failovers,
     ))
     return {"ok": True, "project_id": data.project_id}
 

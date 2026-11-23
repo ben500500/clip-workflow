@@ -93,6 +93,13 @@ async def trigger_pipeline(
     llm_api_key = (config or {}).get("llm_api_key")
     if llm_api_key:
         payload["llm_api_key"] = str(llm_api_key)
+    # 失败自动切换链（2026-11-23）：主模型无响应时按序切换；列表整体透传
+    llm_failovers = (config or {}).get("llm_failovers")
+    if llm_failovers:
+        payload["llm_failovers"] = llm_failovers
+    vision_failovers = (config or {}).get("vision_failovers")
+    if vision_failovers:
+        payload["vision_failovers"] = vision_failovers
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.post(url, json=payload)
