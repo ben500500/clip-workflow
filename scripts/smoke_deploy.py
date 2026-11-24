@@ -49,8 +49,9 @@ def check(name, cond, detail=""):
         print(f"  [FAIL] {name} {detail}")
 
 
-print("=== 1) 登录 admin/admin123 ===")
-st, body = call("POST", "/api/auth/login", {"username": "admin", "password": "admin123"})
+print("=== 1) 登录 admin ===")
+# 2026-11-23 用户改密：双端 DB+SEED_USERS_JSON 已同步为 mw2026，旧 admin123 已失效
+st, body = call("POST", "/api/auth/login", {"username": "admin", "password": "mw2026"})
 check("login 200", st == 200, f"status={st} body={body[:120]}")
 tok = None
 try:
