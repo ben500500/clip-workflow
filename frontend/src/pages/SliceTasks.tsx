@@ -440,10 +440,13 @@ const SUBTITLE_MASK_PRESETS = [
       dataIndex: 'status',
       key: 'status',
       width: 160,
-      render: (s: string, t: SliceTask) => (
+      render: (s: string, t: SliceTask) => {
+        const running = t.status === 'running' || t.status === 'pending' || t.status === 'processing';
+        const done = typeof t.outputs_done === 'number' ? t.outputs_done : null;
+        return (
         <Space direction="vertical" size={2} style={{ width: '100%' }}>
           <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>
-          {(t.status === 'running' || t.status === 'pending' || t.status === 'processing') && (
+          {running && (
             <Progress
               percent={Math.round((t.progress || 0) * 10) / 10}
               size="small"
@@ -451,18 +454,44 @@ const SUBTITLE_MASK_PRESETS = [
               status="active"
             />
           )}
+          {/* 已出成品数实时展示（2026-11-24 用户需求）：N/总数 + 当前阶段文案 */}
+          {running && done !== null && (
+            <Text style={{ fontSize: 11, color: '#1677ff' }}>
+              已出 {done}{t.outputs_total ? `/${t.outputs_total}` : ''} 条
+            </Text>
+          )}
+          {running && t.progress_message && (
+            <Tooltip title={t.progress_message}>
+              <Text style={{ fontSize: 11, color: '#8c8c8c', maxWidth: 150 }} ellipsis>
+                {t.progress_message}
+              </Text>
+            </Tooltip>
+          )}
+          {/* 失败保留：失败/取消任务上已保留的可下载成品数 */}
+          {(t.status === 'failed' || t.status === 'cancelled') && done !== null && done > 0 && (
+            <Text style={{ fontSize: 11, color: '#faad14' }}>已保留 {done} 条成品</Text>
+          )}
         </Space>
-      ),
+        );
+      },
     },
-    { title: '输出数', dataIndex: 'output_count', key: 'output_count', width: 80, render: (c: number, t: SliceTask) =>
-      t.status === 'completed' && c > 0 ? (
-        <a style={{ fontSize: 12 }} onClick={(e) => { e.stopPropagation(); navigate(`/episodes/${episodeId}/preview?task=${t.id}`); }}>
-          {c} 个 →
-        </a>
-      ) : (
-        <Text style={{ fontSize: 12 }}>{c ?? 0}</Text>
-      ),
-    },
+    { title: '输出数', dataIndex: 'output_count', key: 'output_count', width: 80, render: (c: number, t: SliceTask) => {
+      if (t.status === 'completed' && c > 0) {
+        return (
+          <a style={{ fontSize: 12 }} onClick={(e) => { e.stopPropagation(); navigate(`/episodes/${episodeId}/preview?task=${t.id}`); }}>
+            {c} 个 →
+          </a>
+        );
+      }
+      if ((t.status === 'failed' || t.status === 'cancelled') && c > 0) {
+        return (
+          <a style={{ fontSize: 12 }} onClick={(e) => { e.stopPropagation(); navigate(`/episodes/${episodeId}/preview?task=${t.id}`); }}>
+            {c} 个（保留）→
+          </a>
+        );
+      }
+      return <Text style={{ fontSize: 12 }}>{c ?? 0}</Text>;
+    } },
     {
       title: '执行节点',
       dataIndex: 'node_id',

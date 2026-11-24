@@ -21,6 +21,9 @@ type TaskExecutor struct {
 	onTaskProgress func(taskID string, percent float64, speed string, eta string)
 	// 细粒度阶段回调（引擎 STAGE 行：钩子转码/片尾/成品段切割等实时文案）
 	onStage func(taskID string, detail string)
+	// 已出成品数回调（引擎每打印一条 OUTPUT 行触发，done=累计已出条数，含断点
+	// 续传保留的历史成品；供前端「已出 N/总数」实时展示与失败保留计数）
+	onOutputDone func(taskID string, done int)
 }
 
 // NewTaskExecutor 创建任务执行器
@@ -38,6 +41,11 @@ func (te *TaskExecutor) SetProgressCallback(cb func(taskID string, percent float
 // SetStageCallback 注册引擎细粒度阶段回调（STAGE 行）
 func (te *TaskExecutor) SetStageCallback(cb func(taskID string, detail string)) {
 	te.onStage = cb
+}
+
+// SetOutputDoneCallback 注册已出成品数回调（OUTPUT 行）
+func (te *TaskExecutor) SetOutputDoneCallback(cb func(taskID string, done int)) {
+	te.onOutputDone = cb
 }
 
 // ExecuteTask 执行切片任务
@@ -76,6 +84,10 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 	preservedOutputs := te.preservedOutputs(outputDir, segs)
 	if len(completedNames) > 0 {
 		fmt.Printf("断点续传: 任务 %s 已跳过 %d 个已完成段: %v\n", task.TaskID, len(completedNames), completedNames)
+	}
+	// 断点续传保留的历史成品计入「已出」基线（前端已出 N/总数展示）
+	if len(preservedOutputs) > 0 && te.onOutputDone != nil {
+		te.onOutputDone(task.TaskID, len(preservedOutputs))
 	}
 	// 所有段均已完成：直接复用产出，不再调用引擎（耗时任务重启后立即完成）
 	if len(completedNames) > 0 && len(remainingSegs) == 0 {
@@ -369,6 +381,10 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 	for line := range outputs {
 		if name := te.parseEngineLine(task.TaskID, line, manifest); name != "" {
 			doneNames = append(doneNames, name)
+			// 实时已出计数（含断点续传基线），前端「已出 N/总数」展示
+			if te.onOutputDone != nil {
+				te.onOutputDone(task.TaskID, len(preservedOutputs)+len(manifest))
+			}
 		}
 	}
 	// 引擎每完成一段会打印 OUTPUT:<name>，这里把已完成的段持久化到 checkpoint 文件，
@@ -379,8 +395,12 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 	// 这里再兜底强杀整个进程组）
 	if err := cmd.Wait(); err != nil {
 		KillProcessTree(cmd)
+		// 失败保留已出成品（2026-11-24 用户需求）：失败/超时/取消前已完整产出的
+		// 成品随错误一并带回（manifest 只含引擎 OUTPUT 确认过的段，逐个再做有效性
+		// 校验防半成品），由 worker 上传入库，不随失败丢弃。
+		partial := te.collectValidOutputs(outputDir, manifest, preservedOutputs)
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("任务超时或已取消: %w", ctx.Err())
+			return partial, fmt.Errorf("任务超时或已取消: %w", ctx.Err())
 		}
 		// 引擎失败：把 stderr 最近内容拼进错误消息，便于定位打码/检测/ffmpeg 失败根因
 		stderrMu.Lock()
@@ -391,14 +411,14 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 				engineErrTail = "...[截断]...\n" + engineErrTail[len(engineErrTail)-3000:]
 			}
 			if exitErr, ok := err.(*exec.ExitError); ok {
-				return nil, fmt.Errorf("切片引擎执行失败，退出码: %d\n--- 引擎输出 ---\n%s", exitErr.ExitCode(), engineErrTail)
+				return partial, fmt.Errorf("切片引擎执行失败，退出码: %d\n--- 引擎输出 ---\n%s", exitErr.ExitCode(), engineErrTail)
 			}
-			return nil, fmt.Errorf("切片引擎执行失败: %w\n--- 引擎输出 ---\n%s", err, engineErrTail)
+			return partial, fmt.Errorf("切片引擎执行失败: %w\n--- 引擎输出 ---\n%s", err, engineErrTail)
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return nil, fmt.Errorf("切片引擎执行失败，退出码: %d", exitErr.ExitCode())
+			return partial, fmt.Errorf("切片引擎执行失败，退出码: %d", exitErr.ExitCode())
 		}
-		return nil, fmt.Errorf("切片引擎执行失败: %w", err)
+		return partial, fmt.Errorf("切片引擎执行失败: %w", err)
 	}
 
 	// 收集输出文件（以引擎 manifest 为准，同时兜底扫描目录）
@@ -599,6 +619,22 @@ func (te *TaskExecutor) preservedOutputs(outputDir string, segs []cutSegment) []
 	}
 	sort.Strings(outputs)
 	return outputs
+}
+
+// collectValidOutputs 汇总已完整产出的成品（引擎 manifest 确认 + 断点续传遗留），
+// 逐个做有效性校验（非空且 ffprobe 时长>0），失败保留场景专用——半成品不带回。
+func (te *TaskExecutor) collectValidOutputs(outputDir string, manifest map[string]float64, preserved []string) []string {
+	out := te.collectOutputs(outputDir, manifest)
+	if len(preserved) > 0 {
+		out = mergeOutputPaths(preserved, out)
+	}
+	valid := make([]string, 0, len(out))
+	for _, p := range out {
+		if te.outputFileValid(p) {
+			valid = append(valid, p)
+		}
+	}
+	return valid
 }
 
 // outputFileValid 判断已存在的产出文件是否有效可复用。
