@@ -1,11 +1,25 @@
 """素材库序列化器（2026-11-13 臃肿度席外移：零行为变化纯剪切）。
 
-从 api/assets.py 外移的 5 个纯序列化函数——只依赖 ORM 模型字段与 utc_iso，
-不碰 db、不读 settings。god file 减行第一步（其余外移组见后续提交）。
+从 api/assets.py 外移的 5 个纯序列化函数——只依赖 ORM 模型（含同模块的状态常量）
+与 utc_iso，不碰 db、不读 settings。god file 减行第一步（其余外移组见后续提交）。
+
+⚠️ 需要 misc.py 晚绑定的只有那 8 个 helper（见文件末尾注入表）。凡是 models 层
+就有的常量（MEDIA_VIDEO / PR_*）**一律在这里直接 import**——11-24 踩过一次：
+`MEDIA_VIDEO` 没进 import 也没进注入表，而 `getattr(...) or MEDIA_VIDEO` 只在
+media_kind 为空的行才求值，所以现网一直没炸，属潜伏 NameError。
 """
 from typing import Any, Dict, Optional
 
-from app.models.asset import AssetBatch, AssetCategory, AssetItem, AssetProduction, AssetSummary
+from app.models.asset import (
+    MEDIA_VIDEO,
+    PR_FAILED,
+    PR_SUCCESS,
+    AssetBatch,
+    AssetCategory,
+    AssetItem,
+    AssetProduction,
+    AssetSummary,
+)
 from app.utils.helpers import utc_iso
 
 
@@ -209,6 +223,19 @@ def _serialize_production(
         # 批 I（链路收敛）：行上「成片」列的数字——本单已收进几段片。口径与审核台
         # 卡片「已产 N 条」一致：排除 package/copy 附属文件，拼接产物没挂生产单天然不计。
         "output_count": int(output_count),
+        # 11-24 缺口口径（用户：「我需要多少素材，最终就能给我回收多少素材」）：
+        # 应收 board_total − 实收 output_count，**读侧派生**（不建列、不迁移），
+        # 与回收协程 results[].short_by 同一个算法。>0 就是这张单还欠几版，
+        # 前端据此显示「缺 N 版」；补法是人工「按同文案重开单」，机器不隔夜补投。
+        #
+        # 只在终态行上算：queued/running 的 output_count 天然还是 0，这时报「缺 N 版」
+        # 是把「还在出片」说成「缺料」——同一句话在界面上必须只有一种含义。
+        # order_ready/cancelled/superseded 更是根本没投过板，报缺口纯属噪音。
+        "short_by": (
+            max(0, int(p.board_total or 1) - int(output_count))
+            if p.status in (PR_SUCCESS, PR_FAILED)
+            else 0
+        ),
     }
 
 

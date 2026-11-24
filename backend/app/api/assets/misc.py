@@ -10002,6 +10002,21 @@ def _board_poll_max_minutes() -> float:
     return max(0.02, float(settings.ASSET_BOARD_POLL_MAX_MINUTES or 45))
 
 
+def _board_retry_max() -> int:
+    """板面判失败后**同一条 payload 自动重启**的次数上限（下限 0＝完全关闭自动重试）。
+
+    为什么不设上限地"补到我要的条数为止"不做：一次重启＝整条 payload 再建一遍任务、
+    再花一遍**共享号池**的额度（板上失败行连失败原因都没有，多烧几次没人看得出为什么），
+    而且重启是**本次轮询窗口内**的动作——出了窗口就是隔夜补投，那是拍板明确禁掉的口径。
+    所以这里只把旧的"硬编码重启一次"换成可配的次数：0＝旧的人工判读、1＝老口径、
+    2（默认）＝首投＋两次重试＝最多 3 次上板机会。缺省值兜底也按 2 走，别把旋钮读崩。
+    """
+    try:
+        return max(0, int(settings.ASSET_BOARD_RETRY_MAX))
+    except (TypeError, ValueError):
+        return 2
+
+
 def _refresh_board_date(p: AssetProduction) -> None:
     """投板前把 `board_date` 按**投递时刻**重新生成（只动这一次真的要新建任务的单）。
 
@@ -10629,7 +10644,7 @@ async def _execute_dispatch(
     created: List[dict] = []
     uncertain: List[dict] = []
     errors: List[dict] = []
-    tracked: Dict[str, Dict[str, Any]] = {}   # 生产单 id → {prod, tids, tag, payload, restart_used}
+    tracked: Dict[str, Dict[str, Any]] = {}   # 生产单 id → {prod, tids, tag, payload, retries, allow_retry}
 
     # ── ① 建任务（只有 to_create；逐张 POST，逐张拿 tid）──
     for p in to_create:
@@ -10677,7 +10692,11 @@ async def _execute_dispatch(
             })
             continue
         _adopt_tids(p, after, new_tids)
-        tracked[str(p.id)] = {"prod": p, "tids": new_tids, "tag": tag, "payload": payload, "restart_used": False}
+        tracked[str(p.id)] = {
+            "prod": p, "tids": new_tids, "tag": tag, "payload": payload,
+            # 判失败后的自动重启额度：本次投出去的这批才有，且只在**本次轮询窗口内**花
+            "retries": 0, "allow_retry": True,
+        }
         row: Dict[str, Any] = {"id": str(p.id), "hook_code": p.hook_code, "tids": new_tids, "to": PR_QUEUED}
         if recovered_note:
             # POST 这一步报了错，但差集回读认领到了新任务＝板子上真建上了。
@@ -10693,7 +10712,9 @@ async def _execute_dispatch(
         tag = str(p.board_tag or settings.ASSET_BOARD_TAG)
         tracked[str(p.id)] = {
             "prod": p, "tids": [str(p.board_tid)], "tag": tag,
-            "payload": None, "restart_used": True,   # 接续回收的这一批**不再重启**，只取片子
+            # 接续回收的这一批**永不自动重启**（payload 也没有）：只把片子取回来，
+            # 补投是人工判读之后的动作，不是回收动作的副作用。
+            "payload": None, "retries": 0, "allow_retry": False,
         }
 
     if not tracked:
@@ -10827,6 +10848,8 @@ async def _execute_dispatch(
         "capacity": capacity,
         "dispatch": counts,
         "concat": outcome.get("concat"),
+        # 11-24 缺口账：要几版／账上几版／还缺几版（逐张在同一条 results[].short_by 里）
+        "gap": outcome.get("gap") or {},
         "message": (
             f"投板完成：新建 {len(created)} 张、接续回收 {len(to_recover)} 张 → "
             f"到手 {n_ok} / 失败 {n_fail}"
@@ -10836,9 +10859,32 @@ async def _execute_dispatch(
                if (outcome.get("concat") or {}).get("note") else "")
             + (f"；闸门挡下 {len(blocked)} 张" if blocked else "")
             + (f"；{len(uncertain)} 张状态未知需人工看板" if uncertain else "")
+            + (
+                f"；失败自动重启 {(outcome.get('gap') or {}).get('retries')} 次"
+                f"（每张上限 {(outcome.get('gap') or {}).get('retry_max')} 次，只在本次轮询窗口内）"
+                if (outcome.get("gap") or {}).get("retries") else ""
+            )
+            + _gap_hint(outcome.get("gap"))
             + f"；号池今天已吃 {capacity['total_today']} 条（软提示线 ≈{capacity['soft_cap']}，不硬拦）"
         ),
     }
+
+
+def _gap_hint(gap: Optional[Dict[str, Any]]) -> str:
+    """缺口的那句「明确过程提示」（11-24 用户口径：做不到百分百回收，就要说清还缺几版、怎么补）。
+
+    只说三件事：缺几版、为什么机器不再自己补（重启＝整条 payload 再烧一遍额度，
+    且出窗口就是隔夜补投，那条口径没开）、人该怎么补（生产单「按同文案重开单」）。
+    """
+    g = gap or {}
+    short = int(g.get("short_by") or 0)
+    if not short:
+        return ""
+    return (
+        f"；缺口 {short} 版（要 {g.get('expected')} 版、账上已收 {g.get('collected')} 版）："
+        "自动重试只在本次轮询窗口内、且只救整批全失败的单，部分失败的缺口请到生产单"
+        "对这行点「按同文案重开单」补投——隔夜不自动补投是定死的口径"
+    )
 
 
 async def _auto_concat_recovered(
@@ -11155,9 +11201,20 @@ async def _poll_and_collect(
     - `waiting`／看不懂的词＝**还在跑**。判死→重投→同一条烧两遍号池（11-04 真踩过）；
     - 回读失败／这一天查不到＝**跳过这一轮**，不是失败（11-04 反推轮询同一条教训）；
     - `total>1` 的单**全版到手才落 success**：先判成功，剩下的版次再没人回收。
+
+    失败重试（11-24 用户口径「豆包生产会有一定的失败概率，最好失败后有一个重试机制」）：
+    - **全版都 fail** 的单，用同一条 payload 自动重启，最多 `ASSET_BOARD_RETRY_MAX` 次
+      （默认 2，＝首投＋2 次＝最多 3 次上板机会）。重启只在**本次轮询窗口内**发生，
+      到期不补（「不自动补投隔夜」照旧），`recover_only` 接续回收永不重启；
+    - **部分版失败**（有的 succ 有的 fail）**不自动重启**：一次重启是整条 payload 重建，
+      等于把已经到手的那几版再烧一遍额度。这类单当场收口成 failed，`error` 与产物账
+      一起说清「要几版、到手几版、缺几版」，缺的走人工「按同文案重开单」只补差额；
+    - 到期/收口时逐张算 `short_by = board_total − 库里产物数`，缺口在这里点名，
+      不让人回去数成片墙。
     """
     work_dir = tempfile.mkdtemp(prefix="asset_board_")
     pids = [uuid.UUID(pid) for pid in tracked]
+    retry_max = _board_retry_max()
     # 已经落过库的 outUrl：防重复插产物（同一张单回收两次／进程重启后重新跟踪同一批）
     seen_urls = {
         str(u)
@@ -11182,7 +11239,12 @@ async def _poll_and_collect(
             "status": t["prod"].status,
             "board_status": None,
             "outputs": [],
-            "restarted": False,
+            "restarted": False,        # 兼容字段：任一次自动重启都置 True（前端/用例在读）
+            "retries": 0,              # 本次实际自动重启了几次（上限 retry_max）
+            "retry_max": retry_max,
+            "expected": int(t["prod"].board_total or 1),
+            "collected": 0,            # 轮询结束后按库里的产物数回填（不是本次新增数）
+            "short_by": 0,             # expected − collected：还缺几版
         }
         for pid, t in tracked.items()
     }
@@ -11325,14 +11387,22 @@ async def _poll_and_collect(
                 t["prod"].error = None
                 s["status"] = PR_SUCCESS
                 changed = True
-            elif bad and not got:
-                if t["payload"] and not t["restart_used"] and not recover_only:
+            elif bad and len(got) + len(bad) == len(mine):
+                # 板面这一批全出终态了、其中有 fail 版：先把已经 succ 的版次取回来，
+                # 再按形状判读——这一分支**不会让部分成功的单再等满 45 分钟**。
+                if got:
+                    await _take_outputs(pid, t, got, s)
+                if not got and t["payload"] and t["allow_retry"] and t["retries"] < retry_max and not recover_only:
                     # 批 M（评审一·P1-1）：重启是**第二次烧号池**的动作，动手前用独立短会话
                     # 再读一眼库里的真实状态。主会话此刻不能开事务（下面紧跟出网，开着事务
                     # 等网络会撞 60s idle 掐断），也不能 commit（会把其他行本轮还没重读过的
                     # 改动先写下去）——所以借 _database 的模块属性开一次性会话（测试替身
                     # 重新指 factory 时这里自动跟着走）。人工若已把状态改走（判读后改回
                     # queued 准备自己重投是最典型形状），这行当场让位：绝不按旧快照再重启。
+                    #
+                    # 11-24 口径「有界自动重试」：次数由 ASSET_BOARD_RETRY_MAX 说了算（默认 2）。
+                    # **只有整批全失败才有重启资格**——重启是整条 payload 重建，部分成功时重启
+                    # 等于把已经到手的那几版再烧一遍额度，那种缺口的补法是人工重开单。
                     async with _database.async_session_factory() as probe:
                         live_status = (
                             await probe.execute(
@@ -11343,23 +11413,26 @@ async def _poll_and_collect(
                         _reown(pid, live_status, "重启前重读，")
                         changed = True
                         continue
-                    # 失败**只重启一次**（拍板口径）：同一条 payload 再建一次任务、重新认领 tid
-                    t["restart_used"] = True
+                    # 同一条 payload 再建一次任务、重新认领 tid（第 t["retries"]+1 次上板机会）
+                    t["retries"] += 1
                     days = board.days_to_query([t["prod"].board_date])
                     try:
                         before = await board.readback(days, t["tag"])
                         await board.create_task(t["payload"])
                         after = await board.readback(days, t["tag"])
                     except board.BoardError as e:
-                        _mark_dispatch_failed(t["prod"], s, f"板面失败，重启这步也没成：{e}")
+                        _mark_dispatch_failed(
+                            t["prod"], s,
+                            f"板面 status=fail；第 {t['retries']} 次自动重启这步也没成：{e}",
+                        )
                         changed = True
                         continue
                     new_tids = [x for x in after if x not in before]
                     if not new_tids:
                         _mark_dispatch_failed(
                             t["prod"], s,
-                            "板面失败，重启的任务建上了但回读不到（date/tag 对不上？）："
-                            "停在 failed 交人工看板，别再自动重投",
+                            f"板面 status=fail；第 {t['retries']} 次自动重启的任务建上了但回读不到"
+                            "（date/tag 对不上？）：停在 failed 交人工看板，别再自动重投",
                         )
                         changed = True
                         continue
@@ -11367,19 +11440,30 @@ async def _poll_and_collect(
                     t["tids"] = new_tids
                     s["tids"] = list(new_tids)
                     s["restarted"] = True
+                    s["retries"] = t["retries"]
                     s["board_status"] = None
                     s.pop("last_read_error", None)
                     changed = True
                     # 批 L：重启后旧板侧状态已不属于新任务，_adopt_tids 已重钉「已投板」。
                 else:
+                    if got:
+                        reason = (
+                            f"板面 {len(mine)} 版里 {len(bad)} 版 fail（succ 的 {len(got)} 版已正常回收）；"
+                            f"这张单缺 {len(bad)} 版——整批重启会把已到手的版次再烧一遍额度，"
+                            "所以缺口不自动补，在生产单对这行「按同文案重开单」只补差额"
+                        )
+                    elif t["retries"]:
+                        reason = (
+                            f"已按口径自动重启 {t['retries']} 次（上限 {retry_max} 次）仍失败；"
+                            "重启是再烧一遍号池的动作，次数到顶就交人工判读"
+                        )
+                    elif t["payload"] and t["allow_retry"] and retry_max == 0:
+                        reason = "自动重试已关（ASSET_BOARD_RETRY_MAX=0）：失败直接交人工判读"
+                    else:
+                        reason = "本次是只回读回收，不重启"
                     _mark_dispatch_failed(
                         t["prod"], s,
-                        "板面 status=fail（板上失败行没有原因字段，这条成因是我们侧判读）；"
-                        + (
-                            "已按口径重启过一次，仍失败"
-                            if t["restart_used"] and t["payload"]
-                            else "本次是只回读回收，不重启"
-                        ),
+                        "板面 status=fail（板上失败行没有原因字段，这条成因是我们侧判读）；" + reason,
                     )
                     changed = True
             else:
@@ -11433,9 +11517,49 @@ async def _poll_and_collect(
             await asyncio.sleep(_board_poll_interval_seconds())
 
     shutil.rmtree(work_dir, ignore_errors=True)
+
+    # ── 缺口账（11-24 用户：「我需要多少素材，最终就能给我回收多少素材，能不能做到？
+    #     如果不能的话，给我一个明确的过程提示」）──
+    # 口径与生产单列表的 `output_count` **同一条**：按 production_id 数产物、排除
+    # package/copy 两种加工行。所以这里数的是"账上到手几版"，不是"本次新增几支"——
+    # 上一轮已落库的、以及 recover_only 接手回来的旧产物都算，重复回收也不会虚增。
+    collected_by_pid: Dict[str, int] = {}
+    if summary:
+        for pid, cnt in (
+            await db.execute(
+                select(AssetOutput.production_id, func.count(AssetOutput.id))
+                .where(
+                    AssetOutput.production_id.in_([uuid.UUID(pid) for pid in summary]),
+                    AssetOutput.kind.notin_(("package", "copy")),
+                )
+                .group_by(AssetOutput.production_id)
+            )
+        ).all():
+            collected_by_pid[str(pid)] = int(cnt)
+    n_expected = n_collected = 0
+    for pid, s in summary.items():
+        exp = int(s["expected"])
+        got_cnt = collected_by_pid.get(pid, 0)
+        s["collected"] = got_cnt
+        s["short_by"] = max(0, exp - got_cnt)
+        n_expected += exp
+        n_collected += got_cnt
+        if s["short_by"] and s["status"] not in (PR_SUCCESS, PR_FAILED):
+            # 还没终态（到期仍在板上跑／回读抖动）的单：缺口只写进 note，**不写 error**
+            # ——没出片不等于失败，这条纪律跟上面的三条判读规矩同源。
+            s["note"] = (s.get("note") or "") + f"；要 {exp} 版、账上 {got_cnt} 版，还缺 {s['short_by']} 版"
+    gap = {
+        "expected": n_expected,
+        "collected": n_collected,
+        "short_by": max(0, n_expected - n_collected),
+        "retry_max": retry_max,
+        "retries": sum(int(s.get("retries") or 0) for s in summary.values()),
+    }
+
     return {
         "summary": summary,
         "outputs": outputs,
+        "gap": gap,
         # 批 Q：把 prod 引用一并交出去。人工让位的行会从 tracked 摘除（`_reown`），
         # 但它这次到手的产物仍要按它落库、也仍要拼——自动拼接若只认 tracked，
         # 「刚被人工改过状态的单」就会静默少拼一条。

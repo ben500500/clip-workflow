@@ -6245,13 +6245,17 @@ class _FakeBoard:
 
     def __init__(self, *, status_fn=None, pre_existing=(), create_error=None,
                  readback_error_after=None, hide_new=False, download_error=None,
-                 video_bytes=None, readback_ok_days=None):
+                 video_bytes=None, readback_ok_days=None, fail_tids=None):
         self.creates: List[dict] = []
         self.rows: Dict[str, dict] = {}
         self.reads: List[Tuple[tuple, str]] = []
         self.downloads: List[str] = []
         self._seq = 0
         self.status_fn = status_fn or (lambda created_index, read_round: "succ")
+        # 11-24 批：按 **tid** 点名判失败，用来造「一张单 3 版里 1 版 fail」这种
+        # 版级混合终态——`status_fn` 只按 created_index 分，做不到同一批内分化。
+        # tid 是确定性号（T000001…），用例点第几版就写第几版。
+        self.fail_tids = set(fail_tids or ())
         self.create_error = create_error
         self.readback_error_after = readback_error_after
         self.hide_new = hide_new
@@ -6320,8 +6324,11 @@ class _FakeBoard:
             if self.hide_new and row["_created"] > 0:
                 continue
             row["_reads"] += 1
+            st = self.status_fn(row["_created"], row["_reads"])
+            if tid in self.fail_tids:
+                st = "fail"
             out[tid] = {
-                "tid": tid, "name": row["name"], "status": self.status_fn(row["_created"], row["_reads"]),
+                "tid": tid, "name": row["name"], "status": st,
                 "outUrl": row["outUrl"],
                 "rgid": row["rgid"], "doubaoName": row["doubaoName"],
             }
@@ -6358,7 +6365,7 @@ def _patch_board(fb: _FakeBoard):
 
 
 @contextlib.contextmanager
-def _board_off(fb: _FakeBoard):
+def _board_off(fb: _FakeBoard, *, retry_max=None):
     """`with _board_off(fb):` ＝投板这段线全程不出网（含轮询协程），并且**跑得完**。
 
     除了三个出网函数，这里还顺手钉四件事，每一件都是"不钉就会挂/会假绿"：
@@ -6367,6 +6374,8 @@ def _board_off(fb: _FakeBoard):
       整节用例测到的都是"凭据没配"而不是投板；填的是替身用的假值，一个包都不会发出去。
     - 轮询间隔／最长等待：现网口径 45s×45min，用例里等 45 分钟就是挂。压到下限
       （0.05s / 0.02 分钟）后，"waiting 若干轮→succ""到期不判失败"两条码路都能真跑过。
+    - `retry_max`：把「失败自动重启上限」钉成用例要的那个数（不填就沿用类默认值 2）。
+      不钉这一层，"重启几次"就跟着 config.py 走，改默认值会把一片用例判读改成别的形状。
     - 退出时**原样还原**，不污染同进程后面的用例（含那些依赖"凭据为空"的用例）。
     """
     saved = {
@@ -6374,11 +6383,14 @@ def _board_off(fb: _FakeBoard):
         "ASSET_BOARD_BASE_URL": settings.ASSET_BOARD_BASE_URL,
         "ASSET_BOARD_POLL_INTERVAL": settings.ASSET_BOARD_POLL_INTERVAL,
         "ASSET_BOARD_POLL_MAX_MINUTES": settings.ASSET_BOARD_POLL_MAX_MINUTES,
+        "ASSET_BOARD_RETRY_MAX": settings.ASSET_BOARD_RETRY_MAX,
     }
     settings.AIVIDEO_AUTH = "tester:board-pass-for-tests"
     settings.ASSET_BOARD_BASE_URL = "http://board.invalid"
     settings.ASSET_BOARD_POLL_INTERVAL = 0.05
     settings.ASSET_BOARD_POLL_MAX_MINUTES = 0.02
+    if retry_max is not None:
+        settings.ASSET_BOARD_RETRY_MAX = retry_max
     try:
         with contextlib.ExitStack() as st:
             for p in _patch_board(fb):
@@ -6947,11 +6959,17 @@ def test_dispatch_waiting_and_read_jitter_are_never_failures():
     _run(_scenario())
 
 
-def test_dispatch_restarts_a_failed_task_exactly_once():
-    """板面 fail → 按同一条 payload **只重启一次**；再失败就落 failed 交人工。
+def test_dispatch_restarts_a_failed_task_within_the_retry_budget():
+    """板面全版 fail → 按同一条 payload **有界**自动重启；额度花完落 failed 交人工。
 
-    钉的是"只重启一次"这个次数本身：一次都没重启＝片子没机会回来；重启两次＝
-    同一条烧三遍号池。两次用例共用一条判据：`len(fb.creates)`。
+    11-24 需求④（用户：「失败后有一个重试机制」，圈定口径「有界自动重试＋缺口提示」）：
+    旋钮 `ASSET_BOARD_RETRY_MAX` 说了算，用例把旋钮钉死再断言，**不跟 config 默认值走**
+    ——否则日后改默认值会把这条钉子悄悄改成另一个形状。四格共用一条判据 `len(fb.creates)`：
+
+    - `retry_max=1`（老口径）＝首投＋1 次＝2 次上板；
+    - 首投就成功＝一次都不多烧；
+    - `retry_max=2`（现默认）且一直 fail＝3 次上板后收手，成因写明重启了几次、上限多少；
+    - `retry_max=0`＝完全关掉自动重试，失败直接交人工（1 次上板）。
     """
     _run(_bootstrap())
 
@@ -6959,33 +6977,118 @@ def test_dispatch_restarts_a_failed_task_exactly_once():
         client, h = await _client_and_headers()
         ho = h["operator"]
         asset_id, _sid, listed = await _order_ready_production(
-            client, h, n=2, hook_codes=["7C0E9", "7C0F1"])
-        revived, dead = listed[0], listed[1]
+            client, h, n=4, hook_codes=["7C0E9", "7C0F1", "7C0F2", "7C0F3"])
+        ok_first, revived, dead, off = listed[0], listed[1], listed[2], listed[3]
 
-        # ① 第一次建的那版 fail，重启的第二版 succ
+        # ⓪ 首投就成功：重试这条路根本没走，板上只建一条（额度不因新旋钮而多烧）
+        fb0 = _FakeBoard()
+        with _board_off(fb0, retry_max=2):
+            resp0 = await _dispatch(client, ho, [ok_first["id"]])
+        assert len(fb0.creates) == 1, f"成功条不该触发重启：{fb0.creates}"
+        assert list(resp0.json()["results"].values())[0]["retries"] == 0
+        assert resp0.json()["gap"]["retries"] == 0
+
+        # ① 老口径 retry_max=1：首投 fail → 重启一次 → succ
         fb = _FakeBoard(status_fn=lambda created_index, read_round: (
             "fail" if created_index == 1 else "succ"))
-        with _board_off(fb):
+        with _board_off(fb, retry_max=1):
             resp = await _dispatch(client, ho, [revived["id"]])
         assert resp.status_code == 200, resp.text
-        assert len(fb.creates) == 2, "失败只允许重启一次"
-        body = resp.json()
-        assert body["succeeded"] == 1 and list(body["results"].values())[0]["restarted"] is True
+        assert len(fb.creates) == 2, "上限 1 次＝最多两次上板"
+        b = resp.json()
+        r = list(b["results"].values())[0]
+        # `restarted` 这个旧键保留（前端/历史用例按它判「救回来了」），新键是次数
+        assert r["restarted"] is True and r["retries"] == 1 and r["retry_max"] == 1, r
+        assert b["succeeded"] == 1 and b["gap"]["retries"] == 1
         row = await _row_of(AssetProduction, revived["id"])
         assert row.status == PR_SUCCESS and row.board_tid == "T000002", (row.status, row.board_tid)
         assert row.attempts == 2, "重启是真投了一次，attempts 要如实+1"
+        assert "失败自动重启 1 次" in b["message"], b["message"]
 
-        # ② 一直 fail：两次 POST 之后收手，落 failed 且成因写明"我们侧判读"
+        # ② 默认口径 retry_max=2：一直 fail → 三次上板后收手，成因写明次数与上限
         fb2 = _FakeBoard(status_fn=lambda created_index, read_round: "fail")
-        with _board_off(fb2):
+        with _board_off(fb2, retry_max=2):
             resp2 = await _dispatch(client, ho, [dead["id"]])
-        assert len(fb2.creates) == 2, "第三次就是重投烧号池了"
+        assert len(fb2.creates) == 3, f"第四次就是无界重投烧号池了：{len(fb2.creates)}"
         b2 = resp2.json()
         assert b2["failed"] == 1 and b2["succeeded"] == 0
         row2 = await _row_of(AssetProduction, dead["id"])
         assert row2.status == PR_FAILED
-        assert "重启过一次，仍失败" in row2.error and "没有原因字段" in row2.error, row2.error
-        assert await _count(AssetOutput) == 1, "只有救回来的那条有产物"
+        assert "自动重启 2 次（上限 2 次）仍失败" in row2.error, row2.error
+        assert "没有原因字段" in row2.error, row2.error
+        assert row2.attempts == 3, "三次上板都记进台账"
+
+        # ③ 关掉自动重试 retry_max=0：失败直接交人工，一次都不重投
+        fb3 = _FakeBoard(status_fn=lambda created_index, read_round: "fail")
+        with _board_off(fb3, retry_max=0):
+            resp3 = await _dispatch(client, ho, [off["id"]])
+        assert len(fb3.creates) == 1, "上限 0 就是完全关，别偷偷重投"
+        row3 = await _row_of(AssetProduction, off["id"])
+        assert row3.status == PR_FAILED and "ASSET_BOARD_RETRY_MAX=0" in row3.error, row3.error
+        assert "交人工判读" in row3.error, row3.error
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_dispatch_partial_version_failure_converges_with_a_named_gap():
+    """一张单多版里只有部分版 fail：**不整批重启**，收掉成功版并点名缺几版。
+
+    需求④的另一半（用户：「我需要多少素材，最终就能给我回收多少素材，能不能做到？」）。
+    答复是「有界自动重试做不到百分百，但缺口必须说清楚」，这条用例钉的就是那句提示：
+
+    1. 部分成功**没有**重启资格——重启是整条 payload 重投，会把已到手的版次再烧一遍额度；
+    2. 板面全出终态后这张单**当场收敛**，不再空等到 45 分钟期限（改前会一路挂到到期）；
+    3. 缺口口径读侧派生：`results[].short_by` ＝ 应收 board_total − 实收产物数，
+       与生产单列表口 `short_by` 同源，界面上的「缺 N 版」和后台说的必须是同一个数；
+    4. 提示里指到人能走的那一步：「按同文案重开单」，并写明隔夜不自动补投。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=1, board_total=3, hook_codes=["7C0F4"])
+        prod = listed[0]
+
+        # tid 是确定号：这张单一次 create 出 3 版＝T000001..T000003，点掉中间那版
+        fb = _FakeBoard(fail_tids={"T000002"})
+        with _board_off(fb, retry_max=2):
+            resp = await _dispatch(client, ho, [prod["id"]])
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert len(fb.creates) == 1, "部分失败不许整批重启（会把已到手的 2 版再烧一遍）"
+
+        r = list(body["results"].values())[0]
+        assert (r["expected"], r["collected"], r["short_by"]) == (3, 2, 1), r
+        assert r["status"] == PR_FAILED and r["retries"] == 0, r
+        assert body["gap"] == {"expected": 3, "collected": 2, "short_by": 1,
+                               "retry_max": 2, "retries": 0}, body["gap"]
+        assert "缺口 1 版（要 3 版、账上已收 2 版）" in body["message"], body["message"]
+        assert "按同文案重开单" in body["message"] and "隔夜不自动补投" in body["message"]
+
+        row = await _row_of(AssetProduction, prod["id"])
+        assert row.status == PR_FAILED, row.status
+        assert "板面 3 版里 1 版 fail（succ 的 2 版已正常回收）" in row.error, row.error
+        assert "按同文案重开单" in row.error, row.error
+        assert await _count(AssetOutput) == 2, "已成功的 2 版要照常落库，不能整批作废"
+
+        # 列表口的缺口必须和回收协程说同一个数（读侧派生，不是另一套算法）
+        got = await client.get("/api/assets/productions", headers=ho)
+        assert got.status_code == 200, got.text
+        mine = [x for x in got.json()["items"] if x["id"] == str(prod["id"])]
+        assert len(mine) == 1
+        assert mine[0]["board_total"] == 3 and mine[0]["output_count"] == 2
+        assert mine[0]["short_by"] == 1, mine[0]
+
+        # 没投过板的行（order_ready）不算缺口：否则界面满屏假「缺 N 版」。
+        # ⚠️ url 必须换一条（DOUYIN_3）：同一条链接二次导入会被去重挡下，items 是空的。
+        fresh = await _order_ready_production(
+            client, h, n=1, board_total=2, hook_codes=["7C0F5"], url=DOUYIN_3)
+        row_f = [x for x in (await client.get("/api/assets/productions", headers=ho)
+                             ).json()["items"] if x["id"] == fresh[2][0]["id"]]
+        assert row_f[0]["status"] == PR_ORDER_READY and row_f[0]["short_by"] == 0, row_f[0]
         await client.aclose()
 
     _run(_scenario())
@@ -13786,6 +13889,78 @@ def test_script_favorites_move_others_scripts_into_my_view():
         assert ids == {fork.json()["id"], d["id"]}, "只剩自己那条派生稿＋收藏的运营草稿；被下架的收藏不该冒出来"
         gone = await client.get(_SCRIPT_URL, params={"state": "retired"}, headers=hm)
         assert gone.json()["total"] == 1 and gone.json()["items"][0]["favorited"] is True
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_my_view_pending_filter_does_not_leak_others_drafts():
+    """11-24 用户反馈②：「选择"我的"之后，好像未定稿的即使不在我的收藏里也会展现」。
+
+    真因在**前端**——极简页「待过审」区那次请求（`carrier_status=pending`）没带 `owner`，
+    于是把全员的待审稿摆进了「我的」。已修（`fetchPending` 跟着开关注入 owner）。
+
+    这条钉的是后端这一侧，防的是另一类回退：假如哪天有人把 owner 与 carrier_status 做成
+    「各自查一次再取并集」，别人的 pending 稿就会从 carrier 那条腿漏回来。口径是
+    **同一批 WHERE 条件里的 AND**（misc.py `list_scripts`：conds 依次 append，最后 and_），
+    所以任何筛选组合下都不该出现「不是我的、且我没收藏」的行。默认列表（含 draft）同一条。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+
+        def ids(resp):
+            assert resp.status_code == 200, resp.text
+            return {it["id"] for it in resp.json()["items"]}
+
+        # 运营侧三行：定稿并送审（载体 pending）／定稿没送审／纯草稿。
+        # ⚠️ 三条正文必须各不相同——同一个人第二条**同内容 ready** 行会被唯一索引挡下
+        #    （见 test_script_ready_unique），拿默认 _SCRIPT_BODY 复制两条会当场 400。
+        op_pending = await _mk_script(client, ho, name="运营的待审稿",
+                                      body=_SCRIPT_BODY + "镜头4：运营的待审收尾。")
+        assert (await _finalize(client, ho, op_pending["id"])).status_code == 200
+        sub = await client.post(
+            f"{_SCRIPT_URL}/submit", json={"script_ids": [op_pending["id"]]}, headers=ho)
+        assert sub.status_code == 200 and sub.json()["results"][0]["ok"] is True, sub.text
+        op_ready = await _mk_script(client, ho, name="运营的没送审",
+                                    body=_SCRIPT_BODY + "镜头4：运营的另写一条。")
+        assert (await _finalize(client, ho, op_ready["id"])).status_code == 200
+        op_draft = await _mk_script(client, ho, name="运营的草稿",
+                                    body=_SCRIPT_BODY + "镜头4：运营还没写完。")
+        # 素材专员自己的一条草稿（用户原话里的「未定稿」就是这个态）
+        my_draft = await _mk_script(client, hm, name="我的草稿")
+
+        # ① 「我的」＋待过审：一条也没有。同参数 owner=all 能捞到运营那条——
+        #    对照着看才知道 0 是**过滤掉**的结果，不是数据压根没建上。
+        assert ids(await client.get(_SCRIPT_URL, params={
+            "owner": "me", "carrier_status": "pending"}, headers=hm)) == set()
+        assert ids(await client.get(_SCRIPT_URL, params={
+            "owner": "all", "carrier_status": "pending"}, headers=hm)) == {op_pending["id"]}
+
+        # ② 未定稿同理：owner=me 只看得到自己的草稿；owner=all 才摆出运营的 ready 与 draft
+        assert ids(await client.get(_SCRIPT_URL, params={
+            "owner": "me", "state": "draft"}, headers=hm)) == {my_draft["id"]}
+        assert {op_pending["id"], op_ready["id"], op_draft["id"], my_draft["id"]} <= ids(
+            await client.get(_SCRIPT_URL, params={"owner": "all"}, headers=hm))
+
+        # ③ 收藏＝把别人的稿子拉进「我的」的唯一动作，而且**跟着每一颗筛选一起生效**：
+        #    收藏后它在待过审区出现、在定稿区出现；取消收藏后两处又都干净。
+        #    （只做在默认列表上的话，待过审区照样漏——正是用户看到的那个现象。）
+        await client.put(f"{_SCRIPT_URL}/{op_pending['id']}/favorite", headers=hm)
+        pend = {"owner": "me", "carrier_status": "pending"}
+        assert ids(await client.get(_SCRIPT_URL, params=pend, headers=hm)) == {op_pending["id"]}
+        assert ids(await client.get(_SCRIPT_URL, params={
+            "owner": "me", "state": "ready"}, headers=hm)) == {op_pending["id"]}
+        await client.request("DELETE", f"{_SCRIPT_URL}/{op_pending['id']}/favorite", headers=hm)
+        assert ids(await client.get(_SCRIPT_URL, params=pend, headers=hm)) == set()
+        assert ids(await client.get(_SCRIPT_URL, params={
+            "owner": "me", "state": "ready"}, headers=hm)) == set()
+
+        # ④ 作者本人不受影响：运营的「我的」里自己三条全在（隔离只收别人的）
+        assert {op_pending["id"], op_ready["id"], op_draft["id"]} <= ids(
+            await client.get(_SCRIPT_URL, params={"owner": "me"}, headers=ho))
         await client.aclose()
 
     _run(_scenario())
