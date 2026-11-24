@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { OutputGuide } from './PanelGuides';
+import type { OwnerView } from '../../hooks/useOwnerView';
 import {
   Button,
   Checkbox,
@@ -437,7 +438,16 @@ const AssetOutputWall: React.FC<{
   // 11-13 用户口径：五板块内嵌动画——本面板＝挑片/交付链路
   const [howOpen, setHowOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'asset' | 'batch'>('asset');
-  const [ownerView, setOwnerView] = useState<'me' | 'all'>(ownerDefault);
+  const [ownerView, setOwnerView] = useState<OwnerView>(ownerDefault);
+  /**
+   * 批 T（11-24）：`ownerDefault` 现在由页面层的全局「仅看自己」开关算出来
+   * （开＝me，关＝all；旧的按角色矩阵已被那句「默认是要能看到全部的」顶掉）。
+   * 面板是挂载着的，光改 prop 不会重跑 useState 初始值，所以这里跟着 prop 同步一次——
+   * 用户翻开关后回到本屏，看到的就该是收成后的墙，而不是"上次我手动切的那档"。
+   */
+  useEffect(() => {
+    setOwnerView(ownerDefault);
+  }, [ownerDefault]);
   const [packaging, setPackaging] = useState(false);
   // P1（评审定稿⑧）：跨组投放篮子——勾选跨组/跨页/刷新持久（sessionStorage）
   const [basket, setBasket] = useState<Set<string>>(() => {

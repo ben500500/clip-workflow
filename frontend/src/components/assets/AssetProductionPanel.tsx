@@ -23,6 +23,7 @@ import AssetCardPicker from './AssetCardPicker';
 import AssetConcatPicker from './AssetConcatPicker';
 import AssetPromptElementDrawer from './AssetPromptElementDrawer';
 import { HelpDot, HighlightedPrompt, MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
+import { useOwnerView } from '../../hooks/useOwnerView';
 
 const { Text, Paragraph } = Typography;
 
@@ -31,6 +32,8 @@ interface Props {
   canWriteBack: boolean;
   /** 「带违禁词强行导出」只有 admin 能做（后端同一道闸，前端只决定按钮给不给） */
   isAdmin: boolean;
+  /** 批 T（11-24）全局「仅看自己」：true＝本列表默认收成 owner=me（我自己投产的单） */
+  scopeMine?: boolean;
   batchId?: string;
   /** 后台投产任务收敛后自增（D-1）：生产单是后端建行的，只能重新拉才看得到 */
   reloadToken?: number;
@@ -354,7 +357,7 @@ const PromptDraftDiff: React.FC<{ before: string; after: string }> = ({ before, 
  * 两条路的闸门、payload、状态迁移共用后端同一套判据，前端不要自己复述规则数字。
  */
 const AssetProductionPanel: React.FC<Props> = ({
-  canWriteBack, isAdmin, batchId, reloadToken, active = true,
+  canWriteBack, isAdmin, scopeMine, batchId, reloadToken, active = true,
   dispatchIds, dispatchNotes, onDispatchConsumed, onGoToOutputs,
 }) => {
   const [items, setItems] = useState<AssetProduction[]>([]);
@@ -371,10 +374,10 @@ const AssetProductionPanel: React.FC<Props> = ({
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
   const [assetFilter, setAssetFilter] = useState<string | undefined>();
   /**
-   * A′ 按运营隔离（2026-11-07）：owner=me 只看自己投产的单（查询偏好）。
-   * 默认矩阵：operator=我的、admin=全部；统计两行并排（我的／全站），号池一本账。
+   * A′ 按运营隔离（2026-11-07）→ 11-24 起初始值改由全局「仅看自己」开关给（默认＝全部）。
+   * 统计两行并排（我的／全站）与号池一本账不受这里影响——那是另一套口径。
    */
-  const [ownerView, setOwnerView] = useState<'me' | 'all'>(isAdmin ? 'all' : 'me');
+  const [ownerView, setOwnerView] = useOwnerView(scopeMine);
 
   const [selected, setSelected] = useState<AssetProduction[]>([]);
   const [writeOpen, setWriteOpen] = useState(false);

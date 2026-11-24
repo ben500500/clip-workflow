@@ -15,6 +15,7 @@ import {
   CategorySelect, invalidateAssetCategories, useAssetCategories,
 } from './AssetCategoryBits';
 import { useAssetFrames } from './AssetFrameBits';
+import { useOwnerView } from '../../hooks/useOwnerView';
 import AssetReviewCard from './AssetReviewCard';
 import ProduceOrderModal from './ProduceOrderModal';
 import RiskLexiconDrawer from './RiskLexiconDrawer';
@@ -45,6 +46,8 @@ interface Props {
   /** 2026-11-11 评审：审核台里也有「生成生产单」入口，投产职能被关的人不能看到它 */
   canProduce: boolean;
   isAdmin: boolean;
+  /** 批 T（11-24）全局「仅看自己」：true＝本列表默认收成 owner=me（我过审/我导入的那部分） */
+  scopeMine?: boolean;
   batchId?: string;
   /** 后台出文案任务收敛后自增（D-1）：新候选是后端落库的，只能重新拉一次才看得到 */
   reloadToken?: number;
@@ -79,7 +82,7 @@ interface Props {
  * 表格外壳留着只是为了 rowSelection 和分页，列定义合成一格。
  * 帧是纯呈现层：`GET /assets/frames` 拉不到就当没图，审核动作照点。
  */
-const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, batchId, reloadToken, onGoToProduction, onProduced, active = true }) => {
+const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, scopeMine, batchId, reloadToken, onGoToProduction, onProduced, active = true }) => {
   const [data, setData] = useState<AssetSummaryListResult | null>(null);
   const [items, setItems] = useState<AssetSummary[]>([]);
   const [total, setTotal] = useState(0);
@@ -94,10 +97,10 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, bat
    */
   const [keyword, setKeyword] = useState('');
   /**
-   * A′ 按运营隔离（2026-11-07）：owner=me 已过审区只显自己过审的，pending 共享。
-   * 默认矩阵：operator=我的、admin=全部；纯查询偏好，「全部」是只读全量。
+   * A′ 按运营隔离（2026-11-07）→ 11-24 起初始值改由全局「仅看自己」开关给（默认＝全部）。
+   * 面板内仍可手动切「我的｜全部」，只影响这一屏，不回写全局开关。
    */
-  const [ownerView, setOwnerView] = useState<'me' | 'all'>(isAdmin ? 'all' : 'me');
+  const [ownerView, setOwnerView] = useOwnerView(scopeMine);
   /**
    * 三个筛选项**互斥**（11-04 用户纠正）：一次只看一类。
    * 之前是三个独立勾选框，能同时勾，勾出来的是「推荐条 且 命中违禁词 且 和原视频对不上」
