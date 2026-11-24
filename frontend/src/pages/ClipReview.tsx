@@ -6,7 +6,7 @@ import {
 import {
   ArrowLeftOutlined, CheckOutlined, CloseOutlined, ReloadOutlined,
   PlayCircleOutlined, PauseCircleOutlined, ThunderboltOutlined,
-  CheckCircleOutlined, ExclamationCircleOutlined,
+  CheckCircleOutlined, ExclamationCircleOutlined, DeleteOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { autoclipApi } from '../api/autoclip';
@@ -190,6 +190,18 @@ const ClipReview: React.FC = () => {
       fetchClips();
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '更新失败');
+    }
+  };
+
+  // ─── 彻底删除单个片段（与拒绝不同：行直接从列表移除） ─────────
+  const deleteClip = async (clip: ClipCandidate) => {
+    try {
+      await autoclipApi.deleteCandidate(clip.id);
+      message.success('片段已删除');
+      setSelectedRowKeys((keys) => keys.filter((k) => k !== clip.id));
+      fetchClips();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '删除失败');
     }
   };
 
@@ -382,12 +394,19 @@ const ClipReview: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 180,
+      width: 240,
       render: (_: unknown, c: ClipCandidate) => (
         <Space size="small">
           <Button size="small" type="primary" icon={<CheckOutlined />} onClick={() => updateStatus(c, 'accepted')}>通过</Button>
           <Popconfirm title="确定拒绝该片段？" onConfirm={() => updateStatus(c, 'rejected')}>
             <Button size="small" danger icon={<CloseOutlined />}>拒绝</Button>
+          </Popconfirm>
+          <Popconfirm
+            title="确定删除该片段？"
+            description="删除后从候选列表彻底移除，不再参与审核与切片。"
+            onConfirm={() => deleteClip(c)}
+          >
+            <Button size="small" danger type="text" icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
         </Space>
       ),

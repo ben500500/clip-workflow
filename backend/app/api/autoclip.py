@@ -784,6 +784,46 @@ async def update_clip(
     return _serialize_clip(clip)
 
 
+@router.delete("/clips/{clip_id}", status_code=200)
+async def delete_clip(
+    clip_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a clip candidate entirely（数据隔离）。
+
+    选点页「删除」：与拒绝不同，删除把该片段从候选列表彻底移除（不再出现在
+    审核与切片范围）。已产出成品对它的引用置空（成品记录本身保留）。
+    """
+    try:
+        cid = uuid.UUID(clip_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid clip ID format")
+
+    result = await db.execute(select(ClipCandidate).where(ClipCandidate.id == cid))
+    clip = result.scalar_one_or_none()
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    # 数据隔离
+    episode = (
+        await db.execute(select(Episode).where(Episode.id == clip.episode_id))
+    ).scalar_one_or_none()
+    if episode:
+        await check_project_access_by_episode(db, episode, current_user)
+
+    # 先解除成品对候选的引用（slice_outputs.clip_id FK 无 ondelete，直接删会撞外键）
+    from sqlalchemy import update as _sa_update
+    await db.execute(
+        _sa_update(SliceOutput)
+        .where(SliceOutput.clip_id == cid)
+        .values(clip_id=None)
+    )
+    await db.delete(clip)
+    await db.flush()
+    return {"ok": True, "deleted": clip_id}
+
+
 @router.post("/episodes/{episode_id}/autoclip/regenerate", response_model=AutoClipRunResponse)
 async def regenerate_autoclip(
     episode_id: str,

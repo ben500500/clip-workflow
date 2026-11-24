@@ -40,6 +40,10 @@ export const autoclipApi = {
   updateCandidate: (id: string, data: Partial<ClipCandidate>) =>
     client.put(`/clips/${id}`, data) as Promise<ClipCandidate>,
 
+  // 彻底删除候选片段（选点页「删除」；与拒绝不同，行直接移除不再出现在列表）
+  deleteCandidate: (id: string) =>
+    client.delete(`/clips/${id}`) as Promise<{ ok: boolean; deleted: string }>,
+
   regenerate: (episodeId: string, config?: AutoClipConfig) =>
     client.post(`/episodes/${episodeId}/autoclip/regenerate`, { config }) as Promise<{
       celery_task_id: string;
