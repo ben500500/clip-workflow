@@ -794,14 +794,14 @@ def run_ffmpeg(args, timeout=3600, threads=1):
                 return proc2
             # 回退也失败：合并硬件原命令与回退命令两侧的 stderr，报错信息更清晰
             sw_stderr = proc2.stderr.decode(errors="replace")
-            open("/app/media/ffmpeg_err.log","w").write(stderr_txt + "\n\n===回退命令 stderr===\n" + sw_stderr)
+            open("/tmp/ffmpeg_err.log","w").write(stderr_txt + "\n\n===回退命令 stderr===\n" + sw_stderr)
             raise RuntimeError(
                 "ffmpeg failed (硬件编码器与 libx264 回退均失败)\n"
                 f"原命令 stderr: {stderr_txt[-1200:]}\n"
                 f"回退命令 stderr: {sw_stderr[-1200:]}"
             )
         import datetime
-        open("/app/media/ffmpeg_err.log","w").write(stderr_txt)
+        open("/tmp/ffmpeg_err.log","w").write(stderr_txt)
         raise RuntimeError("ffmpeg failed: " + stderr_txt[-2000:])
     return proc
 
