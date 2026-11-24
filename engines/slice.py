@@ -984,16 +984,15 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="li
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
-def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True,
-                    extra_overlay_args: list | None = None):
+def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True):
     if len(parts) == 1:
-        # 单段时无需重新编码（水印已在 slice_segment 阶段叠加）
+        # 单段时无需重新编码（水印/角标已在源片预叠加阶段完成）
         shutil.move(parts[0], out)
         return
     # 多段免重编码拼接（2026-11-23 优化）：探测各段 AV 签名，完全一致才用
     # concat demuxer 流拷贝（钩子/片尾已按本体参数编码时即命中）；拼接后校验
     # 时长≈各段之和，不符则回退 filter_complex 重编码（防坏片）。
-    if copy_if_possible and not extra_overlay_args and all(_is_copy_segment(p) for p in parts):
+    if copy_if_possible and all(_is_copy_segment(p) for p in parts):
         sigs = [_av_signature(p) for p in parts]
         uniform = bool(sigs) and all(x is not None for x in sigs) and len(set(sigs)) == 1
         if not uniform:
@@ -1059,28 +1058,9 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
     cmd += build_encoder_args(encoder, threads)
     cmd += ["-c:a", "aac", "-b:a", "128k", out]
     _stage(f"成品拼接重编码（{len(parts)} 段）")
-    # 角标合并进 concat 滤镜链（2026-11-23 用户需求）：拼接输出作为角标 overlay
-    # 的底片，一次编码完成「拼接+角标」，省去独立的全量重编码 pass。
-    if extra_overlay_args:
-        # 在 concat 的 ffmpeg 命令后追加角标图片输入与 overlay 滤镜
-        args_list = list(extra_overlay_args)
-        fc = args_list[args_list.index("-filter_complex") + 1]
-        import re as _re
-        fc2 = _re.sub(r"\[(\d+):v\]", lambda m: f"[{len(parts) + int(m.group(1))}]", fc)
-        # 原 fc 的 [0:v] 是 concat 中间文件——先把 concat 产出作为独立文件输入，
-        # 重编号为 [0:v]
-        cmd += ["-i", out]
-        for i, a in enumerate(args_list):
-            if a == "-i":
-                cmd += ["-i", args_list[i + 1]]
-        fc3 = fc2.replace("[0:v]", "[0:v]")
-        cmd += ["-filter_complex", fc3, "-map", "[vout]", "-map", "0:a?",
-                "-c:a", "aac", "-b:a", "128k"]
-        cmd += build_encoder_args(encoder, threads)
-        cmd += [out]
-        print(f"[SLICE-DEBUG] concat+badge cmd: fc={fc3[:400]}", file=sys.stderr)
-        run_ffmpeg(cmd, timeout=3600, threads=threads)
-        return
+    # 角标不在此处叠加：角标由源片预叠加阶段统一完成（一次编码，所有成品复用），
+    # 预叠加失败时回退到成品级 apply_badges 单独 pass。在 concat 里带 overlay 会
+    # 废掉 copy-concat 流拷贝快速通道（带滤镜必须重编码），大批量任务反而更慢。
     print(f"[SLICE-DEBUG] concat cmd: filter_complex={filter_complex[:500]}", file=sys.stderr)
     print(f"[SLICE-DEBUG] concat parts: {parts}", file=sys.stderr)
     run_ffmpeg(cmd, threads=threads)
@@ -4646,6 +4626,7 @@ def main():
                 badges = raw_badges
         except (ValueError, TypeError):
             badges = []
+    badges_preapplied = False
     if badges and os.path.isfile(source_path):
         badged_src = os.path.join(
             os.path.dirname(os.path.abspath(source_path)),
@@ -4655,13 +4636,24 @@ def main():
             badges, threads, encoder, default_width=args.badge_default_width,
         )
         if badge_args:
-            _stage("角标预叠加到源片（一次编码，所有成品复用）")
-            print(f"角标预叠加: {len(badges)} 个角标 → {badged_src}", file=sys.stderr)
-            cmd = ["ffmpeg", "-y", "-threads", str(threads),
-                   "-i", source_path] + badge_args + [badged_src]
-            run_ffmpeg(cmd, timeout=3600, threads=threads)
+            # 失败重派/续跑时源片旁已有同源带角标文件：时长一致即复用，省一次
+            # 全源重编码（内容以源片同名前提取信，时长校验防串片）。
+            reuse = False
+            if os.path.isfile(badged_src) and os.path.getsize(badged_src) > 0:
+                _d_src = ffprobe_duration(source_path) or 0.0
+                _d_badged = ffprobe_duration(badged_src) or 0.0
+                reuse = _d_src > 0 and _d_badged > 0 and abs(_d_badged - _d_src) <= 5.0
+                if reuse:
+                    print(f"复用已有带角标源片: {os.path.basename(badged_src)}", file=sys.stderr)
+            if not reuse:
+                _stage("角标预叠加到源片（一次编码，所有成品复用）")
+                print(f"角标预叠加: {len(badges)} 个角标 → {badged_src}", file=sys.stderr)
+                cmd = ["ffmpeg", "-y", "-threads", str(threads),
+                       "-i", source_path] + badge_args + [badged_src]
+                run_ffmpeg(cmd, timeout=3600, threads=threads)
             if os.path.isfile(badged_src) and os.path.getsize(badged_src) > 0:
                 source_path = badged_src
+                badges_preapplied = True
                 print(f"角标预叠加完成，后续切割从带角标源片进行", file=sys.stderr)
             else:
                 print("警告: 角标预叠加失败，跳过（成品将无角标）", file=sys.stderr)
@@ -5219,18 +5211,8 @@ def main():
                 # 2026-11-23 优化：钩子/片尾已按本体签名编码时允许流拷贝拼接
                 # （concat_segments 内部做签名一致性与时长校验，不一致自动回退重编码）
                 #
-                # 角标合并进 concat 滤镜链（2026-11-23 用户需求）：角标图片作为额外
-                # 输入传入 concat_segments，在 concat 的 filter_complex 里对拼接后
-                # 的成品一次性 overlay——省去此前「拼接后再全量重编码一遍角标」的
-                # 独立 pass（110 变体大批量下每成品省 30-60s）。
-                _badge_args = None
-                if badges:
-                    from functools import partial as _p
-                    _badge_args = build_badges_overlay_args(badges, threads, encoder,
-                                                            default_width=args.badge_default_width)
                 concat_segments(parts, out_path, threads=threads, encoder=encoder,
-                                copy_if_possible=True,
-                                extra_overlay_args=_badge_args)
+                                copy_if_possible=True)
                 seg_times = [(s, e) for s, e, _ in group]
                 print(f"PROGRESS:{min(99, int((processed + 0.7) * 100 / total))}")
                 # 源字幕打码：打掉片源自带字幕（在烧录自己的新字幕之前）
@@ -5337,8 +5319,9 @@ def main():
                 print(f"恒定水印打码完成: {os.path.basename(out_path)}", file=sys.stderr)
             # 恒定水印打码完成 → 阶段 tick
             print(f"PROGRESS:{min(99, int((processed + 0.85) * 100 / total))}")
-            # 图片角标：切片完成后在成品上叠加角标（全程覆盖视频指定位置）
-            if badges:
+            # 图片角标：预叠加成功时成品天然带角标，跳过成品级 pass（防重复叠加，
+            # 也省去每成品一次全量重编码）；仅预叠加失败/不可用时回退到此处。
+            if badges and not badges_preapplied:
                 if processed == 0:
                     _stage("角标叠加中")
                 badge_out = out_path + ".badge.mp4"
