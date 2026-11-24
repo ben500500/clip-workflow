@@ -245,7 +245,7 @@ const ImportPanel: React.FC = () => {
           >
             <TextArea
               rows={5}
-              placeholder={'每行粘贴一个视频分享链接（视频号 / 抖音 / 快手 / 小红书等 30+ 平台）\n支持一次批量导入最多 100 条'}
+              placeholder={'每行粘贴一个视频分享链接（视频号 / 抖音 / 快手 / 小红书等 30+ 平台）\n数量不限，一次粘贴任意条数都会逐条建任务入队'}
             />
           </Form.Item>
         )}
