@@ -16,6 +16,7 @@ import AssetCardPicker from '../AssetCardPicker';
 import { nudgeAssetJobBanner } from '../AssetJobBanner';
 import { withCrossOwnerConfirm, withCrossPersonConfirm } from '../crossPerson';
 import ScriptEditorDrawer, { type SaveKind } from './ScriptEditorDrawer';
+import SimpleComposeCard from './SimpleComposeCard';
 import { reportVerdict } from './scriptResult';
 
 const { Text } = Typography;
@@ -156,9 +157,10 @@ const ImportHookModal: React.FC<ImportHookModalProps> = ({
 /**
  * 素材库极简模式（2026-11-23，用户原话见 docs/1123-素材库极简模式-需求评审与实现方案.md §1）。
  *
- * 一页上下两块，**不设页内页签**（验收口径「零页签切换」）：
+ * 一页上下几块，**不设页内页签**（验收口径「零页签切换」）：
  *   脚本库：导入钩子视频并反推 → 收进脚本库 → 打开改 → 定稿 ｜ 上传／手写脚本 → 定稿
  *   投豆包：勾脚本 → 选三视图 → 出几版 → （轻量过审）→ 投
+ *   组合出片：勾豆包成片 × 勾正片 → 顺序 → 叠加 → 出包（需求三屏 3，纯本机 ffmpeg、0 元）
  *
  * 只折叠界面、不旁路逻辑：导入、反推、投产、投板全走五环同一个接口；钩子号、跨人确认、
  * 风险词闸都在后端。定稿冻结／生产载体见后端 assets/misc.py 脚本库段。
@@ -846,6 +848,14 @@ const SimpleLibrary: React.FC<Props> = ({
           </Space>
         </Space>
       </Card>
+
+      {/* ⑥ 组合出片（11-24 需求三 S4：屏 3 的组合导出矩阵＋叠加预设＋批量出包） */}
+      <SimpleComposeCard
+        canProduce={canProduce}
+        isAdmin={isAdmin}
+        onDone={refreshAll}
+        onOpenFullTab={onOpenFullTab}
+      />
 
       <ImportHookModal
         open={importOpen}

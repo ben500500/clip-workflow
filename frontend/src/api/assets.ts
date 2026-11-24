@@ -458,6 +458,11 @@ export interface AssetOutput {
   hook_code: string | null;
   /** 产物首帧直链（1 小时过期）；没帧 = null，卡片画「没有预览图」占位 */
   thumb_url: string | null;
+  /**
+   * 11-24 需求三：组合导出拼出来的成片才有的快照（「哪支钩子×哪条正片＋叠了什么」）。
+   * 手工两段拼接、回收自动拼都不写 ⇒ 这里是 null，界面别显示那行说明。
+   */
+  compose?: AssetComposeBrief | null;
 }
 
 /** 反推提示词任务（wechat_download.serialize_prompt_task，详情口透出） */
@@ -641,7 +646,9 @@ export type AssetJobKind =
   | 'frames'
   | 'dispatch'
   | 'download'
-  | 'prompt_preview';
+  | 'prompt_preview'
+  /** 11-24 需求三：组合导出矩阵（N 钩子 × M 正片）。0 元，但一格一次转码，照样进台账 */
+  | 'compose_matrix';
 export type AssetJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted';
 
 /** 进度是**现算的粗口径**（协程不回报中间态），别当成百分比看 */
@@ -1204,6 +1211,133 @@ export interface AssetOutputListParams {
   qc_status?: string;
   /** A′：owner=me 只看自己的链路（查询偏好，写口不受影响）；all/缺省＝全量 */
   owner?: "me" | "all";
+}
+
+// ──────────────────────────────────────────────
+// 组合导出矩阵 ＋ 叠加预设（2026-11-24 需求三）
+// ──────────────────────────────────────────────
+
+/** 叠加预设的适用范围：user＝只自己看得见，shared＝全员可选（只有管理员能设） */
+export type AssetOverlayScope = 'user' | 'shared';
+
+/**
+ * 一个角标。键名与后端 `asset_overlay_service.validate_overlay` / 引擎侧逐字同名
+ * （`position/width/offset/opacity`）——中间层一改名就要两边各维护一张映射表，
+ * 表漏一行时引擎拿到 None 会**静默按原图尺寸出片**，那种错只有看片才发现。
+ */
+export interface AssetOverlayBadge {
+  /** 素材库里的**图片行 id**，不是 MinIO key（填错一个字符照样能存，出片才发现没卡） */
+  asset_id: string;
+  position: string;
+  width?: number;
+  offset?: number;
+  opacity?: number;
+}
+
+/** 一行叠加文字（剧名／警示语／后果自负那类） */
+export interface AssetOverlayText {
+  text: string;
+  position: string;
+  font_size?: number;
+  /** #RGB / #RRGGBB，别的写法后端当场 400 */
+  color?: string;
+  border_color?: string;
+  vertical?: boolean;
+  offset?: number;
+}
+
+export interface AssetOverlayParams {
+  badges: AssetOverlayBadge[];
+  text_overlays: AssetOverlayText[];
+}
+
+/** GET /assets/overlay-presets 的条目（`summary` 是后端算好的一行大白话） */
+export interface AssetOverlayPreset {
+  id: string;
+  name: string;
+  scope: AssetOverlayScope;
+  owner_id: string | null;
+  owner_name: string | null;
+  params: AssetOverlayParams;
+  summary: string;
+  note: string | null;
+  /** false＝已停用：默认不列，但历史出片仍认得当时用的是它 */
+  active: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface OverlayPresetListResult {
+  items: AssetOverlayPreset[];
+  total: number;
+  /** 七个可选位置（后端 BADGE_POSITIONS，界面照这个顺序摆，别自己写一套） */
+  positions: string[];
+  max_badges: number;
+  max_text_overlays: number;
+  max_text_chars: number;
+}
+
+/**
+ * 矩阵拼出来的成片在墙上那句「和谁拼的、叠了什么」（11-24 需求三 S4 读侧）。
+ * 只有**组合导出**会写这个快照；手工两段拼接、回收自动拼都不写，那时整键为 null——
+ * 界面拿到 null 就别显示，避免出现「叠了个空」这种看着像 bug 的东西。
+ */
+export interface AssetComposeBrief {
+  via: string | null;
+  hook_code: string | null;
+  material: string | null;
+  tail: string | null;
+  order: string | null;
+  overlay_summary: string;
+  preset_name: string | null;
+  segments: string[];
+  cost: number;
+}
+
+/** 正片来源：素材库片段（asset_items）或现网切片产物（slice_outputs） */
+export type ComposeMaterialSource = 'asset' | 'slice';
+/** 前两段顺序：钩子片在前（引流→正文）／正片在前 */
+export type ComposeMatrixOrder = 'hook_first' | 'material_first';
+
+/** POST /assets/compose/matrix 的入参。`overlay_preset_id` 与 `overlay_params` 二选一 */
+export interface ComposeMatrixRequest {
+  hook_output_ids: string[];
+  material_source?: ComposeMaterialSource;
+  material_ids: string[];
+  tail_asset_id?: string | null;
+  order?: ComposeMatrixOrder;
+  overlay_preset_id?: string | null;
+  overlay_params?: AssetOverlayParams | null;
+  /** 默认 true＝排后台、提交即回任务号（D-1 口径）；传 false 才同步等结果 */
+  async_mode?: boolean;
+  batch_id?: string | null;
+  title_prefix?: string | null;
+}
+
+/** 矩阵的一格（一个钩子 × 一条正片） */
+export interface ComposeMatrixCell {
+  hook_output_id: string;
+  material: string;
+  segments: string[];
+  ok: boolean;
+  output_id?: string;
+  file_name?: string | null;
+  duration?: number | null;
+  error?: string;
+}
+
+/** 同步档（async_mode=false）的响应；异步档回的是 AssetJobAck，靠 `'queued' in res` 分岔 */
+export interface ComposeMatrixResult {
+  queued: false;
+  requested: number;
+  ok: number;
+  failed: number;
+  results: ComposeMatrixCell[];
+  cost: number;
+  overlay: string;
+  frames?: { queued: boolean; note?: string } | null;
+  elapsed_seconds: number;
+  message: string;
 }
 
 // ──────────────────────────────────────────────
@@ -2976,6 +3110,38 @@ export const assetApi = {
       { ids },
       { responseType: 'blob', timeout: 600000 },
     ) as Promise<Blob>,
+
+  // ── 组合导出矩阵（2026-11-24 需求三）：N 支钩子成片 × M 条正片 ＝ N×M 条投放素材 ──
+  // 0 元（纯本机 ffmpeg、不占号池），但一次上限 N×M 条转码，超上限后端当场 400 说清
+  // 「分两次点」。默认 async_mode=true＝排后台、提交即回任务号，所以返回是两种形状。
+  composeMatrix: (body: ComposeMatrixRequest) =>
+    client.post('/assets/compose/matrix', body) as Promise<ComposeMatrixResult | AssetJobAck>,
+
+  // ── 叠加预设（角标图＋固定文字，存成一套反复选）──
+  listOverlayPresets: (includeInactive = false) =>
+    client.get('/assets/overlay-presets', {
+      params: { include_inactive: includeInactive },
+    }) as Promise<OverlayPresetListResult>,
+
+  createOverlayPreset: (body: {
+    name: string;
+    scope?: AssetOverlayScope;
+    params: AssetOverlayParams;
+    note?: string;
+  }) => client.post('/assets/overlay-presets', body) as Promise<AssetOverlayPreset>,
+
+  updateOverlayPreset: (
+    id: string,
+    body: { name?: string; scope?: AssetOverlayScope; params?: AssetOverlayParams; note?: string },
+  ) => client.put(`/assets/overlay-presets/${id}`, body) as Promise<AssetOverlayPreset>,
+
+  /** 停用（不是物理删除）：历史出片仍认得当时用的哪套，所以后端只置 active=false */
+  deactivateOverlayPreset: (id: string) =>
+    client.delete(`/assets/overlay-presets/${id}`) as Promise<{
+      id: string;
+      active: boolean;
+      message: string;
+    }>,
 
   // P1（评审定稿⑦）：取号进界面（后端代理 hook_id.py；未配置命令时 501 走手工旁路）
   takeHookCodes: (count: number) =>

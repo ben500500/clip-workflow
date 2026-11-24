@@ -303,6 +303,35 @@ const OutputGrid: React.FC<{
                       {[fmtSize(o.file_size), o.resolution].filter(Boolean).join(' · ')}
                     </Text>
                   </Space>
+                  {/* 需求三 S4 读侧：组合导出拼出来的那条，卡片上要答得出「哪支钩子×哪条正片、叠了什么」。
+                      `compose` 只有矩阵产物才写（手工拼接／回收自动拼是 null），所以 null 时这行整行不出现——
+                      摆一个「叠了个空」会被当成 bug 报。0 元是口径要求，别在这里出现花费字样。 */}
+                  {o.compose && (
+                    <Tooltip
+                      title={(
+                        <span style={{ fontSize: 12 }}>
+                          {o.compose.hook_code ? `钩子 ${o.compose.hook_code} × ` : '钩子 × '}
+                          {o.compose.material || '正片（已不在库）'}
+                          {o.compose.tail ? ` ＋ 片尾 ${o.compose.tail}` : ''}
+                          {'｜'}
+                          {o.compose.order === 'material_first' ? '正片在前' : '钩子在前'}
+                          {'｜'}
+                          叠了：{o.compose.overlay_summary}
+                          {o.compose.preset_name ? `（预设「${o.compose.preset_name}」）` : ''}
+                          {'｜纯本机拼接 0 元'}
+                        </span>
+                      )}
+                    >
+                      <div
+                        style={{
+                          marginTop: 2, fontSize: 11, color: '#8c8c8c', cursor: 'help',
+                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        }}
+                      >
+                        组合出片·{o.compose.overlay_summary}
+                      </div>
+                    </Tooltip>
+                  )}
                 </div>
               </div>
             );
