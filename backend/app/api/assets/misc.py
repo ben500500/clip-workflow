@@ -137,7 +137,8 @@ from app.models.asset import (
     AssetJob,
     AssetOutput,
     AssetOverlayPreset,
-    AssetScript,    AssetProduction,
+    AssetScript,    AssetScriptFavorite,
+    AssetProduction,
     AssetSummary,
     gen_asset_code,
     gen_batch_code,
@@ -3232,6 +3233,11 @@ async def list_assets(
     has_approved_copy: Optional[bool] = None,
     keyword: Optional[str] = None,
     created_by: Optional[str] = None,
+    # 11-24 素材隔离：与文案/生产单/成片同一套 `owner` 口径（查询偏好，不动写权限）。
+    # 有 `created_by`（点某人名的精确筛选）为什么还要 `owner`：那一颗开关要的是"我这一侧"，
+    # 让前端把当前用户 UUID 塞进 created_by 也能跑，但那样"仅看自己"变成一个特殊的人，
+    # 四个列表四种写法，迟早有一处对不上。
+    owner: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     audit_status: Optional[str] = None,
@@ -3302,6 +3308,10 @@ async def list_assets(
     # ── A4-3：创建人 / 日期区间 / 审核态 / 阶段级 ──
     if created_by:
         conds.append(AssetItem.created_by == _as_uuid(created_by, "created_by"))
+    if owner not in (None, "", "me", "all"):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我导入的）或 all（全量），缺省=all")
+    if owner == "me":
+        conds.append(AssetItem.created_by == current_user.id)
     for param, value in (("date_from", date_from), ("date_to", date_to)):
         if not value:
             continue
@@ -15394,13 +15404,33 @@ async def _ensure_script_carrier(
 
 
 async def _serialize_scripts(
-    db: AsyncSession, rows: List[AssetScript], *, with_body: bool = False
+    db: AsyncSession,
+    rows: List[AssetScript],
+    *,
+    with_body: bool = False,
+    viewer_id: Any = None,
 ) -> List[dict]:
-    """脚本列表/详情的序列化：原型名、归属名、载体审核态、生产单数——各一次聚合，不在行循环里打库。"""
+    """脚本列表/详情的序列化：原型名、归属名、载体审核态、生产单数——各一次聚合，不在行循环里打库。
+
+    `viewer_id`（11-24 素材隔离）：传了才回 `favorited`（这一条在**这个人**的收藏清单里吗）。
+    不传＝不出这个键的意义是"我没有观察者"，而不是"没收藏"，所以给默认 False：
+    界面按布尔读，缺观察者时按未收藏显示，写口（定稿/改名）本来就只碰自己的行。
+    """
     if not rows:
         return []
     cat_names = await _category_name_map(db)
     owner_names = await _user_names(db, {r.owner_id for r in rows})
+    favorited_ids: set = set()
+    if viewer_id is not None:
+        fav_rows = (
+            await db.execute(
+                select(AssetScriptFavorite.script_id).where(
+                    AssetScriptFavorite.user_id == viewer_id,
+                    AssetScriptFavorite.script_id.in_([r.id for r in rows]),
+                )
+            )
+        ).scalars().all()
+        favorited_ids = {str(x) for x in fav_rows}
     reviewer_names: Dict[str, str] = {}
     carriers: Dict[str, AssetSummary] = {}
     carrier_ids = [r.carrier_summary_id for r in rows if r.carrier_summary_id]
@@ -15441,6 +15471,7 @@ async def _serialize_scripts(
             "based_on_script_id": str(r.based_on_script_id) if r.based_on_script_id else None,
             "owner_id": str(r.owner_id),
             "owner_name": owner_names.get(str(r.owner_id)),
+            "favorited": str(r.id) in favorited_ids,
             "note": r.note,
             "body_chars": len(r.body or ""),
             "preview": preview,
@@ -15605,8 +15636,16 @@ async def list_scripts(
     db: AsyncSession = Depends(get_db),
 ):
     """脚本库列表。读全员可见（11-03 拍板素材内容不分权限，脚本库沿用同一条）：
-    `owner=me` 只看自己的（默认），`owner=all` 看所有人的。正文不随列表回（列表只给
-    前 100 字预览与字数），要全文走单条详情口。"""
+    `owner=me`（缺省）看**我的**＝我写的 **∪ 我收藏的**，`owner=all` 看所有人的。
+
+    11-24 素材隔离（用户原话：「默认是要能看到全部的，但是可以加入一个开关或者复选框，
+    仅看自己。这个仅看自己，不是说仅仅是自己导入的文案也可以在已有的脚本库里面勾选，
+    然后收藏起来」）：`me` 的口径从"我写的"扩成"我写的＋我收藏的"，收藏就是把别人的
+    稿子拉进自己这一侧的动作（写口仍只认 owner，收藏不改变归属）。
+    **界面默认给哪个值由用户偏好 `asset_scope_mine` 决定，缺省＝`all`（看全部）**；
+    查询参数缺省仍是 `me`——少要一个参数就等于默认把别人的东西摆到我面前，那不是
+    任何接口该替人做的默认。正文不随列表回（列表只给前 100 字预览与字数），
+    要全文走单条详情口。"""
     page = max(1, page)
     conds: List[Any] = []
     states = [s.strip() for s in (state or "").split(",") if s.strip()] or [SCRIPT_DRAFT, SCRIPT_READY]
@@ -15617,9 +15656,12 @@ async def list_scripts(
         )
     conds.append(AssetScript.state.in_(states))
     if owner == "me":
-        conds.append(AssetScript.owner_id == current_user.id)
+        my_favs = select(AssetScriptFavorite.script_id).where(
+            AssetScriptFavorite.user_id == current_user.id
+        )
+        conds.append(or_(AssetScript.owner_id == current_user.id, AssetScript.id.in_(my_favs)))
     elif owner not in ("all", "", None):
-        raise HTTPException(status_code=400, detail="owner 只支持 me（我的）或 all（全部），缺省=me")
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的：我写的＋我收藏的）或 all（全部），缺省=me")
     if category_id:
         if category_id == "none":
             conds.append(AssetScript.category_id.is_(None))
@@ -15667,7 +15709,7 @@ async def list_scripts(
         )
     ).scalars().all()
     return {
-        "items": await _serialize_scripts(db, list(rows)),
+        "items": await _serialize_scripts(db, list(rows), viewer_id=current_user.id),
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -16175,7 +16217,63 @@ async def get_script(
 ):
     """脚本全文（读全员可见）。"""
     row = await _get_script(db, script_id)
-    return (await _serialize_scripts(db, [row], with_body=True))[0]
+    return (await _serialize_scripts(db, [row], with_body=True, viewer_id=current_user.id))[0]
+
+
+@router.put("/assets/scripts/{script_id}/favorite")
+async def set_script_favorite_on(
+    script_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """把这条脚本收进**我自己**的清单（幂等：重复点不会重复入库）。
+
+    11-24 素材隔离的一半：「仅看自己」不能只剩自己写的稿子——一线的正常用法是
+    在脚本库里挑中同事那条好用的，勾起来放到自己那一侧，下次不用去全量里重新找。
+    收藏**只动关系表**：不改 owner_id（写了权限就在 owner 上）、不改正文与状态，
+    所以既不会让原作者失去编辑权，也不会让这条脚本在别人的视图里消失。
+
+    用 PUT 不用 POST：幂等动作该是"设成这个状态"，双击/重放不该长出第二行。
+    """
+    row = await _get_script(db, script_id)
+    existing = (
+        await db.execute(
+            select(AssetScriptFavorite).where(
+                AssetScriptFavorite.user_id == current_user.id,
+                AssetScriptFavorite.script_id == row.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        db.add(AssetScriptFavorite(user_id=current_user.id, script_id=row.id))
+        await db.commit()
+    return {"ok": True, "script_id": str(row.id), "favorited": True}
+
+
+@router.delete("/assets/scripts/{script_id}/favorite")
+async def unset_script_favorite(
+    script_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+):
+    """从我的清单里取消收藏（没收藏过也回 200——DELETE 的幂等口径照旧）。
+
+    只删自己那一行，别人的收藏清单不受影响；脚本本身一行不动。
+    """
+    row = await _get_script(db, script_id)
+    deleted = await db.execute(
+        delete(AssetScriptFavorite).where(
+            AssetScriptFavorite.user_id == current_user.id,
+            AssetScriptFavorite.script_id == row.id,
+        )
+    )
+    await db.commit()
+    return {
+        "ok": True,
+        "script_id": str(row.id),
+        "favorited": False,
+        "removed": int(deleted.rowcount or 0),
+    }
 
 
 @router.put("/assets/scripts/{script_id}")
@@ -16402,13 +16500,17 @@ _UI_MODES = ("simple", "full")
 
 
 class UiPreferencesUpdateRequest(BaseModel):
-    ui_config: Dict[str, Any] = Field(..., description="界面偏好（JSON 对象）；整体覆盖")
+    ui_config: Dict[str, Any] = Field(..., description="界面偏好（JSON 对象）；按键合并，只改传上来的那几个键")
 
 
 def _ui_config_default(user: User) -> Dict[str, Any]:
-    """没存过偏好时的默认值：素材专员/运营默认极简，管理员默认全量（施工方案 §9.1B）。"""
+    """没存过偏好时的默认值：素材专员/运营默认极简，管理员默认全量（施工方案 §9.1B）。
+
+    `asset_scope_mine`（11-24 素材隔离）默认 **False＝看全部**——用户这条原话是
+    「默认是要能看到全部的，但是可以加入一个开关或者复选框，仅看自己」，
+    隔离是 opt-in，不是新默认。"""
     mode = "full" if user.role == UserRole.admin.value else "simple"
-    return {"asset_library_mode": mode}
+    return {"asset_library_mode": mode, "asset_scope_mine": False}
 
 
 def _ui_config_validate(cfg: Any) -> Dict[str, Any]:
@@ -16427,6 +16529,14 @@ def _ui_config_validate(cfg: Any) -> Dict[str, Any]:
     if mode is not None and mode not in _UI_MODES:
         raise HTTPException(
             status_code=422, detail=f"asset_library_mode 只认 {'/'.join(_UI_MODES)}（收到 {mode!r}）"
+        )
+    # 「仅看自己」是布尔开关，不是字符串。写错类型必须当场拒：这种值一旦被 accept，
+    # 前端读回来的 `"0"`／`"false"` 在 JS 里都是真值——开关显示成"已开启"，
+    # 而列表却按全量拉（或反之），比报错难查得多（同 11-04 风险词库级别键拼错的教训）。
+    if "asset_scope_mine" in cfg and not isinstance(cfg["asset_scope_mine"], bool):
+        raise HTTPException(
+            status_code=422,
+            detail=f"asset_scope_mine 只认 true/false（收到 {cfg['asset_scope_mine']!r}）",
         )
     return cfg
 
@@ -16449,14 +16559,23 @@ async def save_ui_preferences(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """保存当前用户的素材库界面偏好（整体覆盖，只动自己那一行）。"""
-    cfg = _ui_config_validate(data.ui_config)
+    """保存当前用户的素材库界面偏好（**按键合并**，只动自己那一行）。
+
+    原来是整体覆盖：那时只有一个键（`asset_library_mode`），覆盖与合并看不出区别。
+    11-24 加了 `asset_scope_mine` 之后必须改：前端两颗开关各自 PUT 自己那一个键，
+    覆盖语义会让"切极简"顺手把别人的「仅看自己」清回默认——用户看到的现象是
+    开关自己跳回去，且没有任何报错。按键合并＝最后一次写哪个键就只变哪个键。
+    """
+    incoming = _ui_config_validate(data.ui_config)
     pref = (
         await db.execute(select(UserPreference).where(UserPreference.user_id == current_user.id))
     ).scalar_one_or_none()
     if pref is None:
         pref = UserPreference(user_id=current_user.id)
         db.add(pref)
+    # 注意是"存过的＋这次的"，不并默认值：把默认写进库里会让人再也分不清
+    # "我关掉了" 与 "我从没动过（该按角色给默认）"。
+    cfg = {**(pref.ui_config or {}), **incoming}
     pref.ui_config = cfg
     await db.commit()
     return {"ok": True, "ui_config": cfg}

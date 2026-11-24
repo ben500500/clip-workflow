@@ -13685,3 +13685,201 @@ def test_overlay_presets_are_scoped_audited_and_never_stored_empty():
         await client.aclose()
 
     _run(_scenario())
+
+
+# ══════════════════════════════════════════════════════════════
+#  26. 素材隔离 ＋ 脚本收藏（11-24 批 T）
+#
+#  用户原话：「加入素材隔离的概念，但默认是要能看到全部的，但是可以加入一个开关或者
+#            复选框，仅看自己。这个仅看自己，不是说仅仅是自己导入的文案也可以在已有的
+#            脚本库里面勾选，然后收藏起来。」
+#
+#  拆成三条用例，各钉各的：
+#  ① 收藏＝**关系表**，不是所有权转移——收藏后 owner_id 没变、原作者照样能改，
+#     收藏者也拿不到改稿权；取消收藏只删自己那一行，别人看不见影响。
+#  ② `owner=me` 的口径＝我写的 ∪ 我收藏的（脚本口）／我导入的（素材口），
+#     缺省仍是 all（看全部）——「默认要能看到全部的」这条不许被接口默认改掉。
+#  ③ 偏好按键合并：界面有两颗开关（极简/仅看自己），各自 PUT 各自的键，
+#     后一次不能把前一次静默清掉（整体覆盖语义在只有一个键时看不出问题）。
+# ══════════════════════════════════════════════════════════════
+
+async def _user_id(username: str):
+    return (await _rows(User, User.username == username))[0].id
+
+
+def test_script_favorites_move_others_scripts_into_my_view():
+    """收藏别人的脚本＝把它拉进自己那一侧；不改归属、不授予写权、不影响别人。"""
+    _run(_bootstrap())
+
+    from app.models.asset import AssetScript, AssetScriptFavorite, SCRIPT_READY
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        op_id = await _user_id(OPERATOR_USER)
+
+        # 运营专员建一条并定稿；素材专员一条也没有 → 缺省（me）看不到东西
+        s = await _mk_script(client, ho, name="运营的好稿")
+        assert (await _finalize(client, ho, s["id"])).status_code == 200
+        assert (await client.get(_SCRIPT_URL, headers=hm)).json()["total"] == 0
+        assert (await client.get(_SCRIPT_URL, params={"owner": "all"}, headers=hm)).json()["total"] == 1
+
+        # 收藏：幂等（重复点只有一行），且**不改 owner、不改状态**
+        fav = await client.put(f"{_SCRIPT_URL}/{s['id']}/favorite", headers=hm)
+        assert fav.status_code == 200 and fav.json()["favorited"] is True, fav.text
+        again = await client.put(f"{_SCRIPT_URL}/{s['id']}/favorite", headers=hm)
+        assert again.status_code == 200 and again.json()["favorited"] is True
+        assert await _count(AssetScriptFavorite) == 1, "重复收藏不该长出第二行"
+        row = await _row_of(AssetScript, s["id"])
+        assert row.owner_id == op_id and row.state == SCRIPT_READY, "收藏把归属或状态带跑了"
+
+        # 收藏后「我的」里有它，且带着 favorited 标记与原作者名（界面要能说清这不是你写的）
+        mine = await client.get(_SCRIPT_URL, headers=hm)
+        assert mine.json()["total"] == 1 and mine.json()["items"][0]["id"] == s["id"]
+        assert mine.json()["items"][0]["favorited"] is True
+        assert mine.json()["items"][0]["owner_name"] == "运营专员"
+        # 详情口也按观察者给 favorited（点开那条时要显示星是亮着的）
+        assert (await client.get(f"{_SCRIPT_URL}/{s['id']}", headers=hm)).json()["favorited"] is True
+
+        # 只影响自己：素材专员的收藏不改变运营专员（作者本人）的视图，也不串到别人
+        op_view = (await client.get(_SCRIPT_URL, headers=ho)).json()["items"]
+        assert [it["id"] for it in op_view] == [s["id"]]
+        assert op_view[0]["favorited"] is False, "作者本人没收藏，星不该亮"
+
+        # 收藏≠拥有（读得到≠改得动）：素材专员的视图里多了一条，原作者的写权一点没变
+        assert (await client.get(f"{_SCRIPT_URL}/{s['id']}", headers=hm)).status_code == 200
+
+        # 取消收藏：只删自己那一行，重复取消幂等
+        off = await client.request("DELETE", f"{_SCRIPT_URL}/{s['id']}/favorite", headers=hm)
+        assert off.status_code == 200 and off.json()["favorited"] is False
+        assert off.json()["removed"] == 1, off.json()
+        assert (await client.get(_SCRIPT_URL, headers=hm)).json()["total"] == 0
+        twice = await client.request("DELETE", f"{_SCRIPT_URL}/{s['id']}/favorite", headers=hm)
+        assert twice.status_code == 200 and twice.json()["removed"] == 0, twice.json()
+        assert (await _rows(AssetScriptFavorite)) == []
+
+        # 收藏不授予写权限：别人的**草稿**收藏前后都改不动（403 同口径）；
+        # 别人的**定稿** PUT＝派生自己的新草稿（201，归收藏者）——这条老路本来就不问人，
+        # 收藏既没打开它、也没让它多改到原稿。
+        d = await _mk_script(client, ho, name="运营还没定稿的", body=_SCRIPT_BODY + "镜头4：运营自己的收尾。")
+        assert d["id"] != s["id"] and d["state"] == "draft"
+        denied = await client.put(f"{_SCRIPT_URL}/{d['id']}", json={"name": "没收藏时想改名"}, headers=hm)
+        assert denied.status_code == 403 and "不是你的" in denied.text, denied.text
+        await client.put(f"{_SCRIPT_URL}/{d['id']}/favorite", headers=hm)
+        denied2 = await client.put(f"{_SCRIPT_URL}/{d['id']}", json={"name": "收藏后想改名"}, headers=hm)
+        assert denied2.status_code == 403 and "不是你的" in denied2.text, denied2.text
+        fork = await client.put(f"{_SCRIPT_URL}/{s['id']}", json={"name": "我另存一份"}, headers=hm)
+        assert fork.status_code == 201 and fork.json()["owner_id"] != str(op_id), fork.text
+        assert (await _row_of(AssetScript, s["id"])).owner_id == op_id, "派生把原稿归属带走了"
+
+        # 入参边界：不存在的脚本 404；owner 只认 me/all（拼错不能静默给全量）
+        assert (await client.put(f"{_SCRIPT_URL}/{uuid.uuid4()}/favorite", headers=hm)).status_code == 404
+        bad = await client.get(_SCRIPT_URL, params={"owner": "mine"}, headers=hm)
+        assert bad.status_code == 400 and "我写的＋我收藏的" in bad.text, bad.text
+
+        # 下架的脚本：收藏不复活它（默认列表仍按 state 过滤），显式点名才回
+        await client.put(f"{_SCRIPT_URL}/{s['id']}/favorite", headers=hm)
+        assert (await client.delete(f"{_SCRIPT_URL}/{s['id']}", headers=ho)).json()["state"] == "retired"
+        after = await client.get(_SCRIPT_URL, headers=hm)
+        ids = {it["id"] for it in after.json()["items"]}
+        assert s["id"] not in ids, after.json()
+        assert ids == {fork.json()["id"], d["id"]}, "只剩自己那条派生稿＋收藏的运营草稿；被下架的收藏不该冒出来"
+        gone = await client.get(_SCRIPT_URL, params={"state": "retired"}, headers=hm)
+        assert gone.json()["total"] == 1 and gone.json()["items"][0]["favorited"] is True
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_owner_scope_defaults_to_everything_and_prefers_the_user():
+    """素材隔离的两条默认值：查询口缺省＝看全部；`owner=me` 才收进自己那一侧。
+
+    素材口（`GET /assets`）此前只有 `created_by`（点某人名），没有"我这一侧"这颗开关，
+    前端要么塞当前用户 UUID 进 `created_by`（把"仅看自己"变成一个特殊的人，四个列表
+    四种写法），要么自己算——这次统一成和文案/生产单/成片同名的 `owner`。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+
+        await _make_ready_asset(client, hm, DOUYIN_2)      # 素材专员导入的一条
+        await _make_ready_asset(client, ho, DOUYIN_3)      # 运营专员导入的一条
+
+        # 缺省＝全部（用户原话「默认是要能看到全部的」）
+        default = await client.get("/api/assets", headers=hm)
+        assert default.status_code == 200 and default.json()["total"] == 2, default.text
+        # 仅看自己：素材专员只剩自己那条，且 created_by 与本人 UUID 一致
+        mine = await client.get("/api/assets", params={"owner": "me"}, headers=hm)
+        assert mine.json()["total"] == 1
+        ids = await _rows(AssetItem)
+        me_id = await _user_id(MATERIAL_USER)
+        assert all(str(it["created_by"]) == str(me_id) for it in mine.json()["items"]), ids
+        assert (await client.get("/api/assets", params={"owner": "me"}, headers=ho)).json()["total"] == 1
+        assert (await client.get("/api/assets", params={"owner": "all"}, headers=ho)).json()["total"] == 2
+
+        # `owner` 与 `created_by` 各管各的：同时给就是取交集（不是二选一打架）
+        op_id = await _user_id(OPERATOR_USER)
+        cross = await client.get("/api/assets", params={"owner": "me", "created_by": op_id}, headers=hm)
+        assert cross.status_code == 200 and cross.json()["total"] == 0, cross.text
+        # 非法值当场 400：拼错 all→al1 若静默按缺省走，界面显示的是全量、人以为是自己的
+        assert (await client.get("/api/assets", params={"owner": "al1"}, headers=hm)).status_code == 400
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_ui_preferences_merge_per_key_and_validate_scope_switch():
+    """界面偏好：`asset_scope_mine` 缺省关（看全部）、只认布尔，且 PUT 是**按键合并**。
+
+    合并这条是真会踩的：极简/全量与仅看自己是两颗独立开关，各自 PUT 一个键。整体覆盖
+    语义下，切一次界面模式就把用户刚勾上的「仅看自己」清回默认——用户看到的是开关自己
+    跳回去，且全程没有任何报错（比崩掉难查）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+
+        # 缺省：模式按角色给，隔离一律关（「默认是要能看到全部的」）
+        p0 = (await client.get("/api/assets/ui/preferences", headers=ho)).json()["ui_config"]
+        assert p0["asset_library_mode"] == "simple" and p0["asset_scope_mine"] is False
+        a0 = (await client.get("/api/assets/ui/preferences", headers=hm)).json()["ui_config"]
+        assert a0["asset_scope_mine"] is False
+
+        # 按键合并：先存模式，再只存开关——前一个键必须活着
+        await client.put("/api/assets/ui/preferences",
+                         json={"ui_config": {"asset_library_mode": "full"}}, headers=ho)
+        saved = await client.put("/api/assets/ui/preferences",
+                                 json={"ui_config": {"asset_scope_mine": True}}, headers=ho)
+        assert saved.status_code == 200, saved.text
+        cfg = saved.json()["ui_config"]
+        assert cfg == {"asset_library_mode": "full", "asset_scope_mine": True}, cfg
+        assert (await client.get("/api/assets/ui/preferences", headers=ho)).json()["ui_config"] == cfg
+
+        # 关掉开关要留痕：存的仍是 False，不能让"关"回落到"没存过"（那会跟着角色重新给默认）
+        off = await client.put("/api/assets/ui/preferences",
+                              json={"ui_config": {"asset_scope_mine": False}}, headers=ho)
+        stored = off.json()["ui_config"]
+        assert stored == {"asset_library_mode": "full", "asset_scope_mine": False}, stored
+
+        # 只认布尔："false"／0 这种一旦 accept，前端读回的是真值——开关显示开着、
+        # 列表却在拉全量（比直接报错难查得多，同 11-04 风险词库级别键的教训）
+        for bad_value in ("false", "0", 1, 0, [], {}):
+            r = await client.put("/api/assets/ui/preferences",
+                                 json={"ui_config": {"asset_scope_mine": bad_value}}, headers=ho)
+            assert r.status_code == 422, f"{bad_value!r} 应被拒：{r.status_code} {r.text}"
+        # 非法模式仍然 422，且不会因为一次坏请求把已存的偏好改掉
+        assert (await client.put("/api/assets/ui/preferences",
+                                 json={"ui_config": {"asset_library_mode": "极简"}},
+                                 headers=ho)).status_code == 422
+        assert (await client.get("/api/assets/ui/preferences", headers=ho)).json()["ui_config"] == stored
+
+        # 各人管各人：素材专员的偏好不受运营专员影响
+        assert (await client.get("/api/assets/ui/preferences", headers=hm)).json()["ui_config"][
+            "asset_scope_mine"] is False
+        await client.aclose()
+
+    _run(_scenario())
