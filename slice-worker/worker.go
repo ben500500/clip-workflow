@@ -1122,6 +1122,10 @@ func (w *Worker) sendFailureCallback(task *SliceTask, errMsg string, keptOutputs
 	if task.Output.CallbackURL == "" {
 		return
 	}
+	// 失败回调同样要带 Worker Token：成功回调路径在发送前显式 SetToken，
+	// 这里必须补上——否则全新 worker 进程（未发过成功回调）token 为空，
+	// 后端 401 拒收，失败保留的成品入库会静默丢失（2026-11-24 实测踩中）。
+	w.callback.SetToken(task.Output.CallbackToken)
 	callbackData := &TaskCallback{
 		TaskID: task.TaskID,
 		Status: "failed",
