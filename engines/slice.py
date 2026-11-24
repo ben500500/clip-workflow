@@ -1302,6 +1302,42 @@ def apply_badges(src, out, badges, threads=1, encoder="libx264", default_width: 
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
+def prebadge_asset_paths(paths, badges, threads, encoder,
+                         default_width: int = BADGE_DEFAULT_WIDTH):
+    """把角标一次性叠加到每个外部素材（钩子/片尾），返回替换后的路径列表。
+
+    与源片预叠加同理：源片预叠加只覆盖本体段，钩子/片尾是独立素材，若不单独
+    预叠，成品里这些段会缺角标（旧成品级 apply_badges 是整条成品覆盖的）。
+    每个素材只编码一次、所有成品复用；后续钩子/片尾归一化仍会按本体签名重编码，
+    不影响 concat 流拷贝快速通道。单个素材编码失败时保留原路径（该段无角标）。
+    """
+    out = []
+    for p in paths:
+        if not (p and os.path.isfile(p)):
+            out.append(p)
+            continue
+        badge_args = build_badges_overlay_args(badges, threads, encoder,
+                                               default_width=default_width)
+        if not badge_args:
+            out.append(p)
+            continue
+        badged = os.path.join(os.path.dirname(os.path.abspath(p)),
+                              "badged_" + os.path.basename(p))
+        try:
+            cmd = ["ffmpeg", "-y", "-threads", str(threads),
+                   "-i", p] + badge_args + [badged]
+            run_ffmpeg(cmd, timeout=3600, threads=threads)
+            if os.path.isfile(badged) and os.path.getsize(badged) > 0:
+                out.append(badged)
+                print(f"角标预叠加(素材): {os.path.basename(p)}", file=sys.stderr)
+                continue
+        except Exception as e:  # noqa: BLE001
+            print(f"角标预叠加(素材)失败，保留原始素材: {os.path.basename(p)}: {e}",
+                  file=sys.stderr)
+        out.append(p)
+    return out
+
+
 # ──────────────────────────────────────────────
 # 固定文字叠加（角标文字版：最左侧 / 左下角 / 右上角）
 # ──────────────────────────────────────────────
@@ -4636,21 +4672,11 @@ def main():
             badges, threads, encoder, default_width=args.badge_default_width,
         )
         if badge_args:
-            # 失败重派/续跑时源片旁已有同源带角标文件：时长一致即复用，省一次
-            # 全源重编码（内容以源片同名前提取信，时长校验防串片）。
-            reuse = False
-            if os.path.isfile(badged_src) and os.path.getsize(badged_src) > 0:
-                _d_src = ffprobe_duration(source_path) or 0.0
-                _d_badged = ffprobe_duration(badged_src) or 0.0
-                reuse = _d_src > 0 and _d_badged > 0 and abs(_d_badged - _d_src) <= 5.0
-                if reuse:
-                    print(f"复用已有带角标源片: {os.path.basename(badged_src)}", file=sys.stderr)
-            if not reuse:
-                _stage("角标预叠加到源片（一次编码，所有成品复用）")
-                print(f"角标预叠加: {len(badges)} 个角标 → {badged_src}", file=sys.stderr)
-                cmd = ["ffmpeg", "-y", "-threads", str(threads),
-                       "-i", source_path] + badge_args + [badged_src]
-                run_ffmpeg(cmd, timeout=3600, threads=threads)
+            _stage("角标预叠加到源片（一次编码，所有成品复用）")
+            print(f"角标预叠加: {len(badges)} 个角标 → {badged_src}", file=sys.stderr)
+            cmd = ["ffmpeg", "-y", "-threads", str(threads),
+                   "-i", source_path] + badge_args + [badged_src]
+            run_ffmpeg(cmd, timeout=3600, threads=threads)
             if os.path.isfile(badged_src) and os.path.getsize(badged_src) > 0:
                 source_path = badged_src
                 badges_preapplied = True
@@ -4979,6 +5005,12 @@ def main():
     outro_dur = 0.0
     outro_cache_dir = None
     outro_path_arg = args.outro
+    # 源片预叠加只覆盖本体段：片尾是独立素材，需单独预叠一次角标（仅预叠加
+    # 成功时做——预叠加失败会走成品级 apply_badges 回退，那里已含片尾，避免双叠）。
+    if badges_preapplied and outro_path_arg and os.path.isfile(outro_path_arg):
+        outro_path_arg = prebadge_asset_paths(
+            [outro_path_arg], badges, threads, encoder,
+            default_width=args.badge_default_width)[0]
     if outro_path_arg and os.path.isfile(outro_path_arg):
         outro_dur = ffprobe_duration(outro_path_arg) or 0.0
         if outro_dur > 0:
@@ -5027,6 +5059,13 @@ def main():
                 if args.hook_target:
                     print(f"警告: 钩子目标切片名 '{args.hook_target}' 不存在，回退到首个切片组 '{hook_target_key}'", file=sys.stderr)
             print(f"钩子拼接: {len(hook_paths)} 个钩子（按顺序循环）-> 注入切片组 '{hook_target_key}'", file=sys.stderr)
+    if badges_preapplied and hook_paths:
+        # 源片预叠加只覆盖本体段：钩子是独立素材，需单独预叠一次角标（每钩子
+        # 文件只编码一次、所有成品复用），否则成品钩子段缺角标（回归旧成品级
+        # apply_badges 的整条覆盖语义）。同理仅预叠加成功时做，防双叠。
+        hook_paths = prebadge_asset_paths(
+            hook_paths, badges, threads, encoder,
+            default_width=args.badge_default_width)
 
     # 字幕开启时，预计算源视频的语音（非静音）区间，用于"只在说话时显示字幕"。
     # 静音/停顿期间字幕自动隐藏，避免字幕一直挂在屏幕上。
@@ -5367,7 +5406,8 @@ def main():
         # 清理片尾视频任务级缓存目录（同上兜底）
         if outro_cache_dir and os.path.isdir(outro_cache_dir):
             shutil.rmtree(outro_cache_dir, ignore_errors=True)
-        # 清理竖屏转横屏临时文件
+        # 清理中间产物源片（source_path 曾被重指向：竖屏转横屏临时片 / 带角标
+        # 预叠源片——均为可再生的临时文件，成品已产出，不占任务目录磁盘）
         if source_path != args.source and os.path.isfile(source_path):
             try:
                 os.unlink(source_path)
