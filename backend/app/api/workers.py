@@ -149,6 +149,23 @@ async def worker_heartbeat(
     node = result.scalar_one_or_none()
 
     now = datetime.utcnow()
+
+    # 防御性截断：部分 ffmpeg 构建（如 evermeet）版本串带完整 URL+版权信息，
+    # 超 ffmpeg_version 列宽（varchar(100)）会让心跳 INSERT 直接 500
+    # （2026-11-24 三机实测：180 节点踩中，注册成功但心跳永久失败）。
+    def _fit(v: Optional[str], n: int) -> Optional[str]:
+        if v and len(v) > n:
+            return v[:n]
+        return v
+
+    data.hostname = _fit(data.hostname, 255)
+    data.ip = _fit(data.ip, 50)
+    data.os = _fit(data.os, 50)
+    data.arch = _fit(data.arch, 50)
+    data.ffmpeg_version = _fit(data.ffmpeg_version, 100)
+    data.node_id = _fit(data.node_id, 100)
+    data.status = _fit(data.status, 50)
+
     if node:
         node.hostname = data.hostname or node.hostname
         node.ip = data.ip or node.ip
