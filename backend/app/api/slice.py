@@ -1375,6 +1375,57 @@ async def _restore_clips_from_run(
     return rows
 
 
+async def _validate_cutlist_fits_source(
+    source_bucket: str, source_file_key: Optional[str], cutlist: str, episode_id
+) -> None:
+    """派发前校验（2026-11-24 用户需求，源于赶海集实锤事故）：
+
+    cutlist 的最大窗口结束点必须落在源片实际时长内。源片绑错/成品再处理时
+    时长更短，选点窗口整体错位到源片时间轴之外，成品会变成无关内容+不规则
+    时长（如候选 196.5s 窗口切出 308.1s 成品）。不满足直接 400 拒派。
+
+    ffprobe 探测失败（网络/文件损坏）时跳过校验放行——校验是防呆不是闸门，
+    不能把探测抖动变成切片不可用。
+    """
+    if not source_file_key or not cutlist:
+        return
+    max_end = 0.0
+    for line in cutlist.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            h, m, s = parts[1].split(":")
+            max_end = max(max_end, int(h) * 3600 + int(m) * 60 + float(s))
+        except (ValueError, IndexError):
+            continue
+    if max_end <= 0:
+        return
+    import subprocess
+    try:
+        url = await get_presigned_url(source_bucket, source_file_key, expires_seconds=120, internal=True)
+        if not url:
+            return
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", url],
+            capture_output=True, text=True, timeout=90,
+        )
+        src_dur = float(proc.stdout.strip())
+    except Exception:  # noqa: BLE001 - 探测抖动不拦主流程
+        logger.warning("派发前源片时长校验探测失败（跳过校验）: episode=%s", episode_id)
+        return
+    if src_dur > 0 and max_end > src_dur + 0.5:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"源片实际时长 {src_dur:.1f}s 覆盖不了选点窗口（最大 {max_end:.1f}s）——"
+                "本集绑定的源视频与选点所用素材很可能不是同一条（源片错绑/再处理成品时长更短）。"
+                "请重新绑定正确源视频并重新选点后再切片。"
+            ),
+        )
+
+
 @router.post("/episodes/{episode_id}/slice/run", response_model=SliceRunResponse)
 async def run_slice(
     episode_id: str,
@@ -1410,6 +1461,8 @@ async def run_slice(
             db, eid, episode, data, source_file_key, source_bucket, episode_id, current_user
         )
     )
+    # 派发前防呆：源片时长必须覆盖 cutlist 最大窗口（赶海集实锤事故，见助手 docstring）
+    await _validate_cutlist_fits_source(source_bucket, source_file_key, cutlist, eid)
     slice_task, configs = await _create_slice_task_record(
         db, eid, episode, data, cutlist, intervals_content, source_file_key, source_bucket
     )
@@ -1997,6 +2050,9 @@ async def retry_slice_task(
     source_bucket = task.source_bucket or settings.MINIO_BUCKET_RAW
     if not source_file_key:
         raise HTTPException(status_code=400, detail="Episode has no source file")
+
+    # 派发前防呆（同 run_slice）：重试用旧 cutlist+旧源，源若被换短同样会错位
+    await _validate_cutlist_fits_source(source_bucket, source_file_key, task.cutlist or "", eid)
 
     engine = _resolve_engine(None)  # 沿用默认引擎
 

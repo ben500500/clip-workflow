@@ -481,6 +481,9 @@ def _serialize_task(task: SliceTask) -> dict:
         "remotion_status": task.remotion_status,
         "hook_mix_output_count": task.hook_mix_output_count,
         "hook_position": getattr(task, "hook_position", None),
+        # 源桶：sliced=源是切片成品（再处理/入库链路），前端据此打「成品再处理」标记，
+        # 避免与 AI 选点直接切片的结果混排误导（2026-11-24 赶海集实锤需求）
+        "source_bucket": getattr(task, "source_bucket", None),
     }
 
 
