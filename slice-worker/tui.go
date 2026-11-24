@@ -168,7 +168,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			StartTime: time.Now(),
 		}
 		m.taskOrder = append(m.taskOrder, msg.TaskID)
-		m.addLog("info", "任务开始: %s [%s]", msg.TaskID[:8], msg.Mode)
+		m.addLog("info", "任务开始: %s [%s]", shortID(msg.TaskID), msg.Mode)
 		return m, nil
 
 	case TaskProgressMsg:
@@ -190,7 +190,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.totalCompleted++
 			m.totalFiles += msg.OutputCount
 		}
-		m.addLog("success", "任务完成: %s, %d 个文件", msg.TaskID[:8], msg.OutputCount)
+		m.addLog("success", "任务完成: %s, %d 个文件", shortID(msg.TaskID), msg.OutputCount)
 		return m, nil
 
 	case TaskErrorMsg:
@@ -199,7 +199,7 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			task.Detail = msg.Error
 		}
 		m.totalFailed++
-		m.addLog("error", "任务失败: %s - %s", msg.TaskID[:8], msg.Error)
+		m.addLog("error", "任务失败: %s - %s", shortID(msg.TaskID), msg.Error)
 		return m, nil
 
 	case LogMsg:

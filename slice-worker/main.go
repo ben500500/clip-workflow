@@ -12,6 +12,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// shortID 安全截断任务 ID 前 8 位用于日志。空/超短 ID 直接原样返回——
+// 此前 task.TaskID[:8] 在收到畸形消息（TaskID 为空）时 panic 崩掉整个 worker。
+func shortID(s string) string {
+	if len(s) < 8 {
+		return s
+	}
+	return s[:8]
+}
+
 func main() {
 	// 命令行参数
 	configPath := flag.String("config", "worker.json", "配置文件路径")
@@ -95,16 +104,16 @@ func runDaemon(ctx context.Context, config *Config, worker *Worker) {
 	// 设置日志回调
 	worker.SetCallbacks(
 		func(task *SliceTask) {
-			fmt.Printf("[INFO] 任务开始: %s [%s]\n", task.TaskID[:8], task.Mode)
+			fmt.Printf("[INFO] 任务开始: %s [%s]\n", shortID(task.TaskID), task.Mode)
 		},
 		func(taskID string, phase string, percent float64, detail string) {
-			fmt.Printf("[INFO] %s [%s] %.0f%% %s\n", taskID[:8], phase, percent, detail)
+			fmt.Printf("[INFO] %s [%s] %.0f%% %s\n", shortID(taskID), phase, percent, detail)
 		},
 		func(taskID string, outputs []string) {
-			fmt.Printf("[OK] 任务完成: %s, %d 个文件\n", taskID[:8], len(outputs))
+			fmt.Printf("[OK] 任务完成: %s, %d 个文件\n", shortID(taskID), len(outputs))
 		},
 		func(taskID string, err error) {
-			fmt.Printf("[ERROR] 任务失败: %s - %v\n", taskID[:8], err)
+			fmt.Printf("[ERROR] 任务失败: %s - %v\n", shortID(taskID), err)
 		},
 		func(level string, msg string) {
 			fmt.Printf("[%s] %s\n", level, msg)
