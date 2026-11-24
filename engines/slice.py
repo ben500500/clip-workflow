@@ -4437,7 +4437,18 @@ def build_output_tier_filter(tier: str, width: int, height: int, fps: str, min_w
         return ""
     parts = []
     if need_scale:
-        parts.append(f"scale={cap_w}:-2")
+        # 竖屏源补齐标准竖屏高（宽*16/9）：-2 取整会产生非 9:16 尺寸（如 1080x1918
+        # 源 → 720x1278 而非 720x1280，发布平台可能按非标尺寸加框/拒稿）。等比缩放
+        # 后 pad 回标准高，偏差仅 1-2px 黑边，肉眼不可见；横屏源保持旧等比行为
+        # （竖转横升档后的横屏与横屏素材语义不变）。
+        std_h = int(round(cap_w * 16 / 9))
+        if height > width:
+            parts.append(
+                f"scale={cap_w}:{std_h}:force_original_aspect_ratio=decrease,"
+                f"pad={cap_w}:{std_h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+            )
+        else:
+            parts.append(f"scale={cap_w}:-2")
     if need_fps:
         parts.append(f"fps={cap_fps}")
     return ",".join(parts)

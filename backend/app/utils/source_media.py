@@ -47,10 +47,28 @@ def normalize_media_file(src: str, dst: str, cap_w: int = CAP_W, cap_fps: float 
                          progress_cb=None, total_duration: float = 0.0) -> bool:
     """转码到 ≤720P@30（等比 min(720,iw) 不升档，音频流拷贝）。成功返回 True。
 
+    竖屏源缩放后 pad 到标准竖屏高（cap_w*16/9）：-2 等比取整会产生非 9:16 尺寸
+    （如 1080x1918 → 720x1278），切片成品随之非标；pad 偏差仅 1-2px 黑边。
+    横屏源保持旧等比行为。
     progress_cb(percent 0-100)：解析 ffmpeg -progress 的 out_time_us 实时回报转码进度。
     """
     # setsar=1：避免降档产出非 1:1 SAR 的源片（会破坏后续流拷贝拼接的同签名判定）
     vf = f"scale='min({cap_w},iw)':-2,setsar=1,fps={cap_fps:g}"
+    # 竖屏且宽需降档、缩放后高度接近标准 9:16（偏差 ≤5%）才补 pad 到标准高：
+    # -2 等比取整会产生非 9:16 尺寸（1080x1918 → 720x1278），pad 1-2px 黑边回标准。
+    # 小尺寸源（≤cap_w 宽）与异宽高比源不 pad（避免大黑边/改变画幅语义）。
+    probe = probe_media(src)
+    if probe:
+        pw, ph = int(probe.get("width") or 0), int(probe.get("height") or 0)
+        std_h = int(round(cap_w * 16 / 9))
+        if (
+            pw > cap_w and ph > pw
+            and abs(round(ph * cap_w / pw) - std_h) <= std_h * 0.05
+        ):
+            vf = (
+                f"scale={cap_w}:{std_h}:force_original_aspect_ratio=decrease,"
+                f"pad={cap_w}:{std_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={cap_fps:g}"
+            )
     try:
         proc = subprocess.Popen(
             ["ffmpeg", "-y", "-i", src, "-vf", vf,
