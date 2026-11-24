@@ -258,6 +258,22 @@ async def upload_hook_video(
         os.unlink(local_path)
         raise HTTPException(status_code=400, detail="文件为空")
 
+    # 钩子视频归一化（2026-11-23 用户需求）：上传即统一到 720P@30 h264/aac，
+    # 切片时若本体规格一致可直接流拷贝拼接（免重编码）。小文件秒级完成。
+    try:
+        from app.utils.source_media import probe_media, needs_normalize, normalize_media_file
+        _p = probe_media(local_path)
+        if _p and needs_normalize(_p):
+            _norm = local_path + ".n.mp4"
+            if normalize_media_file(local_path, _norm):
+                os.replace(_norm, local_path)
+                size = os.path.getsize(local_path)
+                logger.info("钩子已归一化 720P@30：%s（原 %sx%s@%.0ffps）", safe_name, _p["width"], _p["height"], _p["fps"])
+        elif _p:
+            logger.info("钩子无需归一化 %s：已是 ≤720P@30", safe_name)
+    except Exception as e:  # noqa: BLE001 - 归一化失败保留原始钩子
+        logger.warning("钩子归一化异常 %s：%s（保留原始规格）", safe_name, e)
+
     # 钩子视频存入 raw-footage 桶 hook/ 前缀
     file_key = f"hook/{upload_id}_{safe_name}"
     ok = await upload_file_from_path(
@@ -336,6 +352,18 @@ async def upload_hook_folder(
                 os.unlink(local_path)
             errors.append(f"{safe_name}: 文件为空")
             continue
+
+        # 文件夹钩子同样归一化 720P@30（与单钩子上传一致）
+        try:
+            from app.utils.source_media import probe_media as _pm, needs_normalize as _nn, normalize_media_file as _nm
+            _p2 = _pm(local_path)
+            if _p2 and _nn(_p2):
+                _n2 = local_path + ".n.mp4"
+                if _nm(local_path, _n2):
+                    os.replace(_n2, local_path)
+                    size = os.path.getsize(local_path)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{safe_name}: 归一化失败（保留原始规格） {e}")
 
         # 整个文件夹统一存到同一前缀 hook/<folder_id>/ 下
         file_key = f"hook/{folder_id}/{safe_name}"
