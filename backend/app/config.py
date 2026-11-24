@@ -118,14 +118,17 @@ class Settings(BaseSettings):
     SLICE_ENGINE: str = "worker"
     # Worker 回调/上传 URL 的基础地址（远程物理机部署时配置为可访问的地址）
     WORKER_CALLBACK_BASE_URL: str = "http://backend:8080"
-    # Worker 任务超时（秒）
-    SLICE_TASK_TIMEOUT_SECONDS: int = 7200
+    # Worker 任务超时（秒）。2026-11-23 调整 7200→21600（6h）：
+    # 钩子变体大批量（random×110 ≈ 110 成品需 3-4h）会被 2h 上限 context 硬杀
+    # （用户实测：5b5c676d 跑 2h 至 64.7% 被 "context deadline exceeded" 强杀）
+    SLICE_TASK_TIMEOUT_SECONDS: int = 21600
     # 切片僵尸巡检阈值（秒，2026-11-20 评审 SRE P0-1）：DB running/pending 行超过
     # 该时长无 updated_at 变化、且 Redis 任务 hash 的 lease 同样陈旧 → 置 failed
     # 可重试。必须大于 SLICE_TASK_TIMEOUT_SECONDS（worker 侧 context 硬杀上限），
     # 避免回收「合法长任务刚被 worker 自杀重投」的中间态。beat 每
     # SLICE_STUCK_SWEEP_INTERVAL_SECONDS 扫一次。
-    SLICE_STUCK_SWEEP_THRESHOLD_SECONDS: int = 10800
+    # 2026-11-23 随 worker 上限同步调大（必须 > worker 硬杀上限 21600）
+    SLICE_STUCK_SWEEP_THRESHOLD_SECONDS: int = 25200
     SLICE_STUCK_SWEEP_INTERVAL_SECONDS: int = 1800
 
     # ── 素材变体去重（variant_service）──

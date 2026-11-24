@@ -579,7 +579,7 @@ services:
       CPU_PERCENT: ${CPU_PERCENT:-80}
       HEARTBEAT_INTERVAL: "10"
       LOG_LEVEL: info
-      TASK_TIMEOUT: "7200"
+      TASK_TIMEOUT: "21600"  # 6h：钩子变体大批量（×110）需 3-4h
       MAX_RETRIES: "2"
       RETRY_DELAY: "30"
       NODE_TTL: "0"
@@ -621,7 +621,7 @@ services:
       CPU_PERCENT: ${CPU_PERCENT:-80}
       HEARTBEAT_INTERVAL: "10"
       LOG_LEVEL: info
-      TASK_TIMEOUT: "7200"
+      TASK_TIMEOUT: "21600"  # 6h：钩子变体大批量（×110）需 3-4h
       MAX_RETRIES: "2"
       RETRY_DELAY: "30"
       NODE_TTL: "0"
