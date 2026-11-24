@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -416,7 +416,14 @@ class SliceTaskCallback(BaseModel):
     task_id: str
     status: str  # "completed" | "failed" | "progress"
     node_id: Optional[str] = None
+    # 允许 null：Go 侧 nil slice 序列化为 null（失败回调无保留成品时），
+    # 严格 list 校验会把整条失败回调 422 掉（2026-11-24 三机实测）。归一成 []。
     outputs: list[dict] = []
+
+    @field_validator("outputs", mode="before")
+    @classmethod
+    def _none_to_list(cls, v):
+        return v if v is not None else []
     output_count: int = 0
     error: str = ""
     progress: Optional[float] = None

@@ -1130,6 +1130,10 @@ func (w *Worker) sendFailureCallback(task *SliceTask, errMsg string, keptOutputs
 		TaskID: task.TaskID,
 		Status: "failed",
 		Error:  errMsg,
+		// 显式空数组而非 nil：nil slice 序列化成 null，后端 pydantic
+		// outputs: list[dict] 会以 422 list_type 拒收整条失败回调
+		// （2026-11-24 三机实测：无保留成品的失败回调全部 422 丢失）
+		Outputs: make([]OutputFileInfo, 0),
 	}
 	if kept := firstFileInfo(keptOutputs); len(kept) > 0 {
 		callbackData.Outputs = kept

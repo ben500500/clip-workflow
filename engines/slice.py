@@ -518,8 +518,8 @@ def build_dedupe_watermark(wm: dict, width: int = 0, height: int = 0) -> str:
     x_expr, y_expr = pos_map[position]
 
     if drift:
-        # 缓慢漂移（8px/s），增强时序差异化
-        x_expr = f"({x_expr})+mod({10}*t\,{40})-{20}"
+        # 缓慢漂移（8px/s），增强时序差异化（\\, 产出字面反斜杠逗号，ffmpeg 滤镜逗号转义）
+        x_expr = f"({x_expr})+mod({10}*t\\,{40})-{20}"
 
     text_esc = text.replace("\\", "\\\\").replace(";", "\\;")
     return (
@@ -984,9 +984,42 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="li
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
-def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True):
+def _has_audio_stream(path: str) -> bool:
+    """该段有没有音轨。探测失败一律回 True ＝沿用旧行为（裸引用 `[i:a]`，让 ffmpeg 自己报错）。
+
+    反向默认会把「有声」悄悄变成「无声」——那种产物能播、时长对，只有耳朵听得出，
+    验收里最难发现，宁可当场失败也不要静默降级。
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=index", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30,
+        )
+        return bool((out.stdout or "").strip())
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _fps_rounded(path: str) -> float:
+    """该段帧率（四舍五入到 3 位小数，30000/1001 与 29.97 视为同一个数），探不到回 0.0。"""
+    fr = ffprobe_framerate(path)
+    try:
+        num, _, den = (fr or "").partition("/")
+        n, d = float(num), float(den or 1)
+        return round(n / d, 3) if n > 0 and d > 0 else 0.0
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True,
+                    faststart=False):
+    """多段拼一条。`faststart` 默认关＝切片线既有产物字节不变；素材库拼接传 True。"""
     if len(parts) == 1:
-        # 单段时无需重新编码（水印/角标已在源片预叠加阶段完成）
+        # 单段时无需重新编码（水印/角标已在源片预叠加阶段完成）。
+        # ⚠️ move 会**搬走输入文件**：切片线传的是临时 parts，本来就要清理；
+        # 调用方若传的是缓存原片/已入库产物，必须自己保证段数 ≥2（素材库适配层
+        # 的 MIN_SEGMENTS=2 就是这条护栏，别下调）。
         shutil.move(parts[0], out)
         return
     # 多段免重编码拼接（2026-11-23 优化）：探测各段 AV 签名，完全一致才用
@@ -1037,26 +1070,60 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
             TW, TH = int(_tw), int(_th)
     except Exception:
         pass
-    uniform_filter = "".join(
-        f"[{i}:v]scale={TW}:{TH}:force_original_aspect_ratio=decrease,"
-        f"pad={TW}:{TH}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{i}];"
-        f"[{i}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a{i}];"
-        for i in range(len(parts))
-    )
+    # 音轨兜底（2026-11-25）：某段整片无声时，旧写法裸引用 `[i:a]` 会让整条命令
+    # 当场失败（Stream map ... matches no streams）。素材库拼接的输入常见
+    # 「豆包成片（有声）＋片尾/包装段（无声）」，切片线的「本体＋片尾」同理。
+    # 无音轨的段改为接一条在后面追加的 anullsrc 输入（索引 len(parts)+k）：
+    # anullsrc 是无限长 source，必须按该段视频时长 atrim，否则 concat 永不收尾。
+    silent_idx = [i for i, p in enumerate(parts) if not _has_audio_stream(p)]
+    fps_list = [_fps_rounded(p) for p in parts]
+    # 帧率归一**只在各段帧率真的不一致时**启用：同帧率时加 fps= 等于再做一次 CFR
+    # 重采样，会让切片线既有成功产物逐帧变样。混帧率（AI 成片 24/25 ＋ 切片 30）
+    # 不归一则产出 VFR，时长与抽帧都对不齐。目标帧率取首段，与几何同源。
+    mixed_fps = len({f for f in fps_list if f > 0}) > 1
+    fps_vf = f",fps={fps_list[0]:g}" if (mixed_fps and fps_list[0] > 0) else ""
+    if silent_idx:
+        print(f"[concat] {len(silent_idx)} 段无音轨，按段时长补静音轨：索引 {silent_idx}",
+              file=sys.stderr)
+    if fps_vf:
+        print(f"[concat] 各段帧率不一致 {fps_list}，按首段 {fps_list[0]:g} 归一",
+              file=sys.stderr)
+    aformat = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+    chains: list[str] = []
+    for i in range(len(parts)):
+        chains.append(
+            f"[{i}:v]scale={TW}:{TH}:force_original_aspect_ratio=decrease,"
+            f"pad={TW}:{TH}:(ow-iw)/2:(oh-ih)/2,setsar=1{fps_vf}[v{i}]"
+        )
+    silent_pos = {p: len(parts) + k for k, p in enumerate(silent_idx)}
+    for i in range(len(parts)):
+        if i in silent_pos:
+            dur = ffprobe_duration(parts[i]) or 0.1
+            chains.append(
+                f"[{silent_pos[i]}:a]atrim=0:{round(max(dur, 0.1), 3)},"
+                f"asetpts=PTS-STARTPTS,{aformat}[a{i}]"
+            )
+        else:
+            chains.append(f"[{i}:a]{aformat}[a{i}]")
     concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(parts)))
-    filter_complex = uniform_filter + concat_inputs + f"concat=n={len(parts)}:v=1:a=1[v][a]"
+    filter_complex = ";".join(chains) + ";" + concat_inputs + f"concat=n={len(parts)}:v=1:a=1[v][a]"
     cmd = [
         "ffmpeg", "-y",
         "-threads", str(threads),
     ]
     for part in parts:
         cmd += ["-i", part]
+    for _ in silent_idx:
+        cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
     cmd += [
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "[a]",
     ]
     cmd += build_encoder_args(encoder, threads)
-    cmd += ["-c:a", "aac", "-b:a", "128k", out]
+    cmd += ["-c:a", "aac", "-b:a", "128k"]
+    if faststart:
+        cmd += ["-movflags", "+faststart"]
+    cmd.append(out)
     _stage(f"成品拼接重编码（{len(parts)} 段）")
     # 角标不在此处叠加：角标由源片预叠加阶段统一完成（一次编码，所有成品复用），
     # 预叠加失败时回退到成品级 apply_badges 单独 pass。在 concat 里带 overlay 会
@@ -4513,7 +4580,7 @@ def main():
         "--subtitle-font-ratio",
         type=float,
         default=None,
-        help="字幕字号（ASS FontSize 像素值=ratio*100，可选；未指定时按画面高度自适应：横屏 7%/竖屏 5.5%）。越大字幕越清晰易读",
+        help="字幕字号（ASS FontSize 像素值=ratio*100，可选；未指定时按画面高度自适应：横屏 7%%/竖屏 5.5%%）。越大字幕越清晰易读",
     )
     parser.add_argument(
         "--subtitle-spacing",
