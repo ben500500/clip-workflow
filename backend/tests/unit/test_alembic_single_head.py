@@ -15,6 +15,7 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
@@ -28,6 +29,16 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://u:p@localhost:5432/d
 os.environ.setdefault("JWT_SECRET", "u" * 64)
 os.environ.setdefault("MINIO_ACCESS_KEY", "test")
 os.environ.setdefault("MINIO_SECRET_KEY", "testtest")
+
+# 整模块 skip 的判据：镜像里只有 /app（＝backend/），仓库根那层（alembic/、nginx.conf、frontend/）
+# 根本没挂进来——`docker exec clip-backend pytest tests/` 直跑时本用例会以
+# 「Path doesn't exist: /alembic」假红（11-24 收尾方案 §12.5 记过这批环境 artifact）。
+# 守卫测的是**仓库内容**，容器里没有仓库可测＝如实跳过，别拿假红当链断了。
+if not (_REPO / "alembic" / "versions").is_dir():
+    pytest.skip(
+        f"alembic 脚本目录不在 {_REPO / 'alembic'}（镜像内只挂 /app，仓库根不可见）——本守卫只在该源码仓库里跑",
+        allow_module_level=True,
+    )
 
 
 def _scripts() -> ScriptDirectory:
