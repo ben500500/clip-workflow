@@ -458,6 +458,12 @@ func (r *RedisClient) WriteProgress(taskID string, progress float64, phase strin
 	return r.client.HSet(r.ctx, fmt.Sprintf("slice:task:%s", taskID), fields).Err()
 }
 
+// SetOutputsDone 记录已出成品数（引擎 OUTPUT 行实时回调；前端「已出 N/总数」展示，
+// 失败保留场景后端也以此为准回写 output_count 的实时口径）。
+func (r *RedisClient) SetOutputsDone(taskID string, done int) error {
+	return r.client.HSet(r.ctx, fmt.Sprintf("slice:task:%s", taskID), "outputs_done", done).Err()
+}
+
 // ExpireTaskStatus 为任务状态 Hash 设置 TTL（任务终态后清理）
 func (r *RedisClient) ExpireTaskStatus(taskID string, ttl time.Duration) error {
 	return r.client.Expire(r.ctx, fmt.Sprintf("slice:task:%s", taskID), ttl).Err()

@@ -1504,6 +1504,8 @@ async def list_slice_tasks(
                 d["progress"] = t.progress
             if data.get("detail"):
                 d["progress_message"] = data.get("detail")
+            if data.get("outputs_done") is not None:
+                d["outputs_done"] = int(data.get("outputs_done"))
         except Exception:  # noqa: BLE001 - 心跳缺失不影响列表主流程
             pass
         payloads.append(d)
@@ -1570,6 +1572,9 @@ async def get_slice_task(
             # 细粒度文案透出（终态行也保留最后一次文案，便于回看）
             if rs.get("detail"):
                 payload_detail = rs.get("detail")
+            # 已出成品数透出（2026-11-24 用户需求：进度旁实时「已出 N 条」）
+            if rs.get("outputs_done") is not None:
+                payload_outputs_done = int(rs.get("outputs_done"))
     except Exception as e:
         logger.warning("Failed to get Redis status for task %s: %s", task_id, e)
 
@@ -1578,6 +1583,11 @@ async def get_slice_task(
     try:
         if payload_detail:
             payload["progress_message"] = payload_detail
+    except NameError:
+        pass
+    try:
+        if payload_outputs_done is not None:
+            payload["outputs_done"] = payload_outputs_done
     except NameError:
         pass
     return payload
@@ -1733,6 +1743,37 @@ async def slice_task_callback(
     # 本次新建的切片输出（variant_count>1 时用于投递变体生成；非 completed 分支保持空列表）
     created_outputs: list = []
 
+    # 失败保留辅助：把 worker 已上传的部分成品入库（file_key 去重防重复回调叠加）。
+    # 失败回调主分支与「取消任务的迟到回调」守卫共用（2026-11-24 用户需求）。
+    async def _record_kept_outputs() -> int:
+        kept = 0
+        for out in data.outputs or []:
+            fname = out.get("file_name", "")
+            file_key = out.get("file_key", "")
+            if not file_key:
+                continue
+            existing_out = await db.execute(
+                select(SliceOutput).where(
+                    SliceOutput.task_id == tid,
+                    SliceOutput.file_key == file_key,
+                )
+            )
+            if existing_out.scalar_one_or_none():
+                continue
+            db.add(SliceOutput(
+                task_id=tid,
+                file_key=file_key,
+                file_name=fname,
+                duration=out.get("duration"),
+                file_size=out.get("file_size"),
+                created_at=now,
+            ))
+            kept += 1
+        if kept:
+            task.output_count = (task.output_count or 0) + kept
+            logger.info("Task %s kept %d outputs (total %s, status=%s)", task_id, kept, task.output_count, task.status)
+        return kept
+
     if data.status == "completed":
         # ── 幂等保护 ──
         # 任务可能因 PEL 重新认领 / 回调重发被重复上报 completed。
@@ -1740,9 +1781,11 @@ async def slice_task_callback(
         if task.status == "completed":
             return {"ok": True, "duplicate": True}
         # 终态守卫（2026-11-20 评审 SRE P1-1）：用户已取消的任务不允许被迟到回调
-        # 复活（cancelled 意图优先；迟到产出物留在 MinIO 但不入库）。
+        # 复活（cancelled 意图优先）。但失败保留的成品仍要入库（2026-11-24：
+        # 取消前已完整产出的成品已上传，入库后用户可直接下载复用）。
         if task.status == "cancelled":
-            return {"ok": True, "suppressed": True}
+            kept = await _record_kept_outputs()
+            return {"ok": True, "suppressed": True, "kept_outputs": kept}
         if task.status in ("failed", "cancelled") and task.output_count and task.output_count > 0:
             return {"ok": True, "duplicate": True}
 
@@ -1832,8 +1875,12 @@ async def slice_task_callback(
 
     else:  # failed
         # 终态守卫：已取消/已完成任务不再翻成 failed（2026-11-21 SRE 复评 P2-3：
-        # 晚到失败回调曾可把 completed 翻成 failed）
+        # 晚到失败回调曾可把 completed 翻成 failed）。取消任务的迟到回调带出的
+        # 失败保留成品仍要入库（2026-11-24：用户取消前已产出的成品不丢弃）。
         if task.status in ("cancelled", "completed"):
+            if task.status == "cancelled":
+                kept = await _record_kept_outputs()
+                return {"ok": True, "suppressed": True, "kept_outputs": kept}
             return {"ok": True, "suppressed": True}
         task.status = "failed"
         if data.node_id:
@@ -1841,6 +1888,10 @@ async def slice_task_callback(
         task.error_message = (data.error or "Worker 报告错误")[:2000]
         task.completed_at = now
         logger.warning("Slice task %s failed: %s", task_id, task.error_message)
+
+        # 失败保留已出成品（2026-11-24 用户需求）：worker 已把引擎失败前完整产出
+        # 的成品上传，这里入库为该任务的可下载成品。clip_id 不映射（选点可能未定稿）。
+        await _record_kept_outputs()
 
         # 任务失败也刷新剧集状态（保证不是"最近一条未完成就永远切片中"）
         await _refresh_episode_status(db, task.episode_id)

@@ -150,6 +150,10 @@ func (w *Worker) SetCallbacks(
 		}
 		w.emitProgress(taskID, "ffmpeg", cur, detail)
 	})
+	// 已出成品数（OUTPUT 行 → redis outputs_done，前端「已出 N/总数」实时展示）
+	w.executor.SetOutputDoneCallback(func(taskID string, done int) {
+		_ = w.redis.SetOutputsDone(taskID, done)
+	})
 }
 
 // Run 启动Worker主循环
@@ -890,7 +894,10 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	outputDir := filepath.Join(taskDir, "output")
 	outputs, err := w.executor.ExecuteTask(taskCtx, task, sourcePath, outputDir)
 	if err != nil {
-		w.handleTaskError(taskCtx, task, msg, fmt.Errorf("切片执行失败: %w", err))
+		// 失败保留已出成品（2026-11-24 用户需求）：引擎失败/超时/取消前已完整产出
+		// 的成品随错误带回（outputs 非空时），最终失败/取消路径会上传入库，
+		// 不随失败丢弃；若走 worker 内自动重试则不重复上传（断点续传接着跑）。
+		w.handleTaskError(taskCtx, task, msg, fmt.Errorf("切片执行失败: %w", err), outputs)
 		return
 	}
 	w.emitProgress(task.TaskID, "ffmpeg", 100, "切片完成")
@@ -1007,7 +1014,7 @@ func (w *Worker) runTask(msg *StreamMessage) {
 }
 
 // handleTaskError 处理任务错误（支持重试）
-func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *StreamMessage, err error) {
+func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *StreamMessage, err error, partialOutputs ...[]string) {
 	w.log("error", "任务失败: %s - %v", task.TaskID, err)
 
 	// 卡死检测强制 kill：任务已超时无进度，runTask 即将退出。这里先清理 runningTasks
@@ -1021,8 +1028,12 @@ func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *
 		return
 	}
 
+	// 失败保留已出成品：终态（取消/重试耗尽）时把已完整产出的成品上传入库；
+	// 走自动重试分支则不上传（断点续传接着跑，避免重复上传）。
+
 	// 区分取消 / 超时：取消不重试，超时按可重试处理
 	if taskCtx.Err() == context.Canceled || strings.Contains(err.Error(), "已取消") {
+		keptOutputs := w.uploadPartialOutputs(task, firstOutputs(partialOutputs))
 		w.redis.UpdateTaskStatus(task.TaskID, "cancelled", map[string]interface{}{
 			"error":     "任务已取消",
 			"failed_at": time.Now().Unix(),
@@ -1031,7 +1042,7 @@ func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *
 		w.redis.ExpireTaskStatus(task.TaskID, 7*24*time.Hour)
 		w.ackMessage(msg)
 		atomic.AddInt32(&w.totalFailed, 1)
-		w.sendFailureCallback(task, "任务已取消")
+		w.sendFailureCallback(task, "任务已取消", keptOutputs)
 		if w.onTaskError != nil {
 			w.onTaskError(task.TaskID, err)
 		}
@@ -1077,13 +1088,14 @@ func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *
 	}
 
 	// 重试耗尽，标记失败
+	keptOutputs := w.uploadPartialOutputs(task, firstOutputs(partialOutputs))
 	w.redis.UpdateTaskStatus(task.TaskID, "failed", map[string]interface{}{
 		"error":     err.Error(),
 		"failed_at": time.Now().Unix(),
 	})
 	w.redis.ExpireTaskStatus(task.TaskID, 7*24*time.Hour)
 	atomic.AddInt32(&w.totalFailed, 1)
-	w.sendFailureCallback(task, err.Error())
+	w.sendFailureCallback(task, err.Error(), keptOutputs)
 
 	// 确认移除 PEL 中的消息（专属队列消息取出即确认，无需处理）
 	w.ackMessage(msg)
@@ -1104,8 +1116,9 @@ func (w *Worker) ackMessage(msg *StreamMessage) {
 	}
 }
 
-// sendFailureCallback 发送失败回调
-func (w *Worker) sendFailureCallback(task *SliceTask, errMsg string) {
+// sendFailureCallback 发送失败回调（失败保留：keptOutputs 非空时一并上报，
+// 后端入库为失败任务的可下载成品）
+func (w *Worker) sendFailureCallback(task *SliceTask, errMsg string, keptOutputs ...[]OutputFileInfo) {
 	if task.Output.CallbackURL == "" {
 		return
 	}
@@ -1114,9 +1127,66 @@ func (w *Worker) sendFailureCallback(task *SliceTask, errMsg string) {
 		Status: "failed",
 		Error:  errMsg,
 	}
+	if kept := firstFileInfo(keptOutputs); len(kept) > 0 {
+		callbackData.Outputs = kept
+		callbackData.OutputCount = len(kept)
+	}
 	if cbErr := w.callback.SendCallback(task.Output.CallbackURL, callbackData); cbErr != nil {
 		w.log("warn", "失败回调通知错误: %v", cbErr)
 	}
+}
+
+// firstOutputs 取可变参数里的第一个非空路径列表（无则 nil）。
+func firstOutputs(lists [][]string) []string {
+	for _, l := range lists {
+		if len(l) > 0 {
+			return l
+		}
+	}
+	return nil
+}
+
+// firstFileInfo 取可变参数里的第一个非空文件信息列表（无则 nil）。
+func firstFileInfo(lists [][]OutputFileInfo) []OutputFileInfo {
+	for _, l := range lists {
+		if len(l) > 0 {
+			return l
+		}
+	}
+	return nil
+}
+
+// uploadPartialOutputs 失败保留：逐个 best-effort 上传已完整产出的成品，
+// 返回成功上传的文件信息。上传失败只记日志不阻断失败回调（成品文件仍留在
+// 任务目录，断点续传重跑时可复用）。
+func (w *Worker) uploadPartialOutputs(task *SliceTask, paths []string) []OutputFileInfo {
+	if len(paths) == 0 || task.Output.CallbackURL == "" {
+		return nil
+	}
+	w.log("info", "任务 %s 失败保留: 开始上传 %d 个已出成品", task.TaskID, len(paths))
+	ctx := context.Background()
+	var kept []OutputFileInfo
+	for _, path := range paths {
+		fileName := filepath.Base(path)
+		uploadURL, fileKey, err := w.transfer.GetUploadURL(ctx, w.config.BackendURL, task.TaskID, fileName, task.Output.CallbackToken)
+		if err != nil {
+			w.log("warn", "失败保留上传URL失败(%s): %v", fileName, err)
+			continue
+		}
+		if err := w.transfer.UploadFileWithProgress(ctx, path, uploadURL, task.TaskID); err != nil {
+			w.log("warn", "失败保留上传失败(%s): %v", fileName, err)
+			continue
+		}
+		kept = append(kept, OutputFileInfo{
+			FileName: fileName,
+			FileKey:  fileKey,
+			FileSize: getFileSize(path),
+		})
+	}
+	if len(kept) > 0 {
+		w.log("info", "任务 %s 失败保留: 已上传 %d/%d 个成品", task.TaskID, len(kept), len(paths))
+	}
+	return kept
 }
 
 // watchCancellation 轮询 Redis 任务状态，感知后端取消指令并触发 context 取消

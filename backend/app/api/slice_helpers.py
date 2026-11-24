@@ -434,6 +434,19 @@ class UserSliceConfigRequest(BaseModel):
 
 
 def _serialize_task(task: SliceTask) -> dict:
+    # 计划成品总数（2026-11-24 用户需求：前端「已出 N/总数」）：
+    # 混搭批量配置优先（×N 变体任务的计划总数），否则按 cutlist 分组数（每组 1 个成品）
+    outputs_total = None
+    if task.hook_mix_output_count and int(task.hook_mix_output_count) > 1:
+        outputs_total = int(task.hook_mix_output_count)
+    if outputs_total is None and task.cutlist:
+        names = set()
+        for line in task.cutlist.splitlines():
+            parts = line.split()
+            if len(parts) >= 3:
+                names.add(parts[2])
+        if names:
+            outputs_total = len(names)
     return {
         "id": str(task.id),
         "episode_id": str(task.episode_id),
@@ -442,6 +455,9 @@ def _serialize_task(task: SliceTask) -> dict:
         "progress": task.progress or 0.0,
         # 细粒度进度文案（运行中由 Redis detail 覆盖，见 slice.py 列表/详情端点）
         "progress_message": None,
+        # 已出成品数（运行中由 Redis outputs_done 覆盖；失败任务上表示失败保留条数）
+        "outputs_done": None,
+        "outputs_total": outputs_total,
         "output_count": task.output_count or 0,
         "error_message": task.error_message,
         "node_id": task.node_id,

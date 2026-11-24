@@ -153,6 +153,11 @@ export interface SliceTask {
   progress: number;
   // 细粒度进度文案（如「钩子转码 2/3」「成品 5/10 段切割」）
   progress_message?: string | null;
+  // 已出成品数（引擎 OUTPUT 行实时回调；运行中进度旁展示「已出 N/总数」，
+  // 失败任务上 >0 表示失败保留的成品数）
+  outputs_done?: number | null;
+  // 计划成品总数（混搭批量配置或 cutlist 分组数；用于「已出 N/总数」分母）
+  outputs_total?: number | null;
   output_count: number;
   error_message: string | null;
   // 实际执行该任务的 Worker 节点 ID

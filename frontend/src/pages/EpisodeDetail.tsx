@@ -1377,13 +1377,21 @@ const EpisodeDetail: React.FC = () => {
           status: t.status === 'running' || t.status === 'pending' || t.status === 'processing' ? 'running' : t.status || 'unknown',
           progress: t.progress || 0,
           message: t.status === 'running' || t.status === 'pending'
-            ? (t.progress_message ? `${Math.round(t.progress || 0)}% · ${t.progress_message}` : `切片任务运行中（${t.mode || mode}）…`)
+            ? (() => {
+                // 已出成品数（2026-11-24 用户需求）+ 细粒度阶段文案
+                const donePart = typeof t.outputs_done === 'number'
+                  ? `已出 ${t.outputs_done}${t.outputs_total ? `/${t.outputs_total}` : ''} 条 · `
+                  : '';
+                return t.progress_message
+                  ? `${Math.round(t.progress || 0)}% · ${donePart}${t.progress_message}`
+                  : `${donePart}切片任务运行中（${t.mode || mode}）…`;
+              })()
             : t.status === 'processing'
               ? 'Remotion 增强渲染中（进度来自渲染管线）…'
               : t.status === 'completed'
               ? '切片任务已完成'
               : t.status === 'failed'
-                ? `切片失败：${t.error_message || ''}`
+                ? `切片失败：${t.error_message || ''}${(t.outputs_done ?? 0) > 0 ? `（已保留 ${t.outputs_done} 条成品可下载）` : ''}`
                 : t.status || '',
         });
         // 任务进行中实时同步「切片执行历史」的状态/进度
