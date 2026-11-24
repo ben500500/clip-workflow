@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons';
 import { watermarkApi, type WatermarkTaskDetail, type WatermarkTaskItem } from '../api/watermark';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
+import { downloadFilesSequentially } from '../utils/batchDownload';
 
 const { Title, Text } = Typography;
 
@@ -457,19 +458,31 @@ const Watermark: React.FC<{
 
   const downloadBatch = async (videoIds: string[], taskId: string) => {
     if (!videoIds.length) return;
+    // fetch+blob 受控单飞（2026-11-24）：forEach 连发直链会被浏览器下载管理器
+    // 并发上限吞掉，改逐个 fetch 带进度与重试
+    const msgKey = `wmBatchDl-${taskId}`;
     try {
       const res = await watermarkApi.batchDownload(videoIds);
-      // 逐个打开直链（浏览器会拦截多个弹窗，用 iframe 方式触发更稳）
-      res.files.forEach((f) => {
-        const a = document.createElement('a');
-        a.href = f.url;
-        a.download = f.file_name;
-        a.target = '_blank';
-        a.rel = 'noopener';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      });
+      message.loading({ content: `准备下载 ${res.files.length} 个视频…`, key: msgKey, duration: 0 });
+      const { ok, failed } = await downloadFilesSequentially(
+        res.files.map((f) => ({ url: f.url, file_name: f.file_name })),
+        {
+          onProgress: (p) => message.loading({
+            content: `下载 ${p.done}/${p.total}（${p.pct}%）：${p.name}`,
+            key: msgKey,
+            duration: 0,
+          }),
+        },
+      );
+      if (failed.length) {
+        message.warning({
+          content: `${ok.length}/${res.files.length} 完成，${failed.length} 个失败：${failed.slice(0, 3).map((f) => f.name).join('、')}`,
+          key: msgKey,
+          duration: 5,
+        });
+      } else {
+        message.success({ content: `已下载全部 ${ok.length} 个视频`, key: msgKey, duration: 3 });
+      }
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '批量下载失败');
     }

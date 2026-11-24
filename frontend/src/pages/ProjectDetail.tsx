@@ -13,6 +13,7 @@ import { uploadApi } from '../api/upload';
 import { sliceApi } from '../api/slice';
 import type { Episode, Project } from '../types';
 import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
+import { downloadFilesSequentially } from '../utils/batchDownload';
 import { loadCustomPresets, type SlicePreset } from '../utils/slicePresets';
 import { useDedupePresets } from '../hooks/useDedupePresets';
 
@@ -413,11 +414,14 @@ const ProjectDetail: React.FC = () => {
     }
   };
 
-  // 每组成品一键下载全部：复用批量下载接口，按顺序逐个触发
+  // 每组成品一键下载全部：fetch+blob 受控单飞（2026-11-24：直链连发会被浏览器
+  // 下载管理器并发上限吞掉，慢速时后续文件进不了下载列表；改为逐个 fetch 带
+  // 进度与重试，全部落盘才结束）
   const downloadOutputGroup = async (epId: string) => {
     const group = outputGroups.find((g) => g.episode_id === epId);
     if (!group || group.items.length === 0) return;
     setGroupDownloading(epId);
+    const msgKey = `batchDl-${epId}`;
     try {
       const res = await previewApi.batchDownload(group.items.map((o) => o.output_id));
       const files = res.files ?? [];
@@ -425,20 +429,26 @@ const ProjectDetail: React.FC = () => {
         message.warning('该剧集暂无可用下载文件');
         return;
       }
-      let done = 0;
-      for (const f of files) {
-        const a = document.createElement('a');
-        a.href = f.url;
-        a.download = f.file_name || `output_${f.output_id}.mp4`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        done += 1;
-        if (done < files.length) {
-          await new Promise((r) => setTimeout(r, 800));
-        }
+      message.loading({ content: `准备下载 ${files.length} 个成品…`, key: msgKey, duration: 0 });
+      const { ok, failed } = await downloadFilesSequentially(
+        files.map((f) => ({ url: f.url, file_name: f.file_name || `output_${f.output_id}.mp4` })),
+        {
+          onProgress: (p) => message.loading({
+            content: `下载 ${p.done}/${p.total}（${p.pct}%）：${p.name}`,
+            key: msgKey,
+            duration: 0,
+          }),
+        },
+      );
+      if (failed.length) {
+        message.warning({
+          content: `${ok.length}/${files.length} 完成，${failed.length} 个失败：${failed.slice(0, 3).map((f) => f.name).join('、')}`,
+          key: msgKey,
+          duration: 5,
+        });
+      } else {
+        message.success({ content: `已下载全部 ${ok.length} 个成品`, key: msgKey, duration: 3 });
       }
-      message.success(`已开始按顺序下载 ${files.length} 个成品`);
     } catch (err: unknown) {
       message.error(err instanceof Error ? err.message : '批量下载失败');
     } finally {

@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { OutputGuide } from './PanelGuides';
+import type { OwnerView } from '../../hooks/useOwnerView';
+import { downloadFilesSequentially } from '../../utils/batchDownload';
 import {
   Button,
   Checkbox,
@@ -141,35 +143,37 @@ const OutputGrid: React.FC<{
     }
   };
 
-  /** 多选下载：串行一条条来（并行全开会被浏览器拦一部分），每条走 /download 口落账。 */
+  /** 多选下载：fetch+blob 受控单飞（2026-11-24）：连发直链会被浏览器下载管理器
+   * 并发上限吞掉（慢速时后面的进不了下载列表），改逐个 fetch 带进度与重试；
+   * 每条仍走 /download 口落账。 */
   const downloadPicked = async () => {
     if (!pickedItems.length || downloading) return;
     setDownloading(true);
-    let ok = 0;
     const failed: string[] = [];
-    for (let i = 0; i < pickedItems.length; i++) {
-      const o = pickedItems[i];
-      setDownProgress(`(${i + 1}/${pickedItems.length}) ${o.file_name || o.id.slice(0, 8)}`);
-      try {
-        const res = await assetApi.downloadOutput(o.id);
-        const a = document.createElement('a');
-        a.href = res.url;
-        a.download = res.file_name || '';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        ok += 1;
-      } catch (e) {
-        failed.push(o.file_name || o.id.slice(0, 8));
-        message.warning(`${o.file_name || o.id.slice(0, 8)}：${(e as Error).message || '下载失败'}`);
+    try {
+      const files: { url: string; file_name: string }[] = [];
+      for (let i = 0; i < pickedItems.length; i++) {
+        const o = pickedItems[i];
+        setDownProgress(`(${i + 1}/${pickedItems.length}) 取直链 ${o.file_name || o.id.slice(0, 8)}`);
+        try {
+          const res = await assetApi.downloadOutput(o.id);
+          files.push({ url: res.url, file_name: res.file_name || '' });
+        } catch (e) {
+          failed.push(o.file_name || o.id.slice(0, 8));
+          message.warning(`${o.file_name || o.id.slice(0, 8)}：${(e as Error).message || '获取下载链接失败'}`);
+        }
       }
-      await new Promise((r) => setTimeout(r, 400));
+      const { ok, failed: dlFailed } = await downloadFilesSequentially(files, {
+        onProgress: (p) => setDownProgress(`(${p.done}/${p.total}，${p.pct}%) ${p.name}`),
+      });
+      failed.push(...dlFailed.map((f) => f.name));
+      if (ok.length) message.success(`已下载 ${ok.length} 条，浏览器右上角下载列表里看进度`);
+      if (failed.length) message.warning(`${failed.length} 条没下成：${failed.slice(0, 3).join('、')}`);
+      fetchList(page);
+    } finally {
+      setDownloading(false);
+      setDownProgress('');
     }
-    setDownloading(false);
-    setDownProgress('');
-    if (ok) message.success(`已发起 ${ok} 条下载，浏览器右上角下载列表里看进度`);
-    if (failed.length) message.warning(`${failed.length} 条没下成：${failed.slice(0, 3).join('、')}`);
-    fetchList(page);
   };
 
   return (
@@ -437,7 +441,16 @@ const AssetOutputWall: React.FC<{
   // 11-13 用户口径：五板块内嵌动画——本面板＝挑片/交付链路
   const [howOpen, setHowOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'asset' | 'batch'>('asset');
-  const [ownerView, setOwnerView] = useState<'me' | 'all'>(ownerDefault);
+  const [ownerView, setOwnerView] = useState<OwnerView>(ownerDefault);
+  /**
+   * 批 T（11-24）：`ownerDefault` 现在由页面层的全局「仅看自己」开关算出来
+   * （开＝me，关＝all；旧的按角色矩阵已被那句「默认是要能看到全部的」顶掉）。
+   * 面板是挂载着的，光改 prop 不会重跑 useState 初始值，所以这里跟着 prop 同步一次——
+   * 用户翻开关后回到本屏，看到的就该是收成后的墙，而不是"上次我手动切的那档"。
+   */
+  useEffect(() => {
+    setOwnerView(ownerDefault);
+  }, [ownerDefault]);
   const [packaging, setPackaging] = useState(false);
   // P1（评审定稿⑧）：跨组投放篮子——勾选跨组/跨页/刷新持久（sessionStorage）
   const [basket, setBasket] = useState<Set<string>>(() => {

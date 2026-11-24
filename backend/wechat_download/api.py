@@ -297,7 +297,9 @@ async def import_task_to_project(
 
 class BatchImportRequest(BaseModel):
     """批量导入请求：多个分享链接。"""
-    source_urls: list[str] = Field(..., min_length=1, max_length=100, description="视频号分享链接列表")
+    # 2026-11-24 用户需求：去掉 100 条上限——任务各自独立入队，导入量与解析
+    # 并发解耦（worker 按队列节奏消费），一次粘贴多少条都不再打回。
+    source_urls: list[str] = Field(..., min_length=1, description="视频号分享链接列表")
     source_type: str = Field("self_owned", description="素材类型标签（仅作审计字段）")
     project_id: Optional[uuid.UUID] = None
     authorize_note: Optional[str] = None
