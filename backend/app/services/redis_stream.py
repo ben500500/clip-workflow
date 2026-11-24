@@ -204,7 +204,11 @@ async def _publish_to_node_queue(target_node_id: str, task_data: dict) -> Option
         redis = await get_redis()
         queue_key = f"{NODE_QUEUE_PREFIX}{target_node_id}"
         raw = json.dumps(task_data)
-        await redis.rpush(queue_key, json.dumps({"data": raw}))
+        # 元素 = task JSON 本身（与 Worker RequeueDirectTask 重投格式一致）。
+        # Worker 侧 buildDirectMessage 会自行把元素包成 {"data": <元素>} 再解析——
+        # 此前这里多包了一层 {"data": raw}，Worker 解出空 TaskID 直接 panic 崩进程
+        # （2026-11-24 三机实测踩中：指定派发自上线以来从未被真实使用，故未暴露）。
+        await redis.rpush(queue_key, raw)
         # 唤醒信号尽力而为：丢失不影响送达（Worker BRPOP 短超时兜底）
         wake_payload = json.dumps({
             "type": WAKE_TYPE,

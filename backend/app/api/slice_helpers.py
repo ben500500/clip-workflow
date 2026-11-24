@@ -1216,7 +1216,7 @@ async def _publish_to_worker(
             source_bucket or settings.MINIO_BUCKET_RAW,
             source_file_key,
             expires_seconds=7200,
-            internal=True,
+            
         )
 
     # 视频封面：生成 presigned GET URL，Worker 下载后作为视频首帧叠加
@@ -1226,7 +1226,7 @@ async def _publish_to_worker(
             settings.MINIO_BUCKET_RAW,
             cover_image_key,
             expires_seconds=7200,
-            internal=True,
+            
         )
 
     # 角标图片：为每个角标生成 presigned GET URL，Worker 下载后供引擎叠加
@@ -1238,7 +1238,7 @@ async def _publish_to_worker(
                 settings.MINIO_BUCKET_RAW,
                 b["file_key"],
                 expires_seconds=7200,
-                internal=True,
+                
             )
             if url:
                 badge_items.append({
@@ -1260,7 +1260,7 @@ async def _publish_to_worker(
             settings.MINIO_BUCKET_RAW,
             hk,
             expires_seconds=7200,
-            internal=True,
+            
         )
         if url:
             hook_urls.append(url)
@@ -1272,7 +1272,7 @@ async def _publish_to_worker(
             settings.MINIO_BUCKET_RAW,
             outro_video_key,
             expires_seconds=7200,
-            internal=True,
+            
         )
 
     # 每次任务生成独立的回调/上传鉴权 Token

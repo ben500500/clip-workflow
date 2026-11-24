@@ -1753,12 +1753,13 @@ async def get_slice_upload_url(
         raise HTTPException(status_code=400, detail="file_name 不合法")
 
     # 精确生成该文件的上传 URL（避免路径拼接导致签名失效）
+    # 用外部 endpoint（2026-11-24 三机实测）：跨机节点（Mac/180）不可达容器内
+    # minio:9000；in-cluster worker 走宿主 IP:9000 同样可用
     file_key = f"{_output_prefix(task)}{file_name}"
     upload_url = await get_presigned_upload_url(
         "sliced",
         file_key,
         expires_seconds=7200,
-        internal=True,
     )
     if not upload_url:
         raise HTTPException(status_code=500, detail="生成上传 URL 失败")
