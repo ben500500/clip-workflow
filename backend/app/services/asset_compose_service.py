@@ -61,6 +61,14 @@ DEFAULT_AUTO_CONCAT_ORDER = ORDER_HOOK_FIRST
 DEFAULT_FPS = "25"
 # 单段最长允许多少秒（拼接是同步等 ffmpeg 的 HTTP 请求，纯防御，别拿它当队列用）
 MAX_SEGMENT_SECONDS = 600.0
+# 一次拼接最多几段。**2＝11-04 的手工口，3＝11-24 需求三加了「片尾」**。
+# 上限钉在 3 不是技术原因（`build_concat_filter` 一直是按 len(segments) 通写、
+# concat=n=N 天生支持任意段数），是**语义**原因：需求三列的输入就是
+# 「钩子成片 ＋ 正片 ＋ 片尾」这三件，再多一段就属于「拿两条正片拼一条」那种
+# 真正的混剪需求，那需要选点/剪切——11-04 用户已经明确否掉过一次。
+# 放开这个数之前先回去问口径，别顺手改成 10。
+MAX_SEGMENTS = 3
+MIN_SEGMENTS = 2
 
 
 def _fail(status: int, detail: str) -> None:
@@ -284,9 +292,17 @@ async def concat_segments(paths: List[str], target: Dict[str, Any], out_path: st
     """把 paths 按给定顺序拼成 out_path；成功回 None，失败回一句能给人看的原话。
 
     `target` 是调用方按**顺序第一段**探到的规格（宽/高/帧率），本函数只补音轨有无与时长。
+
+    段数区间 `MIN_SEGMENTS..MAX_SEGMENTS`（2～3）。11-24 需求三从 2 放宽到 3 是
+    为了「＋片尾」，滤镜图与命令构造一直是按 `len(paths)` 通写的，没有为三段另写一套
+    ——**全仓只此一份 concat 实现**（§9.3 收口），另一处 `api/upload.py::_ffmpeg_concat`
+    已标死为「仅限多文件合并上传」。
     """
-    if len(paths) != 2:
-        return f"拼接固定两段，现在是 {len(paths)} 段（要三段以上再说，别改这条口径）"
+    if not MIN_SEGMENTS <= len(paths) <= MAX_SEGMENTS:
+        return (
+            f"一次拼 {MIN_SEGMENTS}～{MAX_SEGMENTS} 段（钩子片／正片／片尾），现在是 {len(paths)} 段"
+            "（要更多段属于混剪需求，先回文档确认口径，别改这条）"
+        )
     if not shutil.which("ffmpeg"):
         return "服务器里没有 ffmpeg，拼不了（找运维持容器镜像）"
     if not shutil.which("ffprobe"):

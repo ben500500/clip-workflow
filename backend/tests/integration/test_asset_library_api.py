@@ -136,15 +136,19 @@ with _EnvOverride(_TEST_ENV):
         AssetItem,
         AssetJob,
         AssetOutput,
+        AssetOverlayPreset,
         AssetProduction,
         AssetSummary,
         JB_QUEUED,
         JB_RUNNING,
         JB_SUCCEEDED,
+        JOB_COMPOSE,
         JOB_FRAMES,
         JOB_PRODUCE,
         JOB_SUMMARY_GENERATE,
         DEFAULT_ASSET_CATEGORIES,
+        OVERLAY_PRESET_SHARED,
+        OVERLAY_PRESET_USER,
     )
     from app.models.audit import AuditLog
     from app.models.material import Episode, Project, SliceOutput, SliceTask, SystemConfig
@@ -224,11 +228,24 @@ async def _bootstrap():
     from app.api import assets as assets_api
     assets_api._RISK_CACHE["at"], assets_api._RISK_CACHE["payload"] = 0.0, None
 
-    async with _test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(WechatDownloadBase.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(WechatDownloadBase.metadata.create_all)
+    # 抽帧/下载这类后台任务的连接**不会跟着 `asyncio.run` 一起收**：上一条用例的 loop 关掉了，
+    # 池子里那条连接还活着并握着写锁，于是本条用例的 `DROP TABLE` 撞上
+    # `sqlite3.OperationalError: database is locked`（11-24 全套里偶发一次，单跑必绿）。
+    # 先把引擎池子放掉再建表；仍被锁就短重试几次——这是测试基建的时序问题，不是被测代码。
+    await _test_engine.dispose()
+    for attempt in range(4):
+        try:
+            async with _test_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+                await conn.run_sync(WechatDownloadBase.metadata.drop_all)
+                await conn.run_sync(Base.metadata.create_all)
+                await conn.run_sync(WechatDownloadBase.metadata.create_all)
+            break
+        except Exception as exc:  # noqa: BLE001 — 只认"库被占着"这一种，别的照抛
+            if "database is locked" not in str(exc) or attempt == 3:
+                raise
+            await asyncio.sleep(0.25)
+            await _test_engine.dispose()
     async with dbmod.async_session_factory() as s:
         s.add_all([
             User(id=uuid.uuid4(), username=MATERIAL_USER, password_hash=get_password_hash(PASSWORD),
@@ -12658,6 +12675,1013 @@ def test_ui_preferences_default_by_role_and_roundtrip():
         bad = await client.put(
             "/api/assets/ui/preferences", json={"ui_config": {"asset_library_mode": "极简"}}, headers=ho)
         assert bad.status_code == 422, bad.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+# ══════════════════════════════════════════════════════════════
+#  25. 组合导出矩阵 ＋ 叠加预设（11-24 需求三 S3）
+#
+#  验收判据就是 1123 §需求三 S3 那五条，逐条对上号：
+#  ① 拼接 **0 元**（主干用例把 cost / 审计 / 文案三处都钉住）；
+#  ② N×M>20 得 **400**（用默认旋钮 20 真撞一次，再证旋钮独立、不是复用投板 cap）；
+#  ③ **校验先于投出**——拿 `_start_asset_job` 的假身断言"一次都没被 await"，
+#     而不是只断言"台账里没有行"（后者挡不住"先起任务再校验"这种写法）；
+#  ④ composed 产物在**成片墙**可预览、可下载，且带 `compose` 说明；
+#  ⑤ concat 唯一性守卫在 `tests/unit/test_asset_concat_single_impl.py`。
+#
+#  替身分三层，各钉各的，别混：
+#  - `_mx_env`：取段 → 探规格 → ffmpeg → 落桶（＋抽帧排程）。段"是谁"靠**文件头 8 字节**
+#    认，不靠调用次数猜——这样"矩阵的行序＝界面勾选序"才是被测出来的，不是排出来的。
+#  - `_mx_overlay`：叠加引擎那一层。本机没挂 `./engines`，`engine_available()` 在本地**恒为
+#    False**（现网 backend 才挂了只读卷），不钉这一层的话主干用例会在校验那步被"这台机器
+#    叠不了"挡在门外，测不到渲染。
+#  - 钩子那一段**走真链路造**（开单 → 投板 → 回收落 `doubao_raw` 行），因为"试产片不许进
+#    矩阵"和"composed 行带 hook_production_id"两条只有拿真形状的行才测得出来。
+# ══════════════════════════════════════════════════════════════
+
+MX_MATRIX = "/api/assets/compose/matrix"
+MX_PRESETS = "/api/assets/overlay-presets"
+
+MX_HOOK_BYTES = [f"MXHOOK{i:02d}".encode() for i in range(1, 13)]
+MX_MATL_BYTES = [f"MXMATL{i:02d}".encode() for i in range(1, 13)]
+MX_TAIL_BYTES = b"MXTAIL01"
+MX_OUT_BYTES = b"MXOUT001"
+
+# 各段的"实测规格"：钩子竖屏、正片**横屏**——正片故意给成横的，"换顺序＝换画幅"这条口径
+# 才有东西可断（两段同规格时 target 怎么取都看不出写错）。
+MX_HOOK_SPEC = {"duration": 16.08, "width": 720, "height": 1280, "fps": "25/1", "has_audio": True}
+MX_MATL_SPEC = {"duration": 42.5, "width": 1280, "height": 720, "fps": "25/1", "has_audio": True}
+MX_TAIL_SPEC = {"duration": 4.0, "width": 1280, "height": 720, "fps": "30/1", "has_audio": False}
+MX_OUT_SPEC = {"duration": 58.58, "width": 720, "height": 1280, "fps": "25/1", "has_audio": True}
+
+MX_STAMP: Dict[bytes, Tuple[str, Dict[str, Any]]] = {}
+for _i, _b in enumerate(MX_HOOK_BYTES):
+    MX_STAMP[_b] = (f"钩子{_i + 1}", MX_HOOK_SPEC)
+for _i, _b in enumerate(MX_MATL_BYTES):
+    MX_STAMP[_b] = (f"正片{_i + 1}", MX_MATL_SPEC)
+MX_STAMP[MX_TAIL_BYTES] = ("片尾", MX_TAIL_SPEC)
+MX_STAMP[MX_OUT_BYTES] = ("产物", MX_OUT_SPEC)
+
+
+@contextlib.contextmanager
+def _mx_env(registry: Dict[str, bytes], calls: List[dict], *,
+            broken: Tuple[str, ...] = (), events: Optional[List[str]] = None,
+            concat_return_error: Optional[str] = None):
+    """组合导出那四步（取回→探规格→ffmpeg→落桶）的替身，全程不出网、不跑真 ffmpeg。
+
+    `registry`＝`file_key → 这段的字节内容`。故意按 **key** 而不是按前缀分派（批 Q 那层
+    是按 `asset/board/` 前缀判的）：矩阵有三类原料，前缀判法一旦漏一类就会把"取错了段"
+    测成"取到了默认那段"——那是假绿。没登记的 key 直接 AssertionError。
+    `broken`＝点了名的 key 取回失败（回 False），用来测"一格坏不连累整批"。
+    `events`＝按顺序记 "overlay" / "upload"，用来钉"叠完才上传"这条硬口径。
+    """
+    async def _download(bucket, key, local):
+        key = str(key)
+        if key in broken:
+            return False
+        if key not in registry:
+            raise AssertionError(f"矩阵替身没登记这段内容，代码却去桶里取了它：{key}")
+        with open(local, "wb") as fh:
+            fh.write(registry[key])
+        return True
+
+    def _head(path):
+        with open(path, "rb") as fh:
+            return fh.read(8)
+
+    async def _concat(paths, target, out_path):
+        tags = [MX_STAMP.get(_head(p), ("未知段", None))[0] for p in paths]
+        calls.append({"tags": tags, "target": dict(target)})
+        with open(out_path, "wb") as fh:
+            fh.write(MX_OUT_BYTES)
+        return concat_return_error
+
+    def _probe(path):
+        return dict(MX_STAMP.get(_head(path), ("未知段", MX_HOOK_SPEC))[1])
+
+    uploaded: List[str] = []
+
+    async def _upload(bucket, key, path, **kw):
+        if events is not None:
+            events.append("upload")
+        # 0 字节产物不许落桶（11-04 现网那个"上传成功但桶里是空对象"的真事故）
+        assert os.path.getsize(path) > 0, f"落桶的文件是空的：{key}"
+        uploaded.append(str(key))
+        return True
+
+    frames = AsyncMock(return_value={"queued": True, "job_id": "jmx", "note": None})
+    with contextlib.ExitStack() as st:
+        st.enter_context(patch("app.api.assets.download_to_file", _download))
+        st.enter_context(patch("app.services.asset_compose_service.concat_segments", _concat))
+        st.enter_context(patch("app.services.asset_compose_service.probe_media",
+                               AsyncMock(side_effect=_probe)))
+        st.enter_context(patch("app.api.assets.upload_file_from_path", _upload))
+        st.enter_context(patch("app.api.assets._enqueue_frames", frames))
+        yield {"frames": frames, "uploaded": uploaded}
+
+
+@contextlib.contextmanager
+def _mx_overlay(events: List[str], *, engine_ok: bool = True, apply_error: Optional[str] = None):
+    """叠加那一层：角标取图（走 `minio_service`，和段下载**不是一个绑定名**）＋引擎可用性＋叠层。
+
+    `engine_ok=False` 是现网之外的另一种真实：本机没挂 engines，`compose_matrix` 必须
+    **在起后台任务之前**就把话说清楚（否则台账里躺着一条"组合导出 失败"，一线不知道为
+    什么）。这里把可用性一起钉住，主干用例才测得到渲染那一段。
+
+    ⚠️ 角标取图打的是 `app.services.minio_service.download_to_file`，而**段**下载打的是
+    `app.api.assets.download_to_file`（misc 里是 from-import 进来的另一个绑定）。两个名字
+    打成一个，另一层就会去连本机没起的 MinIO:9000——用例挂成 ConnectionRefused，
+    看着像"叠加没做"，其实是替身没盖全。
+    """
+    async def _pull(bucket, key, local):
+        with open(local, "wb") as fh:
+            fh.write(PNG_PORTRAIT)
+        return True
+
+    async def _apply(src, out, badges, texts, *, threads=1):
+        assert os.path.getsize(src) > 0, "叠层的输入必须是刚拼出来的非空文件"
+        for badge in badges:
+            assert os.path.isfile(str(badge.get("path"))), f"角标没落成本地文件：{badge}"
+            assert str(badge.get("position")), "传给引擎的角标必须带位置"
+        events.append("overlay")
+        if apply_error is not None:
+            return apply_error
+        with open(out, "wb") as fh:
+            fh.write(MX_OUT_BYTES)
+        return None
+
+    with contextlib.ExitStack() as st:
+        st.enter_context(patch("app.services.minio_service.download_to_file", _pull))
+        st.enter_context(patch(
+            "app.services.asset_overlay_service.engine_available",
+            lambda: (engine_ok, None if engine_ok else "测试钉住：这台机器没挂 engines"),
+        ))
+        st.enter_context(patch("app.services.asset_overlay_service.apply_overlay", _apply))
+        yield
+
+
+def _mx_overlay_params(badge_id: str) -> Dict[str, Any]:
+    """一套"角标 ＋ 警示语"的现场参数（预设里存的也是这个形状）。"""
+    return {
+        "badges": [{"asset_id": badge_id, "position": "top-right", "width": 160, "offset": 24}],
+        "text_overlays": [{"text": "本剧纯属虚构", "position": "bottom-center", "font_size": 40}],
+    }
+
+
+MX_OVERLAY_SUMMARY = "1 个角标（top-right） ＋ 1 行字（本剧纯属虚构）"
+
+
+async def _mx_inputs(client, h, *, hooks=2, materials=2, with_tail=False, codes=None):
+    """造一批**真形状**的原料：hooks 支豆包成片（走开单→投板→回收落库）＋ M 条正片素材。
+
+    钩子侧不手插行是有原因的：`_load_matrix_hooks` 要看 `kind`、`file_key`、以及**它挂的
+    生产单是不是试产**——这三样全靠投板那条线自然写出来，手插一行很容易插成一个
+    "库里根本不可能存在"的形状，用例绿了但代码没被考到。
+    """
+    hm, ho = h["material"], h["operator"]
+    hook_codes = codes or [f"8MX{str(i + 1).zfill(2)}" for i in range(hooks)]
+    assert len(hook_codes) == hooks
+    _asset_id, _sid, listed = await _order_ready_production(client, h, n=hooks, hook_codes=hook_codes)
+    fb = _FakeBoard()
+    with _board_off(fb):
+        resp = await _dispatch(client, ho, [p["id"] for p in listed])
+    assert resp.status_code == 200, resp.text
+
+    registry: Dict[str, bytes] = {}
+    hook_ids: List[str] = []
+    ordered_codes: List[str] = []
+    for idx, prod in enumerate(listed):
+        rows = [o for o in await _rows(AssetOutput)
+                if str(o.production_id) == str(prod["id"]) and o.kind == "doubao_raw" and o.file_key]
+        assert rows, f"投板回收没有落下豆包成片行：{prod['id']}"
+        hook_ids.append(str(rows[0].id))
+        registry[rows[0].file_key] = MX_HOOK_BYTES[idx]
+        # 生产单列表口是**最新在上**，`listed` 的次序不等于请求里 hook_codes 的次序。
+        # 所以"这段内容 ↔ 这个钩子编号"要成对按同一顺序登记；否则用例变成拿两个
+        # 不同顺序的数组比大小，"行序＝勾选序"这条恰恰没被考到。
+        ordered_codes.append(str(prod["hook_code"]))
+    assert sorted(set(ordered_codes)) == sorted(set(hook_codes))
+
+    matl_ids: List[str] = []
+    for idx in range(materials):
+        m = await _q_video_asset(client, hm, f"正片{idx + 1}.mp4")
+        row = await _row_of(AssetItem, m["id"])
+        assert row.file_key, m
+        registry[row.file_key] = MX_MATL_BYTES[idx]
+        matl_ids.append(m["id"])
+
+    tail_id = None
+    if with_tail:
+        t = await _q_video_asset(client, hm, "片尾.mp4")
+        trow = await _row_of(AssetItem, t["id"])
+        registry[trow.file_key] = MX_TAIL_BYTES
+        tail_id = t["id"]
+
+    with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)):
+        img = (await client.post("/api/assets/upload/batch",
+                                 files=[("files", ("角标.png", PNG_PORTRAIT, "image/png"))],
+                                 headers=hm)).json()["items"][0]
+    assert img["media_kind"] == "image"
+
+    return {"asset_id": _asset_id, "hook_ids": hook_ids, "matl_ids": matl_ids,
+            "tail_id": tail_id, "img_id": img["id"], "registry": registry,
+            "productions": listed, "hook_codes": ordered_codes}
+
+
+def _mx_payload(env, **extra):
+    body = {"hook_output_ids": env["hook_ids"], "material_ids": env["matl_ids"], **extra}
+    return body
+
+
+async def _mx_composed_rows():
+    return [o for o in await _rows(AssetOutput) if o.kind == "composed"]
+
+
+def test_compose_matrix_trunk_lays_every_cell_on_the_wall_for_zero_yuan():
+    """S3 主干：2 支钩子 × 2 条正片 ＝ 4 条组合成片，一条不落全摆上成片墙，**0 元**。
+
+    这条用例同时钉死判据 ①（0 元）与 ④（墙上可预览可下载），外加三件"矩阵"特有的语义：
+    - 行序＝勾选序（界面勾的顺序就是产物的顺序，不能悄悄按 id 重排）；
+    - 目标画幅＝**排在最前那一段**（钩子竖屏 ⇒ 出竖屏），这是 11-04 定的拼接口径在矩阵里的延续；
+    - 产物行**不挂生产单**（`production_id=NULL`）但带 `hook_production_id`——挂上会让
+      生产单行上"成片"那一列一支算两支（批 I 定过的口径）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        env = await _mx_inputs(client, h, hooks=2, materials=2)
+        calls: List[dict] = []
+        with _mx_env(env["registry"], calls) as stub, \
+             patch("app.api.assets._start_asset_job",
+                   AsyncMock(side_effect=AssertionError("同步档不许起后台任务"))):
+            resp = await client.post(MX_MATRIX, json=_mx_payload(env, async_mode=False), headers=ho)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["queued"] is False
+            assert (body["requested"], body["ok"], body["failed"]) == (4, 4, 0), body["results"]
+            assert body["cost"] == 0, "拼接一分钱不花——写了成本就是造账"
+            assert body["overlay"] == "不叠加"
+            assert "0 元" in body["message"] and "成片墙" in body["message"], body["message"]
+            assert [c["tags"] for c in calls] == [
+                ["钩子1", "正片1"], ["钩子1", "正片2"], ["钩子2", "正片1"], ["钩子2", "正片2"]]
+            assert all(c["target"]["width"] == 720 and c["target"]["height"] == 1280 for c in calls)
+            assert all(r["ok"] is True for r in body["results"])
+            r0 = body["results"][0]
+            assert r0["segments"][0] == f"钩子·{env['hook_codes'][0]}"
+            assert r0["material"] == r0["segments"][1] and len(r0["segments"]) == 2
+            assert r0["hook_output_id"] == env["hook_ids"][0]
+
+            rows = await _mx_composed_rows()
+            assert len(rows) == 4, [r.file_key for r in rows]
+            for r in rows:
+                assert r.production_id is None and r.hook_production_id is not None
+                assert r.file_key.startswith("asset/composed/8MX"), r.file_key
+                assert r.duration == 58.58 and r.resolution == "720x1280", (r.duration, r.resolution)
+                meta = r.compose_meta
+                assert meta["via"] == "matrix" and meta["cost"] == 0 and meta["tail"] is None
+                assert meta["order"] == "hook_first"
+                assert meta["hook_output_id"] in env["hook_ids"]
+                assert meta["overlay"]["preset_id"] is None and meta["overlay"]["preset_name"] is None
+                assert meta["overlay"]["params"] == {"badges": [], "text_overlays": []}
+                assert meta["overlay"]["summary"] == "不叠加"
+                assert r.composed_from_output_id is None, "矩阵是一次一格，不是回收自动拼的幂等行"
+            assert stub["uploaded"] and len(stub["uploaded"]) == 4
+            assert stub["frames"].await_count == 1
+            assert sorted(stub["frames"].await_args.kwargs["output_ids"]) == sorted(
+                r["output_id"] for r in body["results"])
+
+            # 素材的五阶段里 compose 被点亮（拼接是它的写入方）
+            asset = await _row_of(AssetItem, env["asset_id"])
+            assert asset.stage_compose == "success"
+            assert (asset.cost_prompt, asset.cost_parse) == (0.0, 0.0), "0 元不许反写素材成本"
+
+            # 判据④：成片墙看得见、能预览、能下载
+            listed = (await client.get("/api/assets/outputs?kind=composed", headers=ho)).json()
+            assert listed["total"] == 4 and len(listed["items"]) == 4, listed["total"]
+            briefs = [it["compose"] for it in listed["items"]]
+            assert all(b and b["via"] == "matrix" and b["cost"] == 0 for b in briefs)
+            assert all(b["tail"] is None and b["preset_name"] is None for b in briefs)
+            assert any(b["hook_code"] == "8MX01" for b in briefs) and any(
+                b["hook_code"] == "8MX02" for b in briefs)
+            oid = str(rows[0].id)
+            with patch("app.api.assets.get_presigned_url",
+                       AsyncMock(return_value="http://minio/signed?x=1")) as ps:
+                pv = await client.get(f"/api/assets/outputs/{oid}/preview", headers=hm)
+            assert pv.status_code == 200 and "attachment" not in pv.json()["url"]
+            # 批 E 定过的口径在这里同样适用于 composed：预览**不许**带 attachment，
+            # 带了给 <video> 就是黑屏（"接口 200 但播不了"的根因）。
+            assert ps.await_count == 1 and "as_attachment" not in ps.await_args.kwargs
+            with patch("app.api.assets.get_presigned_url",
+                       AsyncMock(return_value="http://minio/signed?d=1")) as ps2:
+                dl = await client.get(f"/api/assets/outputs/{oid}/download", headers=hm)
+            assert dl.status_code == 200 and dl.json()["kind"] == "composed"
+            assert ps2.await_args.kwargs.get("as_attachment") is True, "下载就该落盘"
+
+        # 判据①的最后一道：审计说这次 0 元、4 条全成
+        logs = await _rows(AuditLog, AuditLog.action == "asset.compose.matrix")
+        assert len(logs) == 1, len(logs)
+        after = logs[0].after
+        assert after["cost"] == 0 and after["ok"] == 4 and after["failed"] == 0
+        assert after["hooks"] == 2 and after["materials"] == 2 and after["tail"] is None
+        assert after["order"] == "hook_first" and after["overlay"] == "不叠加"
+        assert await _count(AssetJob) == 0, "同步档不该在台账里留行"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_compose_matrix_tail_and_order_change_segments_and_the_frame():
+    """片尾当第三段、顺序换前两段——两件都会改变**这条片子长什么样**，所以钉死。
+
+    - 片尾恒在最后（「片尾」就该在片尾），第三段既进 `segments` 也进 `compose_meta.tail`；
+    - `material_first` 把正片挪到最前 ⇒ 目标画幅跟着换成横屏。这不是口味问题：
+      11-04 定的口径是「目标画幅＝排在最前那一段」，界面让人选顺序就等于让人选画幅，
+      代码不许在背后替他决定（`MX_MATL_SPEC` 故意给成 1280×720 就是为了让这一条可测）；
+    - 片尾与某条正片是**同一个文件** ⇒ 400。判的是 `file_key` 不是 id：同一条素材
+      以两条 id 分别当选照样坏，只比 id 会漏；
+    - 非法顺序当场 400，不许像有些代码那样悄悄回落默认档（回落＝人以为选了，其实没选）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        env = await _mx_inputs(client, h, hooks=1, materials=2, with_tail=True)
+        calls: List[dict] = []
+        with _mx_env(env["registry"], calls):
+            r1 = await client.post(MX_MATRIX, json=_mx_payload(
+                env, async_mode=False, tail_asset_id=env["tail_id"]), headers=ho)
+            assert r1.status_code == 200, r1.text
+            b1 = r1.json()
+            assert b1["ok"] == 2 and b1["failed"] == 0
+            assert [c["tags"] for c in calls] == [
+                ["钩子1", "正片1", "片尾"], ["钩子1", "正片2", "片尾"]]
+            assert all(c["target"]["width"] == 720 for c in calls)
+            first = b1["results"][0]
+            assert len(first["segments"]) == 3
+            assert first["segments"][0] == f"钩子·{env['hook_codes'][0]}"
+            assert first["segments"][1] == first["material"]
+            rows = await _mx_composed_rows()
+            assert len(rows) == 2
+            tail_labels = set()
+            for r in rows:
+                meta = r.compose_meta
+                assert meta["tail"] is not None and meta["tail"]["file_key"]
+                assert meta["segments"][2] == meta["tail"]["label"]
+                assert meta["segments"][0] == f"钩子·{meta['hook_code']}"
+                assert meta["cost"] == 0 and meta["via"] == "matrix"
+                tail_labels.add(meta["tail"]["label"])
+            assert len(tail_labels) == 1, tail_labels
+            audits = await _rows(AuditLog, AuditLog.action == "asset.compose.matrix")
+            assert audits[-1].after["tail"] in tail_labels
+            assert audits[-1].after["materials"] == 2 and audits[-1].after["hooks"] == 1
+
+            before = await _count(AssetOutput)
+            calls.clear()
+            r2 = await client.post(MX_MATRIX, json=_mx_payload(
+                env, async_mode=False, order="material_first"), headers=ho)
+            assert r2.status_code == 200, r2.text
+            assert [c["tags"] for c in calls] == [["正片1", "钩子1"], ["正片2", "钩子1"]]
+            assert all(c["target"]["width"] == 1280 for c in calls), "顺序换了画幅没换＝代码替他决定了"
+            assert await _count(AssetOutput) == before + 2
+            new_ids = {rr["output_id"] for rr in r2.json()["results"]}
+            fresh = [r for r in await _mx_composed_rows() if str(r.id) in new_ids]
+            assert len(fresh) == 2
+            assert all(r.compose_meta["order"] == "material_first" for r in fresh)
+            assert all(r.compose_meta["tail"] is None for r in fresh), \
+                "这一轮没带片尾，不许把上一轮的片段尾串过来"
+
+            r3 = await client.post(MX_MATRIX, json=_mx_payload(
+                env, async_mode=False, tail_asset_id=env["matl_ids"][0]), headers=ho)
+            assert r3.status_code == 400 and "是同一个文件" in r3.text, r3.text
+            assert await _count(AssetOutput) == before + 2, "拒收不该留下半成品"
+
+            r4 = await client.post(MX_MATRIX, json=_mx_payload(
+                env, async_mode=False, order="middle"), headers=ho)
+            assert r4.status_code == 400 and "拼接顺序只能是" in r4.text, r4.text
+            assert await _count(AssetOutput) == before + 2
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_compose_matrix_over_capacity_says_split_it_and_burns_nothing():
+    """判据②＋缺口 4b：N×M 超上限 ⇒ 400 且什么都不产生；拼接的 cap 与投板的 cap **各管各的**。
+
+    两个旋钮凑巧默认都是 20，语义毫无关系：投板那个管「当天号池额度」，这个管
+    「一次压给服务器多少秒 CPU」。谁要是图省事复用，将来把号池 cap 调到 40，
+    拼接的单次上限就被连带放宽到 40 格——一个看不见摸不着的性能事故就这么埋下了。
+    所以这里既断言「调小拼接 cap 会挡」，也断言「把投板 cap 调到 1 挡不住拼接」，
+    两个方向都验才算独立。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        assert int(settings.ASSET_COMPOSE_MAX_PER_CALL) == 20, "默认值被改过＝这条用例不再考 20"
+
+        env = await _mx_inputs(client, h, hooks=3, materials=7)   # 21 格 > 20
+        calls: List[dict] = []
+        jobs_before = await _count(AssetJob)
+        outs_before = await _count(AssetOutput)
+        with _mx_env(env["registry"], calls), \
+             patch("app.api.assets._start_asset_job",
+                   AsyncMock(side_effect=AssertionError("超上限连台账都不该碰"))):
+            r = await client.post(MX_MATRIX, json=_mx_payload(env), headers=ho)
+            assert r.status_code == 400, r.text
+            assert "请分两次点" in r.text and "ASSET_COMPOSE_MAX_PER_CALL" in r.text, r.text
+            assert "3 支钩子 × 7 条正片 ＝ 21 条" in r.text, r.text
+            assert calls == [] and await _count(AssetOutput) == outs_before
+            assert await _count(AssetJob) == jobs_before
+
+            small = int(settings.ASSET_COMPOSE_MAX_PER_CALL)
+            settings.ASSET_COMPOSE_MAX_PER_CALL = 3
+            try:
+                r2 = await client.post(MX_MATRIX, json=_mx_payload(env), headers=ho)
+                assert r2.status_code == 400 and "超过单次上限 3" in r2.text, r2.text
+                assert calls == []
+            finally:
+                settings.ASSET_COMPOSE_MAX_PER_CALL = small
+
+            # cap 独立：把投板的 cap 拧到 1，拼接（3×7＝21）照样被**自己的** cap 挡住，
+            # 而 2×2＝4 格不该被投板 cap 误伤。
+            dispatch_cap = settings.ASSET_DISPATCH_MAX_PER_CALL
+            settings.ASSET_DISPATCH_MAX_PER_CALL = 1
+            try:
+                r3 = await client.post(MX_MATRIX, json={
+                    "hook_output_ids": env["hook_ids"][:2],
+                    "material_ids": env["matl_ids"][:2],
+                    "async_mode": False,
+                }, headers=ho)
+                assert r3.status_code == 200, r3.text
+                assert r3.json()["ok"] == 4, r3.text
+            finally:
+                settings.ASSET_DISPATCH_MAX_PER_CALL = dispatch_cap
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_compose_matrix_refuses_every_bad_selection_before_touching_anything():
+    """**判据③「校验先于投出」**：每一种坏选择都当场说人话，台账一行不留、一条产物不落。
+
+    为什么这条值得单独一条用例：矩阵默认走后台档（D-1 口径），而排进后台的活儿是
+    **先落一行 `asset_jobs` 再开始跑**的。校验只要漏在后面，一线看到的就是「组合导出
+    失败」四个字，得点开 result 才知道"第 1 个角标挑的是视频"——可那是**入参错**，
+    不是运行故障，本来就不该占用一次任务号、更不该在台账里留一条失败。
+    所以这里把排程口换成一张计数纸：跑完每一种坏选择，它都必须**一次都没被点过**，
+    拼接替身也必须一次都没被叫过（`calls == []`＝连桶都没碰）。
+
+    顺带把 11-24 定下的两条口径钉在同一处：钩子侧**只认非试产片**（缺口 4a）；
+    角标挑错类型在**投出之前**就拒（缺口 4b，`resolve_badge_refs` 那一层拆开的意义）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        env = await _mx_inputs(client, h, hooks=2, materials=2)
+        base = _mx_payload(env)          # 不带 async_mode ＝ 默认后台档，最考验"校验排在前面"
+
+        # 两种"库里真会有、但不该进矩阵"的行：交付包（zip）和回收落坏的（桶里没文件）
+        async with dbmod.async_session_factory() as s:
+            prod = await s.get(AssetProduction, uuid.UUID(env["productions"][0]["id"]))
+            pkg = AssetOutput(production_id=prod.id, asset_id=prod.asset_id, kind="package",
+                              file_key="asset/package/交付包.zip", bucket=settings.MINIO_BUCKET_RAW,
+                              file_name="交付包.zip")
+            nofile = AssetOutput(production_id=prod.id, asset_id=prod.asset_id, kind="doubao_raw",
+                                 file_key=None, bucket=settings.MINIO_BUCKET_RAW,
+                                 file_name="回收没落下的坏片.mp4")
+            s.add_all([pkg, nofile])
+            await s.commit()
+            pkg_id, nofile_id = str(pkg.id), str(nofile.id)
+
+        link = (await _import(client, hm, [DOUYIN_1])).json()["items"][0]   # 链接素材：还没文件
+
+        calls: List[dict] = []
+        events: List[str] = []
+        started = AsyncMock(return_value={"job_id": "不该出现", "status": JB_QUEUED})
+        outs_before = await _count(AssetOutput)
+
+        with _mx_env(env["registry"], calls, events=events), \
+             _mx_overlay(events), \
+             patch("app.api.assets._start_asset_job", started):
+            async def _bad(payload, code, phrase, headers=None):
+                r = await client.post(MX_MATRIX, json=payload, headers=headers or ho)
+                assert r.status_code == code, f"{phrase} → {r.status_code} {r.text[:240]}"
+                assert phrase in r.text, r.text
+                return r
+
+            await _bad({**base, "hook_output_ids": []}, 400, "钩子成片一个都没选")
+            await _bad({**base, "material_ids": []}, 400, "正片一个都没选")
+            await _bad({**base, "hook_output_ids": [str(uuid.uuid4())]}, 400, "在库里找不到")
+            await _bad({**base, "hook_output_ids": [pkg_id]}, 400, "那些不是能拼的视频")
+            await _bad({**base, "hook_output_ids": [nofile_id]}, 400, "桶里没有文件")
+
+            # 正片侧：不存在的素材 / 图片 / 还没回源解析的链接
+            await _bad({**base, "material_ids": [str(uuid.uuid4())]}, 404, "素材不存在")
+            await _bad({**base, "material_ids": [env["img_id"]]}, 400, "是图片，拼接只吃视频")
+            await _bad({**base, "material_ids": [link["id"]]}, 400, "还没有可拼的文件")
+            await _bad({**base, "material_ids": [link["id"]]}, 400, "/assets/resolve")
+
+            # 入参形状
+            await _bad({**base, "material_source": "yuanbao"}, 400, "material_source 只能是")
+            await _bad({**base, "order": "middle"}, 400, "拼接顺序只能是")
+
+            # 缺口 4a：试产片的成片不能当原料（转正了才能用），话术要给出路
+            async with dbmod.async_session_factory() as s:
+                row = await s.get(AssetProduction, uuid.UUID(env["productions"][0]["id"]))
+                row.is_trial = True
+                await s.commit()
+            await _bad({**base, "hook_output_ids": [env["hook_ids"][0]]},
+                       400, "试产片的成片不能进组合导出")
+            async with dbmod.async_session_factory() as s:
+                row = await s.get(AssetProduction, uuid.UUID(env["productions"][0]["id"]))
+                row.is_trial = False
+                await s.commit()
+
+            # 叠加预设：二选一 / 已停用 / 别人的个人预设 / 这台机器没引擎 / 角标挑了视频
+            pid = (await client.post(MX_PRESETS, json={"name": "8MX剧名片尾警示",
+                                                       "params": _mx_overlay_params(env["img_id"])},
+                                     headers=ho)).json()["id"]
+            await _bad({**base, "overlay_preset_id": pid,
+                        "overlay_params": _mx_overlay_params(env["img_id"])},
+                       400, "只能带一个")
+            await _bad({**base, "overlay_params": {"badges": [{"position": "top-left"}]}},
+                       400, "没挑图")
+            await _bad({**base, "overlay_params": _mx_overlay_params(env["matl_ids"][0])},
+                       400, "不是图片，当不了角标")
+            await _bad({**base, "overlay_preset_id": str(uuid.uuid4())}, 404, "叠加预设不存在")
+            mine = (await client.post(MX_PRESETS, json={"name": "8MX别人的私人预设",
+                                                        "params": _mx_overlay_params(env["img_id"])},
+                                      headers=ho)).json()["id"]
+            await _bad({**base, "overlay_preset_id": mine}, 403, "这是别人的个人预设", headers=hm)
+            await client.request("DELETE", f"{MX_PRESETS}/{pid}", headers=ho)
+            await _bad({**base, "overlay_preset_id": pid}, 400, "已停用")
+
+            with _mx_overlay([], engine_ok=False):
+                await _bad({**base, "overlay_params": _mx_overlay_params(env["img_id"])},
+                           400, "这台机器用不了叠加引擎")
+
+            async with dbmod.async_session_factory() as s:
+                s.add(User(id=uuid.uuid4(), username="mx_pub",
+                           password_hash=get_password_hash(PASSWORD), display_name="发布专员",
+                           role="publisher", data_scope="all", is_active=True))
+                await s.commit()
+            pub = (await client.post("/api/auth/login",
+                                     json={"username": "mx_pub", "password": PASSWORD})).json()
+            r_pub = await client.post(MX_MATRIX, json=base,
+                                      headers={"Authorization": f"Bearer {pub['access_token']}"})
+            assert r_pub.status_code == 403, f"发布专员不该能拼：{r_pub.status_code} {r_pub.text[:200]}"
+            assert "权限不足" in r_pub.text
+
+        # ★ 判据③的落点：上面二十来次请求，**没有一次**排到后台、没有一次碰过桶
+        assert started.await_count == 0, f"校验没过却排了 {started.await_count} 次后台任务"
+        assert calls == [] and events == [], "一次都没该渲染，拼接/落桶/叠层却被叫过"
+        assert [j for j in await _rows(AssetJob) if j.kind == JOB_COMPOSE] == []
+        assert await _count(AssetOutput) == outs_before
+        assert await _mx_composed_rows() == []
+        assert (await client.get(MX_MATRIX, headers=ho)).status_code == 405, "矩阵只有 POST"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_compose_matrix_async_mode_goes_through_the_ledger_and_replays_the_same_endpoint():
+    """默认档（不给 `async_mode` ＝ true）：当场回任务号，后台**把同一个接口再跑一遍**。
+
+    这条真正要钉的不是"能跑完"，而是**没有第二套实现**：`_job_endpoint(JOB_COMPOSE)`
+    交出去的就是 `compose_matrix` 本体，后台重放靠一个透明代理数得出来它被调了两次
+    （第一次 async=true 只落台账，第二次 async=false 真干活）。写两套早晚分叉——
+    投产/审核/导出三个入口那次口径不一致（R-6）就是这么来的，这个新 kind 不重来一遍。
+
+    另钉三件：①台账里躺的是**整份**同步响应（逐格明细都在，界面不用二次请求）；
+    ②跑完之后重提同样的选择**不挡**——防重复判据只看还没结束的活；
+    ③`done_note` 说清产物在哪看（11-10 口径③：「已完成」三个字必须带去向）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        env = await _mx_inputs(client, h, hooks=2, materials=2)
+        calls: List[dict] = []
+        real = assets_api.compose_matrix
+        seen: List[bool] = []
+
+        async def _spy(data, current_user, db):
+            seen.append(bool(data.async_mode))
+            return await real(data, current_user, db)
+
+        with _mx_env(env["registry"], calls) as stub, \
+             patch("app.api.assets.compose_matrix", _spy):
+            sub = await client.post(MX_MATRIX, json=_mx_payload(env), headers=ho)
+            assert sub.status_code == 200, sub.text
+            ack = sub.json()
+            assert ack["queued"] is True and ack["status"] == JB_QUEUED, ack
+            assert ack["planned_units"] == 4, "台账要先知道这次要转几格，进度条才写得出来"
+            assert "已排到后台" in ack["message"] and "不用守着页面等" in ack["message"]
+            assert ack["poll_url"] == f"/api/assets/jobs/{ack['job_id']}"
+            assert calls == [], "提交这一趟只该落台账，一条都不该现在就渲染"
+
+            done = await _wait_job(client, ho, ack["job_id"], timeout=20.0)
+            assert done["status"] == JB_SUCCEEDED, done
+            assert done["running"] is False and done["kind"] == JOB_COMPOSE
+            assert done["kind_label"] == "组合导出" and done["planned_units"] == 4
+            assert done["done_note"] == assets_api.ASSET_JOB_DONE_NOTES[JOB_COMPOSE]
+            assert "成片墙" in done["done_note"] and "0 元" in done["done_note"]
+            body = done["result"]
+            assert body is not None and body["queued"] is False, "重放那一趟不能再排一份任务"
+            assert (body["requested"], body["ok"], body["failed"], body["cost"]) == (4, 4, 0, 0)
+            assert all(r["ok"] for r in body["results"])
+            assert [c["tags"] for c in calls] == [
+                ["钩子1", "正片1"], ["钩子1", "正片2"], ["钩子2", "正片1"], ["钩子2", "正片2"]]
+            assert seen == [True, False], f"重放没走同一个接口：{seen}"
+            assert done["error"] is None, done["error"]
+
+            rows = await _mx_composed_rows()
+            assert len(rows) == 4
+            assert stub["frames"].await_count == 1
+
+            # ★ 跑完之后重提：防重复判据只看"还没结束"的活，终态不该永久占坑
+            again = await client.post(MX_MATRIX, json=_mx_payload(env), headers=ho)
+            assert again.status_code == 200, again.text
+            ack2 = again.json()
+            assert ack2["queued"] is True and ack2["job_id"] != ack["job_id"]
+            done2 = await _wait_job(client, ho, ack2["job_id"], timeout=20.0)
+            assert done2["status"] == JB_SUCCEEDED, done2
+            assert done2["result"]["ok"] == 4
+            # 两次都真跑了：矩阵一格一条新行、不覆盖（这正是 twin 判据存在的理由）
+            assert len(await _mx_composed_rows()) == 8
+
+        assert len(await _rows(AuditLog, AuditLog.action == "asset.compose.matrix")) == 2, \
+            "后台重放那一趟也要留审计，不然花钱台账查不到机器干的活"
+        subs = await _rows(AuditLog, AuditLog.action == f"asset.job.{JOB_COMPOSE}.submit")
+        assert len(subs) == 2 and all(s.after["planned_units"] == 4 for s in subs)
+        asset = await _row_of(AssetItem, env["asset_id"])
+        assert asset.stage_compose == "success"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_compose_matrix_twin_guard_is_conservative_on_shared_materials():
+    """同样的料已经在后台拼，就**不再起一份**——而且判据故意偏保守。
+
+    `asset_jobs` 台账里躺一条没结束的组合同类活时：
+
+    - 完全一样的一批 → 409；
+    - **只共用一支钩子**（正片全换了）→ 也 409。这不是漏判，是 11-24 定的档位：一次
+      矩阵提交本来就该把要的正片一起选完，而"等它跑完"的代价远小于让两份转码在现网
+      高峰期叠起来（同一台机器上还跑着切片和回收）。要改成按格精确判，先动这条用例。
+    - 两头的 id 都不沾 → 放行。这一条必须有，否则"保守"就变成"一次只能拼一批"。
+
+    话术上最要紧的是别把它说成"不花钱随便点"：拼接 0 元模型费，但重复一次＝服务器白转
+    一遍码 ＋ 桶里多存一整批重样片子（没人回收）。所以 409 里必须出现这句真话。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        env = await _mx_inputs(client, h, hooks=2, materials=2)
+        calls: List[dict] = []
+
+        async with dbmod.async_session_factory() as s:
+            twin = AssetJob(
+                kind=JOB_COMPOSE,
+                status=JB_QUEUED,
+                params={"hook_output_ids": [env["hook_ids"][0]],
+                        "material_ids": [env["matl_ids"][0]], "async_mode": True},
+                planned_units=1,
+                created_by=None,
+            )
+            s.add(twin)
+            await s.commit()
+            twin_id = str(twin.id)
+        jobs_before = await _count(AssetJob)
+
+        # ⚠️ 这里**不能**把 `_start_asset_job` 换成替身：防重复判据就写在那个函数里，
+        # 一替身就替掉了被测对象（第一版就是这么假绿的）。改用真函数＋"没有新行、
+        # 一次都没渲染"两条硬证据来判它有没有挡下来。
+        with _mx_env(env["registry"], calls):
+            for payload in ({**_mx_payload(env), "async_mode": True},
+                            {"hook_output_ids": [env["hook_ids"][0]],
+                             "material_ids": [env["matl_ids"][1]]}):
+                r = await client.post(MX_MATRIX, json=payload, headers=ho)
+                assert r.status_code == 409, r.text
+                assert "正在后台跑「组合导出」" in r.text, r.text
+                assert twin_id in r.text, "409 要点名是哪条任务占着"
+                assert "不花模型费，但重复占服务器转码" in r.text, r.text
+                assert "桶里多存一整批重样片子" in r.text, r.text
+            assert calls == [] and await _count(AssetJob) == jobs_before, \
+                "被挡住的重复提交不许在台账里留一行失败的活"
+
+        # 两头的 id 都不沾 ⇒ 放行，而且真跑得完
+        with _mx_env(env["registry"], calls):
+            ok = await client.post(MX_MATRIX,
+                                   json={"hook_output_ids": [env["hook_ids"][1]],
+                                         "material_ids": [env["matl_ids"][1]]},
+                                   headers=ho)
+            assert ok.status_code == 200, ok.text
+            ack = ok.json()
+            assert ack["queued"] is True and ack["planned_units"] == 1, ack
+            done = await _wait_job(client, ho, ack["job_id"], timeout=20.0)
+            assert done["status"] == JB_SUCCEEDED, done
+        assert [c["tags"] for c in calls] == [["钩子2", "正片2"]], calls
+        assert await _count(AssetJob) == jobs_before + 1
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_compose_matrix_one_broken_cell_fails_only_itself():
+    """一格取不到文件只坏那一格：剩下的照拼照落，失败的那格在 results 里点名说原因。
+
+    钉的是矩阵最容易出事的那条纪律：**一格一提交**。20 格跑到第 7 格桶里取不到文件，
+    要是攒到批末统一提交，前 6 格的文件已经进了桶、行却被 rollback 掉——变成"桶里有片、
+    库里没行"的孤儿，谁也不会去回收。所以这里逐格验：
+
+    - 坏的是**正片侧**的一个 key（两条钩子都配它 ⇒ 恰好坏两格、好两格）；
+    - `results` 的失败原因用人话（`取回第2段失败（桶/key）`），不是 `ConnectionError`；
+    - 只有成功的格子落 composed 行、进抽帧清单、进审计的 `ok`；
+    - 一句"拼好 2 条，失败 2 条"，别让一线以为整批废了。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        env = await _mx_inputs(client, h, hooks=2, materials=2)
+        bad_row = await _row_of(AssetItem, env["matl_ids"][0])
+        good_row = await _row_of(AssetItem, env["matl_ids"][1])
+        assert bad_row.file_key and good_row.file_key and bad_row.file_key != good_row.file_key
+
+        calls: List[dict] = []
+        with _mx_env(env["registry"], calls, broken=(bad_row.file_key,)) as stub:
+            resp = await client.post(MX_MATRIX, json=_mx_payload(env, async_mode=False), headers=ho)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert (body["requested"], body["ok"], body["failed"]) == (4, 2, 2), body
+            assert body["cost"] == 0
+            assert [r["ok"] for r in body["results"]] == [False, True, False, True], body["results"]
+            for cell in body["results"]:
+                if cell["ok"]:
+                    assert cell["material"] == f"{good_row.code}·{good_row.title or good_row.file_name}"
+                else:
+                    assert "取回第2段失败" in cell["error"], cell["error"]
+                    assert str(bad_row.file_key)[:30] in cell["error"], cell["error"]
+                    assert "稍后重试" in cell["error"]
+            assert "拼好 2 条" in body["message"] and "失败 2 条" in body["message"], body["message"]
+            # 坏格子连 ffmpeg 都不该叫起来：calls 里只剩两格，且都是配那条好正片
+            assert [c["tags"] for c in calls] == [["钩子1", "正片2"], ["钩子2", "正片2"]], calls
+            assert len(stub["uploaded"]) == 2, "取回失败的那格不许往桶里落东西"
+
+        rows = await _mx_composed_rows()
+        assert len(rows) == 2
+        assert all(r.compose_meta["material"]["file_key"] == good_row.file_key for r in rows)
+        assert sorted(r.id for r in rows) == sorted(
+            uuid.UUID(x["output_id"]) for x in body["results"] if x["ok"])
+        assert stub["frames"].await_count == 1
+        assert sorted(stub["frames"].await_args.kwargs["output_ids"]) == sorted(
+            x["output_id"] for x in body["results"] if x["ok"])
+
+        logs = await _rows(AuditLog, AuditLog.action == "asset.compose.matrix")
+        assert len(logs) == 1
+        after = logs[0].after
+        assert (after["ok"], after["failed"], after["cost"]) == (2, 2, 0)
+        assert len(after["failures"]) == 2 and all("取回第2段失败" in f["error"] for f in after["failures"])
+        # 有格子成就 ⇒ 阶段照样点亮（不能让一条坏原料把素材的 compose 阶段判成没做）
+        assert (await _row_of(AssetItem, env["asset_id"])).stage_compose == "success"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_compose_matrix_overlays_before_uploading_the_final_file():
+    """叠加排在落桶**之前**：叠坏了就一条都不许进桶，界面上不能出现"没卡但已发出去"的片。
+
+    这条用例唯一有价值的断言是 `events` 那串顺序——它把 `_concat_render` 的步骤钉成
+    「拼好 → 叠 → 才上传」。顺序反过来的话，叠加失败会留下一个"已经在桶里、但没叠角标"
+    的对象，而行没落库；一线下次点导出又多一份，谁都不知道桶里那批干净的片是哪来的。
+    （11-04 那个"上传成功但桶里 0 字节"就是同一族：落桶这一步一旦和校验脱钩就会造脏数据。）
+
+    顺带钉三件读侧口径：
+    - `compose_meta.overlay` 存的是**当时校验后的参数快照**＋一句人话 summary；
+    - 成片墙 brief 与审计都读这个快照，不读预设现值（预设改了不许回头改历史）；
+    - 一格失败不许连累另一格：两格都坏才是两格都坏。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        env = await _mx_inputs(client, h, hooks=1, materials=2)
+        params = _mx_overlay_params(env["img_id"])
+        calls: List[dict] = []
+        events: List[str] = []
+
+        with _mx_env(env["registry"], calls, events=events) as stub1, _mx_overlay(events):
+            r1 = await client.post(MX_MATRIX,
+                                   json=_mx_payload(env, async_mode=False, overlay_params=params),
+                                   headers=ho)
+            assert r1.status_code == 200, r1.text
+            b1 = r1.json()
+            assert (b1["requested"], b1["ok"], b1["failed"], b1["cost"]) == (2, 2, 0, 0)
+            assert b1["overlay"] == MX_OVERLAY_SUMMARY, b1["overlay"]
+            # ★ 口径本体：每一格都是"叠完才上传"，没有一次 upload 排在 overlay 前面
+            assert events == ["overlay", "upload", "overlay", "upload"], events
+            assert len(stub1["uploaded"]) == 2
+
+            rows = await _mx_composed_rows()
+            assert len(rows) == 2
+            for row in rows:
+                ov = row.compose_meta["overlay"]
+                assert ov["preset_id"] is None and ov["preset_name"] is None
+                assert ov["summary"] == MX_OVERLAY_SUMMARY
+                assert ov["params"]["badges"][0]["asset_id"] == env["img_id"]
+                assert ov["params"]["badges"][0]["position"] == "top-right"
+                assert ov["params"]["badges"][0]["width"] == 160
+                assert "opacity" in ov["params"]["badges"][0], "校验后的形状才进快照"
+                assert ov["params"]["text_overlays"][0]["text"] == "本剧纯属虚构"
+            briefs = (await client.get("/api/assets/outputs?kind=composed", headers=ho)
+                      ).json()["items"]
+            # 只判**这一轮拼出来的那两条**：文件里前面还有批 Q 自动拼、手工两段拼留下的
+            # composed 行，那些没叠东西，`compose` 是另一套形状（甚至 null）。
+            mine = [it for it in briefs if it["id"] in {x["output_id"] for x in b1["results"]}]
+            assert len(mine) == 2, [it["id"] for it in mine]
+            assert all(it["compose"]["overlay_summary"] == MX_OVERLAY_SUMMARY for it in mine)
+            assert all(it["compose"]["preset_name"] is None for it in mine)
+            matrix_logs = [l for l in await _rows(AuditLog, AuditLog.action == "asset.compose.matrix")
+                           if (l.after or {}).get("overlay") == MX_OVERLAY_SUMMARY]
+            assert len(matrix_logs) == 1, "前面几轮矩阵都不带叠加，这里只该有这一条"
+            assert matrix_logs[0].after["ok"] == 2
+            assert matrix_logs[0].after["overlay_preset_id"] is None
+
+        # 第 2 轮：引擎这一趟报错 ⇒ 一条都不落，桶里也不许多出"没叠卡"的对象
+        events.clear()
+        calls.clear()
+        with _mx_env(env["registry"], calls, events=events) as stub2, \
+             _mx_overlay(events, apply_error="测试钉住：引擎第 2 遍叠不上"):
+            r2 = await client.post(MX_MATRIX,
+                                   json=_mx_payload(env, async_mode=False, overlay_params=params),
+                                   headers=ho)
+            assert r2.status_code == 200, r2.text
+            b2 = r2.json()
+            assert (b2["ok"], b2["failed"]) == (0, 2), b2["results"]
+            assert all("叠加失败：" in x["error"] for x in b2["results"]), b2["results"]
+            assert events == ["overlay", "overlay"], "叠坏了还往桶里传，就是造脏数据"
+            assert stub2["uploaded"] == []
+            assert stub2["frames"].await_count == 0, "一格都没成，不该排抽帧"
+            assert b2["frames"]["queued"] is False
+        assert len(await _mx_composed_rows()) == 2, "失败那一轮不许新增行，也别把好的删掉"
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_overlay_presets_are_scoped_audited_and_never_stored_empty():
+    """叠加预设的四条边界：空壳存不了、名字不并存、私有的看不见、改预设不回改历史。
+
+    预设是"存下来反复用"的东西，所以这里的判错比现场调用**更严**：现场调错了这一次废掉，
+    预设里存错了一套，之后每一批出片都错。所以：
+    - 既无角标又无文字 → 当场 400（存进去＝界面上多一个"选了等于没选"的选项，一定被当 bug 报）；
+    - 同名 → 409 并指路去改原来那套（不加 DB 唯一索引的理由和 `asset_scripts` 一样：
+      163 老库 `ADD COLUMN` 补不出约束，会出现两套行为）；
+    - `scope="shared"`（全员可选）只有管理员能设——共享出去改的是别人的片子外观；
+    - 别人的个人预设既不在我列表里、直接拿 id 打接口也挡（防靠猜 id 读别人参数）。
+
+    最后一档是 11-24 需求三自己踩出来的真 bug：**停用**口的职能闸以前挂的是审核口径
+    （`_REVIEW_ROLES`），于是素材专员能建、能改自己的预设，却永远关不掉它——死局。
+    现在跟着 `_PROD_ROLES`，所有权判断留在函数里（本人或管理员）。这条用例把死局钉成回归。
+    """
+    _run(_bootstrap())
+
+    from app.services import asset_overlay_service as ov_svc
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        env = await _mx_inputs(client, h, hooks=1, materials=2)
+        params = _mx_overlay_params(env["img_id"])
+
+        created = await client.post(MX_PRESETS,
+                                    json={"name": "8MX剧名＋后果自负", "params": params,
+                                          "note": "竖屏剧名条"}, headers=ho)
+        assert created.status_code == 201, created.text
+        p1 = created.json()
+        pid = p1["id"]
+        assert p1["scope"] == OVERLAY_PRESET_USER and p1["active"] is True
+        assert p1["summary"] == MX_OVERLAY_SUMMARY and p1["note"] == "竖屏剧名条"
+        assert p1["owner_name"]
+
+        bad = await client.post(MX_PRESETS, json={"name": "8MX空壳", "params": {}}, headers=ho)
+        assert bad.status_code == 400 and "一个角标、一行字都没有" in bad.text, bad.text
+        dup = await client.post(MX_PRESETS, json={"name": "8MX剧名＋后果自负",
+                                                 "params": params}, headers=hm)
+        assert dup.status_code == 409 and "换个名字或直接改它" in dup.text, dup.text
+        shared = await client.post(MX_PRESETS, json={"name": "8MX全员台标", "scope": "shared",
+                                                     "params": params}, headers=hm)
+        assert shared.status_code == 403 and "只有管理员能把叠加预设设成「全员可选」" in shared.text
+
+        listed = (await client.get(MX_PRESETS, headers=ho)).json()
+        assert listed["total"] == 1 and listed["items"][0]["id"] == pid
+        assert listed["positions"] == list(ov_svc.BADGE_POSITIONS)
+        assert (listed["max_badges"], listed["max_text_overlays"], listed["max_text_chars"]) == (6, 6, 30)
+        # 个人预设不进别人的列表（素材专员看不见运营专员存的那套）
+        assert (await client.get(MX_PRESETS, headers=hm)).json()["total"] == 0
+
+        admin_shared = await client.post(MX_PRESETS,
+                                         json={"name": "8MX全员警示", "scope": "shared",
+                                               "params": params}, headers=ha)
+        assert admin_shared.status_code == 201, admin_shared.text
+        sid = admin_shared.json()["id"]
+        both = (await client.get(MX_PRESETS, headers=hm)).json()["items"]
+        assert [it["id"] for it in both] == [sid], both
+
+        # 拿预设跑一次矩阵：产物里存的是 preset_id ＋ preset_name ＋ 参数快照
+        # ⚠️ 必须连 `_mx_overlay` 一起打：本机没挂 engines，`engine_available()` 恒 False，
+        # 而这道闸排在**校验之后、落库之前**——不钉它，用例只会拿到一句
+        # "这台机器用不了叠加引擎"，测到的是替身缺失而不是预设口径。
+        with _mx_env(env["registry"], []), _mx_overlay([]):
+            hit = await client.post(MX_MATRIX,
+                                    json=_mx_payload(env, async_mode=False, overlay_preset_id=pid),
+                                    headers=ho)
+            assert hit.status_code == 200, hit.text
+            assert hit.json()["overlay"] == MX_OVERLAY_SUMMARY
+        row_ids = [r["output_id"] for r in hit.json()["results"]]
+        assert len(row_ids) == 2, hit.json()["results"]
+        for oid in row_ids:
+            meta = (await _row_of(AssetOutput, oid)).compose_meta["overlay"]
+            assert meta["preset_id"] == pid and meta["preset_name"] == "8MX剧名＋后果自负"
+            assert meta["summary"] == MX_OVERLAY_SUMMARY
+
+        # ★ 管理员事后改预设：历史片子的快照一个字都不许跟着变（对账以快照为准）
+        # 个人预设的编辑权＝本人**或管理员**（管理员要能替离岗的人收拾），所以这里用 ha 改 ho 的。
+        edited = await client.put(f"{MX_PRESETS}/{pid}",
+                                  json={"name": "8MX剧名改过了",
+                                        "params": {"badges": [],
+                                                   "text_overlays": [{"text": "仅供内部预览",
+                                                                      "position": "bottom-center",
+                                                                      "font_size": 40}]}},
+                                  headers=ha)
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["name"] == "8MX剧名改过了"
+        assert edited.json()["summary"] == "1 行字（仅供内部预览）", edited.json()["summary"]
+        again = (await _row_of(AssetOutput, row_ids[0])).compose_meta["overlay"]
+        assert again["preset_name"] == "8MX剧名＋后果自负", "改预设把历史片子也改了＝对账全乱"
+        assert again["params"]["badges"][0]["asset_id"] == env["img_id"]
+        # 别人的个人预设不是别人的改不了？反例：运营专员改不了素材专员那套（下面 own 建好后验）
+
+        # 停用：本人关得掉（`_PROD_ROLES` 修的就是这一条），别人关不掉，共享的要管理员
+        own = await client.post(MX_PRESETS, json={"name": "8MX素材专员自己的",
+                                                 "params": params}, headers=hm)
+        assert own.status_code == 201, own.text
+        oid_own = own.json()["id"]
+        edit_others = await client.put(f"{MX_PRESETS}/{oid_own}",
+                                       json={"note": "运营专员想替素材专员改"}, headers=ho)
+        assert edit_others.status_code == 403 and "只能自己改或另存一套" in edit_others.text
+        not_mine = await client.request("DELETE", f"{MX_PRESETS}/{pid}", headers=hm)
+        assert not_mine.status_code == 403 and "删不了" in not_mine.text, not_mine.text
+        not_shared = await client.request("DELETE", f"{MX_PRESETS}/{sid}", headers=hm)
+        assert not_shared.status_code == 403 and "只有管理员能停" in not_shared.text
+        retired = await client.request("DELETE", f"{MX_PRESETS}/{oid_own}", headers=hm)
+        assert retired.status_code == 200 and retired.json()["active"] is False, retired.text
+        assert "以后选不到了" in retired.json()["message"]
+        twice = await client.request("DELETE", f"{MX_PRESETS}/{oid_own}", headers=hm)
+        assert twice.status_code == 200 and "早就是停用状态" in twice.json()["message"]
+        assert (await client.get(MX_PRESETS, headers=hm)).json()["total"] == 1
+        inactive = [it["id"] for it in (await client.get(
+            f"{MX_PRESETS}?include_inactive=true", headers=hm)).json()["items"]]
+        # 不比顺序：列表按 created_at 倒序，同一秒内建的两套在 SQLite 上分不出先后，
+        # 而"停用的默认不列、带上才列出来"才是这条要判的事。
+        assert set(inactive) == {sid, oid_own}, inactive
+
+        # 停用的预设选不了，话术给出路（另存一套）
+        with _mx_env(env["registry"], []):
+            off = await client.post(MX_MATRIX,
+                                    json=_mx_payload(env, async_mode=False,
+                                                     overlay_preset_id=oid_own), headers=hm)
+            assert off.status_code == 400 and "已停用" in off.text and "另存一套" in off.text, off.text
+
+        for action in ("asset.overlay_preset.create", "asset.overlay_preset.update",
+                       "asset.overlay_preset.deactivate"):
+            logs = await _rows(AuditLog, AuditLog.action == action)
+            assert logs, f"{action} 没留痕：预设是反复用的东西，改了没人知道谁改的"
+        upd = (await _rows(AuditLog, AuditLog.action == "asset.overlay_preset.update"))[0]
+        assert upd.before["name"] == "8MX剧名＋后果自负", upd.before
+        assert upd.after["name"] == "8MX剧名改过了", upd.after
+        dec = (await _rows(AuditLog, AuditLog.action == "asset.overlay_preset.deactivate"))[0]
+        assert dec.before["active"] is True and dec.after["active"] is False
+        # 矩阵那条审计要把「用的哪套预设」也钉住，否则事后查不到这批片是谁的哪套参数叠的
+        mtx = (await _rows(AuditLog, AuditLog.action == "asset.compose.matrix"))[0]
+        assert mtx.after["overlay_preset_id"] == pid, mtx.after
+        assert mtx.after["overlay"] == MX_OVERLAY_SUMMARY
         await client.aclose()
 
     _run(_scenario())

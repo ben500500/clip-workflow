@@ -671,6 +671,16 @@ async def _run_ffmpeg(cmd: List[str]) -> bool:
 async def _ffmpeg_concat(paths: List[str], out_path: str) -> bool:
     """用 ffmpeg 把多个视频顺序拼接为一个（优先不转码，参数不一致时回退重编码）。
 
+    ⛔ **仅限「多文件合并上传」这一条口（upload.py:498），禁止新增调用方。**
+    第 3 步回退档硬编码 `scale=1920:1080`（下面 :712）：那是给手机横拍合并用的，
+    我们素材库全线是 9:16 竖屏（豆包成片恒 720×1280），走这里会被加左右黑边塞进横框
+    ——「合并成功但构图坏」。拼接的唯一实现是
+    `services/asset_compose_service.py`（目标规格＝最前段、混规格绝不流拷贝、
+    缺音轨补 anullsrc 三条结论都在那儿），守卫用例见
+    `tests/unit/test_asset_concat_single_impl.py`。
+    （1123 §9.3 concat 收口：要么改这边要么改那边，选定「标死这边」——
+    改上传合并线要回归真机录屏那批用例，收益 0、风险有。）
+
     关键修复：手机录制的 MP4 常带 edit list / 非零起始时间戳，各段 DTS 不连续，
     直接 `concat -c copy` 会在接缝处产生 Non-monotonic DTS、时长被严重撑高、
     AAC 音频解码损坏。因此先对每个输入做**无损**时间戳归一化重封装

@@ -87,6 +87,7 @@ from app.models.asset import (
     JB_RUNNING,
     JB_SUCCEEDED,
     JOB_ANALYZE,
+    JOB_COMPOSE,
     JOB_DISPATCH,
     JOB_DOWNLOAD,
     JOB_FRAMES,
@@ -96,6 +97,9 @@ from app.models.asset import (
     MEDIA_IMAGE,
     MEDIA_KINDS,
     MEDIA_VIDEO,
+    OVERLAY_PRESET_SCOPES,
+    OVERLAY_PRESET_SHARED,
+    OVERLAY_PRESET_USER,
     PR_CANCELLED,
     PR_FAILED,
     PR_ORDER_READY,
@@ -132,6 +136,7 @@ from app.models.asset import (
     AssetItem,
     AssetJob,
     AssetOutput,
+    AssetOverlayPreset,
     AssetScript,    AssetProduction,
     AssetSummary,
     gen_asset_code,
@@ -143,6 +148,7 @@ from app.models.models import User
 from app.models.user import UserPreference, UserRole
 from app.services import asset_compose_service as compose
 from app.services import asset_frame_service as framesvc
+from app.services import asset_overlay_service as overlay
 from app.services import asset_prompt_elements as pesvc
 from app.services import asset_service as svc
 from app.services import aivideo_board as board
@@ -4506,6 +4512,10 @@ ASSET_JOB_DONE_NOTES = {
     ),
     JOB_DOWNLOAD: "原片已下载入库：在素材详情里就地播，这一步不出成片",
     JOB_FRAMES: "抽帧完成：首帧摆在审核台卡片行与成片墙缩略图上",
+    JOB_COMPOSE: (
+        "组合导出已拼完：产物一条条摆在「成片墙」（每条一次拼接、不覆盖），"
+        "勾选后照旧走「打包下载」出包——这一步 0 元、不占号池"
+    ),
 }
 
 
@@ -4541,6 +4551,12 @@ def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
         # `/summaries/preview-prompt`，与投产展开同一模型同一模板，不会出现
         # "预览一套、投产另一套"的分叉。
         return PromptPreviewRequest, preview_prompt_for_summaries, "备豆包提示词"
+    if kind == JOB_COMPOSE:
+        # 11-24 需求三：组合导出（N 钩子 × M 正片）。后台重放跑的仍是 `compose_matrix`
+        # 这一个函数本体（上限/试产/预设/图片段五道闸全在里面），没有第二套实现可分叉。
+        # 一单最多 20 格 × 每格 2～3 次下载＋转码，同步等必然撞超时链最外层，
+        # 所以这个 kind 的默认 `async_mode` 就是 true——它是六个 kind 里唯一「同步跑反而危险」的。
+        return ComposeMatrixRequest, compose_matrix, "组合导出"
     raise HTTPException(
         status_code=400,
         detail=f"任务类型只支持 {'/'.join(ASSET_JOB_KINDS)}",
@@ -4572,6 +4588,21 @@ def _job_scope_ids(kind: str, params: Dict[str, Any]) -> List[str]:
     if kind == JOB_PROMPT_PREVIEW:
         # 批 J：备提示词圈的是文案 id（与投产同类）
         return [str(x) for x in ((params or {}).get("summary_ids") or []) if str(x)]
+    if kind == JOB_COMPOSE:
+        # 11-24 需求三：组合导出圈的是**两头的原料 id**（钩子成片 ＋ 正片）。
+        # 判"重复"必须是这个口径：同一支钩子 × 同一条正片再拼一遍＝桶里多一份一样的片、
+        # 服务器白转一遍码。取的是**并集**，所以「同钩子配不同正片」也会被挡——
+        # 这是故意偏保守，不是漏判：一次矩阵提交本来就该把要的正片一起选完，而拼一批是
+        # 秒到分钟级的活，"等它跑完"的代价远小于让两份转码在现网高峰期叠起来
+        # （用例 `test_compose_matrix_twin_guard...` 把这个保守档位钉死，改成按格精确判重要先动那条用例）。
+        # 正片 id 留在集合里还有第二个用途：「删素材」护栏（见 delete_asset 的护栏 1）
+        # 靠它挡住正在被拼的素材——那里比的是裸素材 id，写成"钩子|正片"配对就匹配不上了。
+        p = params or {}
+        return [
+            str(x)
+            for x in (list(p.get("hook_output_ids") or []) + list(p.get("material_ids") or []))
+            if str(x)
+        ]
     return [str(x) for x in (params.get(key) or []) if str(x)]
 
 
@@ -4590,6 +4621,12 @@ def _twin_cost_phrase(kind: str) -> str:
         # 批 J：备提示词是真等一次模型（与投产展开同价），但已有预览的条会被幂等跳过，
         # 重复提交烧的只是"没有预览的那几条"的模型钱——照实说，别吓人也别装没事。
         return "重复扣模型费用（已有预览的条会自动跳过，不重复生成）"
+    if kind == JOB_COMPOSE:
+        # 11-24 需求三：组合导出**一分钱不花**（纯本机 ffmpeg），但重复提交照样有代价：
+        # 一次 20 格的转码会把服务器 CPU 压满（现网还跑着切片/回收），且拼出来的产物
+        # 一条条新增、不覆盖——重复点一次桶里就多整批一份，没人回收。
+        # 所以这里不能说"不花钱随便点"，要说"不花钱但白占机器、桶里多存一份"。
+        return "不花模型费，但重复占服务器转码、还在桶里多存一整批重样片子"
     return "重复占当天号池额度" if kind == JOB_DISPATCH else "重复扣模型费用"
 
 
@@ -4754,6 +4791,19 @@ async def _run_asset_job(job_id: str, kind: str, params: Dict[str, Any], operato
                             f"反推 {n_fail} 条全部失败（含自动重试仍失败）：逐条原因看素材列表的失败标记"
                         )
                         logger.warning("素材库后台任务 %s(analyze) 全败：%s", job_id, outcome_detail)
+                # 组合导出的「接口成功」≠「拼出来了」：单格失败只写进 results 不抛异常
+                # （一格坏不许带崩整批），所以全败时这条任务必须判 FAILED——
+                # 否则台账绿着、成片墙却一条没有，一线只能自己发现。
+                if kind == JOB_COMPOSE and isinstance(result_dict, dict):
+                    n_ok = int(result_dict.get("ok") or 0)
+                    n_bad = int(result_dict.get("failed") or 0)
+                    if (n_ok + n_bad) > 0 and n_ok == 0:
+                        outcome_status = JB_FAILED
+                        outcome_detail = (
+                            f"组合导出 {n_bad} 格全部失败（无一条拼出）："
+                            "逐格原因在任务详情的 results 里，通常是取不到片或规格探不出"
+                        )
+                        logger.warning("素材库后台任务 %s(compose) 全败：%s", job_id, outcome_detail)
                 outcome = (outcome_status, result_dict, outcome_detail)
             except HTTPException as exc:
                 detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)[:900]
@@ -4887,6 +4937,27 @@ async def _job_progress(db: AsyncSession, job: AssetJob) -> Dict[str, Any]:
         # 为什么只数终态：投板一条要等板子出片（几十分钟），"done"如果按"已经 POST 过"算，
         # 前端会在一半进度时就以为完事了；按终态算才是"到手了几条"。
         note = "投板进度＝已落到终态（成片到手/判失败）的张数，还在板上出片的不算完成；逐张看生产单列表"
+    elif job.kind == JOB_COMPOSE and job.started_at:
+        # 组合导出的"跑了多少格"只能数产物行：`compose_meta` 只有矩阵会写
+        # （手工两段拼接、回收自动拼都不写这列），所以它是"这次拼出来的条数"的可靠指纹。
+        # 注意 done 会算进 created_at 之后**所有**矩阵产物——同一时刻若有第二个组合任务在跑，
+        # 数字会偏大，所以话术把这句说在前头，别让人拿进度当对账。
+        done = int(
+            (
+                await db.execute(
+                    select(func.count(AssetOutput.id)).where(
+                        AssetOutput.kind == compose.KIND_COMPOSED,
+                        AssetOutput.compose_meta.isnot(None),
+                        AssetOutput.created_at >= job.started_at,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        note = (
+            "组合导出进度＝本任务开跑后落库的组合成片条数"
+            "（同时有别的人在拼会算进别人的，逐格成败以任务结果明细为准）"
+        )
     return {"total": total, "done": done, "note": note}
 
 
@@ -11377,6 +11448,31 @@ def _mark_dispatch_failed(p: AssetProduction, s: Dict[str, Any], reason: str) ->
 # ──────────────────────────────────────────────
 
 
+def _compose_brief(o: AssetOutput) -> Optional[Dict[str, Any]]:
+    """矩阵拼出来的成片在墙上要说清「和谁拼的、叠了什么」（11-24 需求三 S4 读它）。
+
+    `compose_meta` 只有**组合导出**会写（手工两段拼接、回收自动拼都不写），所以
+    没有这个快照的行整键回 null——前端拿 null 就不显示那行说明，不会出现
+    「叠了个空」这种看着像 bug 的东西。
+    """
+    meta = o.compose_meta if isinstance(o.compose_meta, dict) else None
+    if not meta:
+        return None
+    ov = meta.get("overlay") or {}
+    tail = meta.get("tail") or {}
+    return {
+        "via": meta.get("via"),
+        "hook_code": meta.get("hook_code"),
+        "material": (meta.get("material") or {}).get("source_label"),
+        "tail": tail.get("label") if tail else None,
+        "order": meta.get("order"),
+        "overlay_summary": ov.get("summary") or overlay.overlay_summary(None),
+        "preset_name": ov.get("preset_name"),
+        "segments": meta.get("segments") or [],
+        "cost": meta.get("cost", 0),
+    }
+
+
 @router.get("/assets/outputs")
 async def list_outputs(
     asset_id: Optional[str] = None,
@@ -11526,6 +11622,9 @@ async def list_outputs(
                 "hook_code": prod_names.get(o.production_id) if o.production_id else None,
                 "owner_name": prod_owner_names.get(o.production_id) if o.production_id else None,
                 "thumb_url": thumb_urls.get(o.id),
+                # 11-24 需求三：矩阵拼的成片带上「哪支钩子×哪条正片＋叠了什么」，
+                # 没这个快照的行是 null。
+                "compose": _compose_brief(o),
             }
             for o in rows
         ]
@@ -12372,31 +12471,51 @@ async def _resolve_concat_input(
     )
 
 
+def _file_nonempty(path: str) -> bool:
+    """文件存在且**不是 0 字节**。
+
+    这条判据来自 11-04 现网真链路拼出来的那个坑：上传落盘漏写字节，桶里是个
+    0 字节对象、接口照样回 201。拼接/叠加这种"本地生成再上传"的每一步都该用它，
+    只看 `os.path.isfile` 挡不住空文件。
+    """
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
 async def _concat_render(
-    first: Dict[str, Any],
-    second: Dict[str, Any],
-    *,
+    *segments: Dict[str, Any],
     work_dir: str,
     safe_name: str,
     key_prefix_code: str,
+    overlay_badges: Optional[List[Dict[str, Any]]] = None,
+    overlay_texts: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """两段（已排好顺序的）视频取回→探规格→ffmpeg 直拼→落桶，返回 `AssetOutput(**kwargs)` 的字段。
+    """2～3 段（已排好顺序的）视频取回→探规格→ffmpeg 直拼→落桶，返回 `AssetOutput(**kwargs)` 的字段。
 
-    手工口（`POST /assets/concat`）和批 Q 的回收自动拼**共用这一段**。两处各写一遍
+    手工口（`POST /assets/concat`，2 段）、批 Q 的回收自动拼（2 段）、和 11-24 需求三的
+    组合导出矩阵（`钩子片 + 正片 + 片尾`，2～3 段）**共用这一段**。三处各写一遍
     ffmpeg 接线迟早漂移，而漂移的表现形式是「手工拼出来能播、自动拼出来不能播」
-    ——那种差别只有真投出去才知道，验收拦不住。所以转码配方只留一份。
+    ——那种差别只有真投出去才知道，验收拦不住。所以转码配方只留一份（§9.3 concat 收口）。
 
     ⚠️ **一段数据库都不碰**（与 `_fetch_board_output` 同一条纪律）：两次下载＋一次转码
     ＋一次上传，快的十几秒、慢的按分钟算，趴着等会把现网 60s 的
     `idle_in_transaction_session_timeout` 撞穿（11-04 等模型时真撞过一次）。
     调用方在事务外跑完这一段，再开短事务写行。
 
-    目标画幅＝**排在最前那一段**（`first`）：调用方换顺序就等于换画幅，这是 11-04
+    目标画幅＝**排在最前那一段**（`segments[0]`）：调用方换顺序就等于换画幅，这是 11-04
     定下的口径（不复用 `upload.py::_ffmpeg_concat`，它回退硬编码 1920×1080 横屏）。
+
+    `overlay_badges` / `overlay_texts`（11-24 需求三）：拼完之后在同一份工作目录里叠一层
+    角标图/固定文字，**叠完再上传**——所以传上去的就是最终交付的那条片子。
+    传进来的角标必须已经是引擎形状（带本地 `path`），把素材库图片 id 翻成本地文件是
+    调用方的事（`asset_overlay_service.resolve_badges`，整批共用一份角标文件即可，
+    不必逐格重下）。不叠就留空，本函数与改动前的行为逐字一致。
     """
     started = time.monotonic()
     paths: List[str] = []
-    for idx, seg in enumerate((first, second)):
+    for idx, seg in enumerate(segments):
         local = os.path.join(work_dir, f"in_{idx}.mp4")
         ok = await download_to_file(seg["bucket"], seg["file_key"], local)
         if not ok:
@@ -12410,9 +12529,11 @@ async def _concat_render(
     target = infos[0]
     if target is None:
         raise HTTPException(status_code=400, detail="第1段探不出视频流，不是能拼的视频文件")
-    if infos[1] is None:
-        raise HTTPException(status_code=400, detail="第2段探不出视频流，不是能拼的视频文件")
     for idx, info in enumerate(infos):
+        if info is None:
+            raise HTTPException(
+                status_code=400, detail=f"第{idx + 1}段探不出视频流，不是能拼的视频文件"
+            )
         dur = info.get("duration")
         if dur and dur > compose.MAX_SEGMENT_SECONDS:
             raise HTTPException(
@@ -12425,6 +12546,18 @@ async def _concat_render(
     err = await compose.concat_segments(paths, target, out_path)
     if err:
         raise HTTPException(status_code=502, detail=err)
+
+    # 11-24 需求三：叠角标/文字（可选）。放在**上传之前**——拼完就传、传完再叠等于
+    # 桶里留一份、叠完再传第二份，第一份没人回收。叠层失败＝这一格失败，
+    # 不回退成"先交付没叠的版本"：一线按预设出包时以为卡在里面，实际没叠。
+    if overlay_badges or overlay_texts:
+        ov_path = out_path + ".overlay.mp4"
+        ov_err = await overlay.apply_overlay(out_path, ov_path, overlay_badges or [], overlay_texts or [])
+        if ov_err:
+            raise HTTPException(status_code=502, detail=f"叠加失败：{ov_err}")
+        if not _file_nonempty(ov_path):
+            raise HTTPException(status_code=502, detail="叠加说成功了，但产物文件是空的")
+        os.replace(ov_path, out_path)
 
     out_info = await compose.probe_media(out_path) or target
     size = os.path.getsize(out_path) if os.path.isfile(out_path) else None
@@ -12574,6 +12707,756 @@ async def concat_two_videos(
         }
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ──────────────────────────────────────────────
+# 叠加预设（11-24 需求三 S3）：角标图＋固定文字，存成一套可反复选的参数
+# ──────────────────────────────────────────────
+
+class OverlayPresetBody(BaseModel):
+    """`POST/PUT /assets/overlay-presets` 的入参。
+
+    `params` 的形状由 `asset_overlay_service.validate_overlay` 定死（与引擎侧逐字同名），
+    坏值当场 400——预设是**存下来反复用**的，这里放过一个错，之后每一批出片都错。
+    """
+
+    name: str = Field(..., min_length=1, max_length=60, description="预设名，如「剧名＋后果自负」")
+    scope: str = Field(OVERLAY_PRESET_USER, description=f"{OVERLAY_PRESET_USER}＝仅自己 / {OVERLAY_PRESET_SHARED}＝全员可选（仅管理员）")
+    params: Dict[str, Any] = Field(default_factory=dict, description="{badges:[…], text_overlays:[…]}")
+    note: Optional[str] = Field(None, max_length=500, description="备注/适用场景")
+
+
+class OverlayPresetPatch(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=60)
+    scope: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None
+    note: Optional[str] = Field(None, max_length=500)
+
+
+def _preset_dict(row: AssetOverlayPreset, owner_name: Optional[str] = None) -> Dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "scope": row.scope,
+        "owner_id": str(row.owner_id) if row.owner_id else None,
+        "owner_name": owner_name,
+        "params": row.params or {"badges": [], "text_overlays": []},
+        "summary": overlay.overlay_summary(row.params),
+        "note": row.note,
+        "active": bool(row.active),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+async def _get_preset_or_404(db: AsyncSession, preset_id: str) -> AssetOverlayPreset:
+    row = await db.get(AssetOverlayPreset, _as_uuid(preset_id, "overlay_preset_id"))
+    if row is None:
+        raise HTTPException(status_code=404, detail="叠加预设不存在（可能已被删掉）")
+    return row
+
+
+@router.get("/assets/overlay-presets")
+async def list_overlay_presets(
+    include_inactive: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """我的预设 ＋ 全员共享的预设。
+
+    读侧口径和素材库其它对象一致：**看不见别人的私人预设**（个人预设是个人工作习惯，
+    不是资产），但公共（shared）预设所有人能选。`include_inactive=true` 才列出已停用的。
+    """
+    conds = [
+        or_(
+            AssetOverlayPreset.scope == OVERLAY_PRESET_SHARED,
+            AssetOverlayPreset.owner_id == current_user.id,
+        )
+    ]
+    if not include_inactive:
+        conds.append(AssetOverlayPreset.active.is_(True))
+    rows = list(
+        (
+            await db.execute(
+                select(AssetOverlayPreset).where(and_(*conds)).order_by(AssetOverlayPreset.created_at.desc())
+            )
+        ).scalars().all()
+    )
+    names = await _user_names(db, {r.owner_id for r in rows if r.owner_id})
+    return {
+        "items": [_preset_dict(r, names.get(str(r.owner_id))) for r in rows],
+        "total": len(rows),
+        "positions": list(overlay.BADGE_POSITIONS),
+        "max_badges": overlay.MAX_BADGES,
+        "max_text_overlays": overlay.MAX_TEXT_OVERLAYS,
+        "max_text_chars": overlay.MAX_TEXT_CHARS,
+    }
+
+
+@router.post("/assets/overlay-presets", status_code=201)
+async def create_overlay_preset(
+    data: OverlayPresetBody,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """存一套叠加参数。**同名撞车报 409**，不静默并存。
+
+    为什么在接口判重而不加 DB 唯一索引：和 `asset_scripts` 同一套理由——
+    163 老库靠 `ADD COLUMN` 补不出约束，加了会出现"新库拦、老库不拦"两套行为。
+
+    空叠加（既无角标又无文字）直接拒：存一套"什么都不叠"的预设，界面上会出现
+    一个看着能选、选了等于没选的选项——那种东西一线会当成 bug 报上来。
+    """
+    params = overlay.validate_overlay(data.params)
+    if overlay.overlay_is_empty(params):
+        raise HTTPException(
+            status_code=400,
+            detail="这套预设里一个角标、一行字都没有，存进去等于存了个「不叠加」，请至少加一项",
+        )
+    scope = (data.scope or OVERLAY_PRESET_USER).strip()
+    if scope not in OVERLAY_PRESET_SCOPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"适用范围只能是 {' 或 '.join(OVERLAY_PRESET_SCOPES)}（user＝仅自己 / shared＝全员可选）",
+        )
+    if scope == OVERLAY_PRESET_SHARED and current_user.role != UserRole.admin:
+        raise HTTPException(
+            status_code=403,
+            detail="只有管理员能把叠加预设设成「全员可选」——共享出去会影响别人的出片外观",
+        )
+    name = data.name.strip()
+    dup = (
+        await db.execute(
+            select(AssetOverlayPreset).where(
+                AssetOverlayPreset.name == name, AssetOverlayPreset.active.is_(True)
+            )
+        )
+    ).scalars().first()
+    if dup is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"已有一个叫「{name}」的叠加预设，换个名字或直接改它（编辑入口在同一个抽屉里）",
+        )
+    row = AssetOverlayPreset(
+        name=name,
+        scope=scope,
+        owner_id=current_user.id,
+        params=params,
+        note=(data.note or "").strip() or None,
+        created_by=current_user.id,
+    )
+    db.add(row)
+    await db.flush()
+    await _write_audit(
+        db,
+        action="asset.overlay_preset.create",
+        operator=current_user,
+        target_type="asset_overlay_preset",
+        target_id=row.id,
+        after={"name": row.name, "scope": row.scope, "summary": overlay.overlay_summary(params)},
+    )
+    await db.commit()
+    await db.refresh(row)
+    return _preset_dict(row, current_user.display_name or current_user.username)
+
+
+@router.put("/assets/overlay-presets/{preset_id}")
+async def update_overlay_preset(
+    preset_id: str,
+    data: OverlayPresetPatch,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """改一套预设：自己的随便改，公共的要管理员。
+
+    ⚠️ **改预设不影响已经出过的片**——组合导出把当时的参数快照写进
+    `asset_outputs.compose_meta` 了，所以对账时"这条片叠了什么"以快照为准，
+    不以预设现值为准。这条必须写在话术里，否则有人改完预设会以为老片子跟着变。
+    """
+    row = await _get_preset_or_404(db, preset_id)
+    is_admin = current_user.role == UserRole.admin
+    if row.scope == OVERLAY_PRESET_SHARED:
+        if not is_admin:
+            raise HTTPException(status_code=403, detail="「全员可选」的预设只有管理员能改")
+    elif row.owner_id != current_user.id and not is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail=f"这是别人的个人预设（{row.name}），只能自己改或另存一套",
+        )
+
+    before = {"name": row.name, "scope": row.scope, "summary": overlay.overlay_summary(row.params)}
+    if data.name is not None:
+        new_name = data.name.strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="预设名不能改成空")
+        dup = (
+            await db.execute(
+                select(AssetOverlayPreset).where(
+                    AssetOverlayPreset.name == new_name,
+                    AssetOverlayPreset.active.is_(True),
+                    AssetOverlayPreset.id != row.id,
+                )
+            )
+        ).scalars().first()
+        if dup is not None:
+            raise HTTPException(status_code=409, detail=f"已经有一个叫「{new_name}」的预设了")
+        row.name = new_name
+    if data.scope is not None:
+        scope = data.scope.strip()
+        if scope not in OVERLAY_PRESET_SCOPES:
+            raise HTTPException(status_code=400, detail=f"适用范围只能是 {' 或 '.join(OVERLAY_PRESET_SCOPES)}")
+        if scope == OVERLAY_PRESET_SHARED and not is_admin:
+            raise HTTPException(status_code=403, detail="只有管理员能把预设放开给全员")
+        row.scope = scope
+    if data.params is not None:
+        params = overlay.validate_overlay(data.params)
+        if overlay.overlay_is_empty(params):
+            raise HTTPException(
+                status_code=400,
+                detail="预设至少要有角标或文字其中一项；整套不要了就点「停用」，别留个空壳",
+            )
+        row.params = params
+    if data.note is not None:
+        row.note = data.note.strip() or None
+    row.updated_at = datetime.utcnow()
+    await _write_audit(
+        db,
+        action="asset.overlay_preset.update",
+        operator=current_user,
+        target_type="asset_overlay_preset",
+        target_id=row.id,
+        before=before,
+        after={"name": row.name, "scope": row.scope, "summary": overlay.overlay_summary(row.params)},
+    )
+    await db.commit()
+    await db.refresh(row)
+    names = await _user_names(db, {row.owner_id} if row.owner_id else set())
+    return _preset_dict(row, names.get(str(row.owner_id)))
+
+
+@router.delete("/assets/overlay-presets/{preset_id}")
+async def deactivate_overlay_preset(
+    preset_id: str,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """**停用**（不是物理删除）。
+
+    为什么不真删：历史出片的 `compose_meta` 里存了 `preset_id`，行删了以后
+    「这条片当时用的哪套预设」就查不到名字了——留一行 active=false，
+    列表默认不显示，历史还认得出来。与 `asset_categories` 的下线口径同一条。
+
+    ⚠️ 职能闸这里是 `_PROD_ROLES` 而不是 `_REVIEW_ROLES`（11-24 需求三自己踩出来的）：
+    预设是**自己存的工作习惯**，谁能存谁就能关。拿审核口径挡在门口会造出一个
+    「素材专员建了自己的预设、从此关不掉」的死局，而所有权判断函数里本来就有
+    （个人预设＝本人或管理员、共享预设＝管理员），门口再挡一层只会挡住对的那半边。
+    """
+    row = await _get_preset_or_404(db, preset_id)
+    is_admin = current_user.role == UserRole.admin
+    if row.scope == OVERLAY_PRESET_USER and row.owner_id != current_user.id and not is_admin:
+        raise HTTPException(status_code=403, detail=f"这是别人的个人预设（{row.name}），删不了")
+    if row.scope == OVERLAY_PRESET_SHARED and not is_admin:
+        raise HTTPException(status_code=403, detail="「全员可选」的预设只有管理员能停")
+    if not row.active:
+        return {"id": str(row.id), "active": False, "message": f"「{row.name}」早就是停用状态，没再动"}
+    row.active = False
+    row.updated_at = datetime.utcnow()
+    await _write_audit(
+        db,
+        action="asset.overlay_preset.deactivate",
+        operator=current_user,
+        target_type="asset_overlay_preset",
+        target_id=row.id,
+        before={"active": True, "name": row.name},
+        after={"active": False},
+    )
+    await db.commit()
+    return {
+        "id": str(row.id),
+        "active": False,
+        "message": f"已停用「{row.name}」：以后选不到了，但用它出过的片子仍记得当时叠了什么",
+    }
+
+
+# ──────────────────────────────────────────────
+# 组合导出（11-24 需求三 S3）：N 支钩子成片 × M 条正片 ＝ N×M 条投放素材
+# ──────────────────────────────────────────────
+
+class ComposeMatrixRequest(BaseModel):
+    """`POST /assets/compose/matrix` 的入参。
+
+    矩阵的"行"是**已回收的钩子成片**（`asset_outputs`，豆包出的那批 15 秒片），
+    "列"是**正片**（素材库片段或现网切片）。两者都不是素材本身——素材是文案的载体，
+    这里拼的是**能直接发的成片**。片尾可选，位置恒在最后（"片尾"就该在片尾）。
+    """
+
+    hook_output_ids: List[str] = Field(..., description="N 支钩子成片（asset_outputs.id，须非试产）")
+    material_source: str = Field(compose.SOURCE_ASSET, description=f"正片来源：{' 或 '.join(compose.INPUT_SOURCES)}")
+    material_ids: List[str] = Field(..., description="M 条正片（asset_items.id 或 slice_outputs.id）")
+    tail_asset_id: Optional[str] = Field(None, description="可选：第三段片尾（素材库里的 asset_items.id）")
+    order: str = Field(compose.ORDER_HOOK_FIRST, description="前两段顺序：hook_first / material_first")
+    overlay_preset_id: Optional[str] = Field(None, description="可选：套用哪套叠加预设")
+    overlay_params: Optional[Dict[str, Any]] = Field(None, description="可选：现场改的叠加参数（与预设二选一）")
+    async_mode: bool = Field(True, description="D-1 口径：默认排后台，提交即回任务号")
+    batch_id: Optional[str] = Field(None, description="可选：台账按批次归组（只影响任务列表筛选）")
+    title_prefix: Optional[str] = Field(None, max_length=60, description="可选：产物文件名前缀")
+
+
+def _matrix_dedupe(values: List[str], label: str) -> List[str]:
+    seen: List[str] = []
+    for raw in values or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if text.lower() in {s.lower() for s in seen}:
+            continue
+        seen.append(text)
+    if not seen:
+        raise HTTPException(status_code=400, detail=f"{label}一个都没选，拼不了")
+    return seen
+
+
+async def _load_matrix_hooks(
+    db: AsyncSession, hook_output_ids: List[str]
+) -> List[Tuple[AssetOutput, Optional[AssetProduction]]]:
+    """取钩子成片行，并**逐条点名**说明哪一条不行。
+
+    两道闸（缺口 4a 定的口径）：
+    1. 只认 `doubao_raw` / `composed`——把交付包(zip)、文案(txt) 当视频段喂给 ffmpeg，
+       报错会长成"第1段探不出视频流"，一线不知道是自己选错了类型。
+    2. **试产片的成片不许进矩阵**：11-12~13 定的口径是「试产是审核的辅助证据，
+       不进交付包/成片墙」。组合导出的产物是要发的，让试产片当原料等于开了个后门
+       （拿试产钩子拼一条正式片发出去，那条片子看起来完全正规）。
+       话术必须说清"去审核台把这条转正，或别选它"。
+    """
+    ids = [_as_uuid(v, "hook_output_ids") for v in hook_output_ids]
+    rows = list((await db.execute(select(AssetOutput).where(AssetOutput.id.in_(ids)))).scalars().all())
+    by_id = {r.id: r for r in rows}
+    missing = [str(v) for v in ids if v not in by_id]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"有 {len(missing)} 支钩子成片在库里找不到（可能已被删）：{missing[0]}…",
+        )
+
+    prod_ids = {r.production_id for r in rows if r.production_id}
+    prods: Dict[uuid.UUID, AssetProduction] = {}
+    if prod_ids:
+        prods = {
+            p.id: p
+            for p in (await db.execute(select(AssetProduction).where(AssetProduction.id.in_(prod_ids)))).scalars().all()
+        }
+
+    bad_kind = [r for r in rows if r.kind not in (compose.KIND_COMPOSED, "doubao_raw")]
+    if bad_kind:
+        raise HTTPException(
+            status_code=400,
+            detail="钩子那一侧只能选豆包成片（doubao_raw）或已拼好的成片（composed），"
+                   f"现在混进了 {'、'.join(sorted({r.kind for r in bad_kind}))}——那些不是能拼的视频",
+        )
+    if not all(r.file_key for r in rows):
+        bad = [r.id for r in rows if not r.file_key]
+        raise HTTPException(
+            status_code=400,
+            detail=f"有 {len(bad)} 支钩子成片桶里没有文件（回收那步就没成），换一支或先补收片",
+        )
+    trial = [r for r in rows if (prods.get(r.production_id) is not None and prods[r.production_id].is_trial)]
+    if trial:
+        codes = "、".join(
+            (prods[r.production_id].hook_code or str(r.id)[:8]) for r in trial[:5]
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"试产片的成片不能进组合导出（这次有 {len(trial)} 支：{codes}）。"
+                   "试产只用来给审核台看效果、不进交付包和成片墙——"
+                   "要发就回审核台把这条文案转正、重新投一条正式成片再来拼",
+        )
+    # 按调用方给定的顺序返回（矩阵的"行序"就是界面勾选序，别在这里悄悄重排）
+    pairs: List[Tuple[AssetOutput, Optional[AssetProduction]]] = []
+    for v in hook_output_ids:
+        row = by_id[_as_uuid(v, "hook_output_ids")]
+        pairs.append((row, prods.get(row.production_id) if row.production_id else None))
+    return pairs
+
+
+async def _resolve_overlay_for_call(
+    db: AsyncSession,
+    current_user: User,
+    preset_id: Optional[str],
+    inline: Optional[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], Optional[AssetOverlayPreset]]:
+    """叠加参数从哪来：预设 or 现场改，**二选一**。返回 (已校验参数, 预设行或 None)。"""
+    if preset_id and inline:
+        raise HTTPException(
+            status_code=400,
+            detail="叠加预设和现场改的叠加参数只能带一个：要么选一套预设，要么现场调（调完可以另存为预设）",
+        )
+    preset: Optional[AssetOverlayPreset] = None
+    if preset_id:
+        preset = await _get_preset_or_404(db, preset_id)
+        if not preset.active:
+            raise HTTPException(
+                status_code=400,
+                detail=f"预设「{preset.name}」已停用，选不了；找回原样请另存一套",
+            )
+        if preset.scope == OVERLAY_PRESET_USER and preset.owner_id != current_user.id and current_user.role != UserRole.admin:
+            # 个人预设不进别人的列表，但**直接拿 id 打接口**要挡（否则等于靠猜 id 读别人参数）
+            raise HTTPException(status_code=403, detail="这是别人的个人预设，用不了")
+        params = overlay.validate_overlay(preset.params)
+        return params, preset
+    params = overlay.validate_overlay(inline or {})
+    return params, None
+
+
+def _hook_segment(out: AssetOutput, prod: Optional[AssetProduction]) -> Dict[str, Any]:
+    return {
+        "bucket": out.bucket or settings.MINIO_BUCKET_RAW,
+        "file_key": out.file_key,
+        "file_name": out.file_name or f"{(prod.hook_code if prod else str(out.id)[:8])}.mp4",
+        "label": f"钩子·{(prod.hook_code if prod is not None and prod.hook_code else (out.file_name or str(out.id)[:8]))}",
+    }
+
+
+async def compose_matrix(
+    data: ComposeMatrixRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """**组合导出**：N 支钩子成片 × M 条正片，逐格拼成 N×M 条成片（＋可选片尾、＋可选叠加）。
+
+    需求（1123 §需求三）：一线要的是"勾一批钩子、勾一批正片，一键出 20 条投放素材"，
+    而不是每条手点一次两段拼接。
+
+    四条口径，都是先定死再写代码的（§9.5b 缺口 4）：
+    1. **钩子侧只认非试产片**（见 `_load_matrix_hooks` 第 2 道闸）。
+    2. **单次上限走 `ASSET_COMPOSE_MAX_PER_CALL`（默认 20），不复用投板那个 cap**：
+       投板 cap 管的是"当天号池额度"，这里管的是"一次要压多少秒服务器 CPU"。
+       两个数字凑巧都叫 20，语义毫无关系——复用会造出一个真 bug：
+       将来谁调号池 cap 到 40，拼接的单次上限就被连带放宽到 40 格。
+       超上限**不是 admin 强行放行**，是"请分两次点"——多出来的格子不会更值钱，
+       只会让这次请求挂到网关超时（超时链见 §9.5，最外层 3600s，但 20 格×2~3 次转码
+       真能吃满，所以默认 `async_mode=true` 走后台台账）。
+    3. **0 元**：不调模型、不调智令、不占号池——纯本机 ffmpeg。所以不进预算三档闸门、
+       不写 cost_*、`planned_units` 只是给一线看"这次排了多少格"。
+       界面**不许**出现"花费 N 元/确认提交"（11-12 钱面下架口径）。
+    4. **校验全部排在投出之前**：闸门、上限、试产、图片段、预设可用性，全在
+       `_start_asset_job` **之前**跑完。校验没过 ⇒ 台账里**一行都不留**、
+       桶里一个对象都没有（用例 `test_compose_matrix_*` 拿假 dispatch 断言顺序）。
+
+    产物：每格一条 `AssetOutput(kind='composed')`，`production_id` 留空＝公共可见
+    （与手工拼接同口径），`hook_production_id` 带上钩子那张单，来源与当时的叠加参数快照
+    进 `compose_meta`。发法照旧走成片墙勾选 → `POST /assets/outputs/package` 同一条口，
+    **不另造一套出包**。
+    """
+    hook_ids = _matrix_dedupe(data.hook_output_ids, "钩子成片")
+    material_ids = _matrix_dedupe(data.material_ids, "正片")
+    if data.material_source not in compose.INPUT_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"material_source 只能是 {' 或 '.join(compose.INPUT_SOURCES)}",
+        )
+    order = compose.resolve_auto_order(data.order)
+
+    cells = len(hook_ids) * len(material_ids)
+    cap = max(1, int(settings.ASSET_COMPOSE_MAX_PER_CALL or 20))
+    if cells > cap:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(hook_ids)} 支钩子 × {len(material_ids)} 条正片 ＝ {cells} 条，"
+                f"超过单次上限 {cap} 条（旋钮 ASSET_COMPOSE_MAX_PER_CALL）。"
+                "这不是钱的事（拼接 0 元），是一次压给服务器的转码量太大会挂——请分两次点"
+            ),
+        )
+
+    hooks = await _load_matrix_hooks(db, hook_ids)
+
+    materials: List[Dict[str, Any]] = []
+    for mid in material_ids:
+        materials.append(
+            await _resolve_concat_input(db, data.material_source, mid, current_user, f"正片 {mid[:8]}")
+        )
+
+    tail_seg: Optional[Dict[str, Any]] = None
+    if data.tail_asset_id:
+        tail_seg = await _resolve_concat_input(db, compose.SOURCE_ASSET, data.tail_asset_id, current_user, "片尾")
+        if data.material_source == compose.SOURCE_ASSET:
+            for seg, mid in zip(materials, material_ids):
+                if seg["file_key"] == tail_seg["file_key"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"片尾和正片（{mid[:8]}）是同一个文件，拼出来是重复播放的废片，请换一个",
+                    )
+
+    overlay_params, preset = await _resolve_overlay_for_call(
+        db, current_user, data.overlay_preset_id, data.overlay_params
+    )
+    # 角标挑的图**是不是能用的图**，也属于"入参错"，所以排在投出之前（缺口 4b）：
+    # 否则默认后台档会先落一行台账、跑到第一步才发现叠不了，一线只看到「组合导出 失败」。
+    # 只查库（id/类型/有没有文件），不碰桶——取图仍是渲染时的事，见 resolve_badge_refs 的注释。
+    if overlay_params.get("badges"):
+        await overlay.resolve_badge_refs(db, overlay_params["badges"])
+    # 要叠东西但这台机器没挂引擎 ⇒ 当场说清楚，**绝不静默出一版没叠卡的片**。
+    # 时机排在 async_mode 之前是刻意的：排到后台再发现叠不了，台账里躺着一条
+    # "已完成"，一线看到成片却没有卡——那比直接拒绝难查十倍。
+    if not overlay.overlay_is_empty(overlay_params):
+        ok, why = overlay.engine_available()
+        if not ok:
+            raise HTTPException(
+                status_code=400,
+                detail=f"这次要叠角标/文字，但这台机器用不了叠加引擎：{why or '未知原因'}",
+            )
+
+    # ---- 校验到此全部跑完，下面才允许产生任何副作用 ----
+    if data.async_mode:
+        return _job_accepted(
+            await _start_asset_job(
+                db,
+                kind=JOB_COMPOSE,
+                data=data,
+                operator=current_user,
+                batch_id=data.batch_id,
+                planned_units=cells,
+            ),
+            "组合导出",
+        )
+
+    return await _run_compose_matrix(
+        db,
+        current_user=current_user,
+        hooks=hooks,
+        materials=materials,
+        tail_seg=tail_seg,
+        order=order,
+        overlay_params=overlay_params,
+        preset=preset,
+        title_prefix=data.title_prefix,
+    )
+
+
+@router.post("/assets/compose/matrix")
+async def compose_matrix_endpoint(
+    data: ComposeMatrixRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """HTTP 口。真身是 `compose_matrix`（同名函数被 `_job_endpoint` 复用，
+    后台重放走的是**同一个实现**，不会出现"人点的严、机器排的松"）。"""
+    return await compose_matrix(data, current_user, db)
+
+
+def _safe_matrix_name(raw: str) -> str:
+    return "".join(c for c in raw if c not in '/\\:*?"<>|').strip()[:80]
+
+
+async def _run_compose_matrix(
+    db: AsyncSession,
+    *,
+    current_user: User,
+    hooks: List[Tuple[AssetOutput, Optional[AssetProduction]]],
+    materials: List[Dict[str, Any]],
+    tail_seg: Optional[Dict[str, Any]],
+    order: str,
+    overlay_params: Dict[str, Any],
+    preset: Optional[AssetOverlayPreset],
+    title_prefix: Optional[str],
+) -> Dict[str, Any]:
+    """逐格渲染并落行。同步口与后台重放共用（所以校验全在调用方那半边做完了）。
+
+    两条事务纪律，都是现网撞出来的（别再撞第三次）：
+    1. **渲染期间连接上不挂着事务**——现网 `idle_in_transaction_session_timeout=60s`
+       （`database.py:68` 固化），一格"下载＋2～3 次转码＋上传"轻松超过 60s，
+       趴着等会把连接判死。所以每格写完立刻 commit，下一格从**无事务**状态开跑。
+    2. **一格一提交，失败只回滚这一格**——产物文件已经进桶了，行必须马上落库；
+       攒到批末统一提交的话，中途一次 rollback 会把前面已经拼好的格子全丢掉，
+       变成"桶里有片、库里没行"的孤儿。回滚之后 ORM 对象会过期，所以循环体里
+       只用**提前快照好的普通字典/字符串**，不再读任何 ORM 属性。
+    """
+    started = time.monotonic()
+    badge_dir = tempfile.mkdtemp(prefix="asset_overlay_")
+    engine_badges: List[Dict[str, Any]] = []
+    try:
+        if overlay_params.get("badges"):
+            engine_badges = await overlay.resolve_badges(db, overlay_params["badges"], badge_dir)
+        # 角标图整批共用一份：先取完、取不到当场 400（别拼完 20 条才发现第 3 张图坏了）
+        await db.commit()
+
+        # **钩子行先快照成普通字典**再进循环。两个原因：
+        # 1. 每格失败会 `db.rollback()`，而 rollback 会把会话里的对象**全部标成过期**——
+        #    之后在 async 会话上读 `out_row.file_key` 就是同步懒加载，直接
+        #    `MissingGreenlet` 把整批带崩（一格坏→后面 19 格全炸，正是本函数要避免的事）。
+        # 2. 快照这一步是 await 的，读一次就固定成值，后面怎么滚都不受影响。
+        plan: List[Dict[str, Any]] = []
+        for out_row, prod in hooks:
+            seg = _hook_segment(out_row, prod)
+            plan.append(
+                {
+                    "output_id": str(out_row.id),
+                    "asset_id": out_row.asset_id,
+                    "production_id": out_row.production_id,
+                    "segment": seg,
+                    "code": (prod.hook_code if prod is not None and prod.hook_code else seg["file_name"]),
+                }
+            )
+        # 预设同样只留快照值（`preset` 是 ORM 行，同上会过期）
+        preset_id_snap = str(preset.id) if preset is not None else None
+        preset_name_snap = preset.name if preset is not None else None
+        operator_id = current_user.id
+        await db.commit()  # 快照读事务收掉，下面每格自己开短事务
+
+        results: List[Dict[str, Any]] = []
+        n_ok = n_fail = 0
+        for cell_hook in plan:
+            hook_seg = cell_hook["segment"]
+            for seg in materials:
+                first, second = (
+                    (seg, hook_seg) if order == compose.ORDER_TAIL_AFTER_HOOK else (hook_seg, seg)
+                )
+                cells: List[Dict[str, Any]] = [first, second]
+                if tail_seg is not None:
+                    cells.append(tail_seg)
+                raw_name = "×".join(
+                    [title_prefix or "", hook_seg["label"], seg["label"].split("·", 1)[-1]]
+                ).strip("×")
+                safe = _safe_matrix_name(raw_name) or f"{cell_hook['output_id'][:8]}_{str(seg['file_key'])[-8:]}"
+                work_dir = tempfile.mkdtemp(prefix="asset_matrix_")
+                item: Dict[str, Any] = {
+                    "hook_output_id": cell_hook["output_id"],
+                    "material": seg["label"],
+                    "segments": [c["label"] for c in cells],
+                }
+                try:
+                    rendered = await _concat_render(
+                        *cells,
+                        work_dir=work_dir,
+                        safe_name=safe,
+                        key_prefix_code=str(cell_hook["code"])[:40],
+                        overlay_badges=engine_badges,
+                        overlay_texts=overlay_params.get("text_overlays") or [],
+                    )
+                    row = AssetOutput(
+                        production_id=None,
+                        asset_id=cell_hook["asset_id"],
+                        kind=compose.KIND_COMPOSED,
+                        hook_production_id=cell_hook["production_id"],
+                        compose_meta={
+                            "via": "matrix",
+                            "hook_output_id": cell_hook["output_id"],
+                            "hook_production_id": (
+                                str(cell_hook["production_id"]) if cell_hook["production_id"] else None
+                            ),
+                            "hook_code": cell_hook["code"],
+                            "material": {"source_label": seg["label"], "file_key": seg["file_key"]},
+                            "tail": {"label": tail_seg["label"], "file_key": tail_seg["file_key"]} if tail_seg else None,
+                            "order": order,
+                            "segments": [c["label"] for c in cells],
+                            "overlay": {
+                                "preset_id": preset_id_snap,
+                                "preset_name": preset_name_snap,
+                                "params": overlay_params,
+                                "summary": overlay.overlay_summary(overlay_params),
+                            },
+                            "cost": 0,
+                            "elapsed_seconds": rendered["elapsed_seconds"],
+                        },
+                        **rendered["output_kwargs"],
+                    )
+                    db.add(row)
+                    await db.flush()
+                    ok_payload = {
+                        "ok": True,
+                        "output_id": str(row.id),
+                        "file_name": row.file_name,
+                        "duration": row.duration,
+                    }
+                    # 阶段回写放在产物行之后、同一次提交里：拼接是 AssetItem 五阶段里
+                    # stage_compose 的写入方，只有**真落了一条 composed** 才置 success。
+                    asset = await db.get(AssetItem, cell_hook["asset_id"])
+                    if asset is not None and asset.stage_compose != STAGE_SUCCESS:
+                        asset.stage_compose = STAGE_SUCCESS
+                        asset.status = svc.derive_status(
+                            {
+                                "import": asset.stage_import,
+                                "prompt": asset.stage_prompt,
+                                "summary": asset.stage_summary,
+                                "produce": asset.stage_produce,
+                                "compose": STAGE_SUCCESS,
+                            },
+                            bool(asset.has_approved_copy),
+                        )
+                    # **一格一提交**：产物文件已经上传到桶了，行必须马上落库。
+                    # 攒到批末再提交的话，中途一格炸出 rollback 会把**已经拼好的**
+                    # 前几格一起丢掉——桶里有片子、库里没行，那种"孤儿"没人回收。
+                    await db.commit()
+                    item.update(ok_payload)
+                    n_ok += 1
+                except HTTPException as exc:
+                    # 这一格的脏改动回滚干净再走下一格（前面成功的格子已经各自提交过了，
+                    # rollback 冲不掉它们），否则下一格背着半截事务跑
+                    # ——11-04 那个 idle-in-transaction 超时就是同族事故。
+                    await db.rollback()
+                    item.update({"ok": False, "error": str(exc.detail)[:400]})
+                    n_fail += 1
+                except Exception as exc:  # noqa: BLE001 — 一格炸不许把整批带崩
+                    logger.exception("组合导出单格异常（钩子 %s）", cell_hook["output_id"])
+                    await db.rollback()
+                    item.update({"ok": False, "error": f"{type(exc).__name__}: {exc}"[:400]})
+                    n_fail += 1
+                finally:
+                    shutil.rmtree(work_dir, ignore_errors=True)
+                results.append(item)
+
+
+        # 审计与排帧都要用提交人对象，而上面任意一格失败都可能已经 rollback 过
+        # （`current_user` 于是过期）——重新 await 取一次，别在异步会话上读过期属性。
+        operator = await db.get(User, operator_id)
+        await _write_audit(
+            db,
+            action="asset.compose.matrix",
+            operator=operator,
+            target_type="asset_output",
+            target_id=None,
+            after={
+                "hooks": len(plan),
+                "materials": len(materials),
+                "tail": tail_seg["label"] if tail_seg else None,
+                "order": order,
+                "overlay": overlay.overlay_summary(overlay_params),
+                "overlay_preset_id": preset_id_snap,
+                "ok": n_ok,
+                "failed": n_fail,
+                "cost": 0,
+                "elapsed_seconds": round(time.monotonic() - started, 2),
+                "failures": [r for r in results if not r.get("ok")][:10],
+            },
+        )
+        await db.commit()
+        frames = {"queued": False, "note": "没排抽帧（没有成功产物）"}
+        if n_ok:
+            frames = await _enqueue_frames(
+                db,
+                asset_ids=[],
+                output_ids=[r["output_id"] for r in results if r.get("ok")],
+                operator=operator,
+                why="组合导出产物",
+            )
+        return {
+            "queued": False,
+            "requested": len(results),
+            "ok": n_ok,
+            "failed": n_fail,
+            "results": results,
+            "cost": 0,
+            "overlay": overlay.overlay_summary(overlay_params),
+            "frames": frames,
+            "elapsed_seconds": round(time.monotonic() - started, 2),
+            "message": (
+                f"拼好 {n_ok} 条" + (f"，失败 {n_fail} 条（逐条原因见 results）" if n_fail else "")
+                + "，0 元（纯本机 ffmpeg，不占号池）。成片墙里直接可见可下载，出包走原来那条口"
+            ),
+        }
+    finally:
+        shutil.rmtree(badge_dir, ignore_errors=True)
 
 
 # ──────────────────────────────────────────────

@@ -649,6 +649,14 @@ class AssetOutput(Base):
     # 只建普通索引、不建 UNIQUE：老库靠 ADD COLUMN 补列补不出约束，
     # 建了 UNIQUE 会出现"新库拦、老库不拦"的两套行为；判重走插入前那一次 SELECT。
     composed_from_output_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # 11-24 需求三（S3）：这条产物是**怎么拼出来的**——组合导出矩阵的每一格把「哪支钩子成片
+    # × 哪条正片（＋片尾）＋哪套叠加预设（含当时的参数快照）」记在这里。
+    # 为什么单开一列而不是塞进 qc_result：那是验收结论的槽，混进去等于让对账的人
+    # 分不清「怎么做的」和「做得对不对」。为什么不做成三张关联表：矩阵产物是一次性的
+    # 交付物，参数只在「这条片子为什么长这样」被问起时才读，JSON 一行足够，
+    # 而且预设本来就可能被改——快照才是当时真相（同 `asset_productions.concat_last_result` 的取数口径）。
+    # 老行留 NULL＝不是组合导出的产物（手工两段拼接 / 回收自动拼都不写它）。
+    compose_meta = Column(JSON, nullable=True)
 
     qc_status = Column(String(20), nullable=True)          # passed / warn / failed / NULL=未验
     qc_result = Column(JSON, nullable=True)                # 各项判据与证据（采样密度记在里面）
@@ -757,7 +765,12 @@ JOB_PROMPT_PREVIEW = "prompt_preview"
 # 状态永远「反推中」、失败看不见也没法重试）。JOB_ANALYZE = 提交 + 后台原地等收敛 +
 # 快速失败自动重试一次，与出文案同一套台账/防重复/进度口径，不另造机制。
 JOB_ANALYZE = "analyze"
-ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES, JOB_DISPATCH, JOB_DOWNLOAD, JOB_PROMPT_PREVIEW, JOB_ANALYZE)
+# 11-24 需求三（S3）：组合导出矩阵＝N 支钩子成片 × M 条正片（可选片尾＋叠加）批量拼。
+# 一条矩阵最多 20 支、每支两次下载＋一次重编码＋可能两次叠加，同步等必然被网关掐
+# （11-04 那条超时链的教训），所以进同一套台账：提交即回 job_id，前端轮询。
+# 它烧的不是钱（拼接与叠加纯本机 ffmpeg，0 元），是**服务器 CPU 时间＋桶里的存储**。
+JOB_COMPOSE = "compose_matrix"
+ASSET_JOB_KINDS = (JOB_SUMMARY_GENERATE, JOB_PRODUCE, JOB_FRAMES, JOB_DISPATCH, JOB_DOWNLOAD, JOB_PROMPT_PREVIEW, JOB_ANALYZE, JOB_COMPOSE)
 
 JB_QUEUED = "queued"          # 已落库、协程已排上，还没开跑
 JB_RUNNING = "running"        # 正在逐条调模型（开始跑时落一次 started_at，跑中间不回报心跳）
@@ -914,3 +927,53 @@ class AssetScript(Base):
 
     def __repr__(self) -> str:
         return f"<AssetScript(id={self.id}, name={self.name!r}, state={self.state})>"
+
+
+# ──────────────────────────────────────────────
+# 叠加预设（11-24 需求三 S4：组合导出时挂角标／警示语／剧名／片尾）
+# ──────────────────────────────────────────────
+
+OVERLAY_PRESET_USER = "user"       # 个人预设（owner 自己看得见、自己改）
+OVERLAY_PRESET_SHARED = "shared"   # 共享预设（全员可用，只有 admin 能改）
+OVERLAY_PRESET_SCOPES = (OVERLAY_PRESET_USER, OVERLAY_PRESET_SHARED)
+
+
+class AssetOverlayPreset(Base):
+    """一套可复用的叠加参数（角标图片＋固定文字），组合导出时挑一条挂上。
+
+    为什么要"预设"这层，而不是每次拼接现场填：
+    - 一线的实际用法是「同一个剧的所有投放素材，角标和警示语一模一样」——一天拼 20 支，
+      每支手填一遍位置/字号/透明度，填错的那支要到成片墙看片才发现，钱没花但片子废了。
+    - 参数形状直接对齐引擎侧那两个纯函数（`engines/slice.py` 的 `apply_badges` /
+      `apply_text_overlays`，各自吃 `[{path,position,width,offset,opacity}]` 和
+      `[{text,position,font_size,color,border_color,vertical,offset}]`），
+      **不新造一套中间结构**——中间结构一旦和引擎不同，就必然出现"界面填得对、
+      渲出来不对"的那种漂移。
+
+    `params.badges[].asset_id` 存的是**素材库里的图片行**（不是 MinIO key）：
+    角色卡那条线踩过"手填 key 打错字符照样建单、投出去是没卡的片"（批 G 实测），
+    这里一律走 id，渲染时后端自己取文件，取不到就在产物行上写明白是哪张图。
+    预设里存的是 id 引用，图片行被删时**不级联删预设**（预设是配置、不是内容），
+    渲染时按"图取不到＝这套叠加缺一角"当场报话术，而不是静默出一张没角标的片。
+    """
+    __tablename__ = "asset_overlay_presets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # 预设名：同一归属（同 owner 或同为共享）下不允许两个同名可用预设——
+    # 判重在接口里做（409），不建 DB 唯一索引：老库靠 ADD COLUMN 补不出约束，
+    # 会出现"新库拦、老库不拦"的两套行为（与 `asset_outputs.composed_from_output_id` 同一条理由）。
+    name = Column(String(60), nullable=False)
+    # user＝个人（owner_id 必填）/ shared＝全员可用（owner_id 可为空，改只有 admin）
+    scope = Column(String(12), nullable=False, default=OVERLAY_PRESET_USER, index=True)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    # {badges: [...], text_overlays: [...]}：键名与引擎侧一致，值原样透传（只补 path）
+    params = Column(JSON, nullable=False, default=dict)
+    note = Column(String(500), nullable=True)
+    # 软下线：历史产物里的 preset_id 要能继续解释自己当时挂了什么，所以不硬删
+    active = Column(Boolean, nullable=False, default=True)
+    created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<AssetOverlayPreset(name={self.name!r}, scope={self.scope}, active={self.active})>"

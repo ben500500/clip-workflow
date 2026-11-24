@@ -429,6 +429,10 @@ async def _apply_compat_migrations():
         # 0075（极简模式 S2，2026-11-23）：素材库界面偏好（极简/全量）。新表 asset_scripts
         # 由 create_all 建（163 的迁移容器跑 init_db），这里只管老表补列。
         ("user_preferences", "ui_config", "JSON"),
+        # 0076（需求三 S3，2026-11-24）：组合导出矩阵的「这条怎么拼出来的」留痕列。
+        # 可空不回填，NULL＝不是矩阵产物（手工两段拼／回收自动拼照旧不写）。
+        # 新表 asset_overlay_presets 由 create_all 建（163 迁移容器跑 init_db），这里只管老表补列。
+        ("asset_outputs", "compose_meta", "JSON"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:

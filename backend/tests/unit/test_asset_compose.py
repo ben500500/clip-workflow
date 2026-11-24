@@ -131,9 +131,14 @@ def test_same_file_twice_is_rejected():
 
 def test_concat_segments_rejects_wrong_count_and_reports_ffmpeg_failure_plainly():
     async def _scenario():
-        # 段数不对：不启动 ffmpeg，直接一句人话
+        # 段数不对：不启动 ffmpeg，直接一句人话。11-24 需求三把上限从 2 放宽到 3
+        # （钩子片＋正片＋片尾），但**只放宽一格**——第四段属于混剪，得先回文档定口径。
+        for n in (1, 4):
+            err = await c.concat_segments([f"/tmp/{i}.mp4" for i in range(n)], VERT, "/tmp/o.mp4")
+            assert f"现在是 {n} 段" in err and "混剪" in err, err
         assert await c.concat_segments(["/tmp/only.mp4"], VERT, "/tmp/o.mp4") == \
-            "拼接固定两段，现在是 1 段（要三段以上再说，别改这条口径）"
+            "一次拼 2～3 段（钩子片／正片／片尾），现在是 1 段（要更多段属于混剪需求，" \
+            "先回文档确认口径，别改这条）"
         # 探不到视频流 → 指到具体是哪一段（一线要能看懂去换哪个文件）
         async def _no_video(path):
             return None
