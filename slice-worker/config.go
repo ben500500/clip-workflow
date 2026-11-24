@@ -170,7 +170,13 @@ func GetFFmpegVersion() string {
 	}
 	lines := strings.Split(string(out), "\n")
 	if len(lines) > 0 {
-		return strings.TrimSpace(lines[0])
+		v := strings.TrimSpace(lines[0])
+		// 部分 ffmpeg 构建首行带完整 URL+版权信息，超 DB 列宽（varchar(100)）
+		// 会让心跳入库 500——截断保护（2026-11-24 三机实测：180 的 evermeet 构建踩中）
+		if len(v) > 100 {
+			v = v[:100]
+		}
+		return v
 	}
 	return "unknown"
 }
