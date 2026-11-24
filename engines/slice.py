@@ -4638,6 +4638,14 @@ def main():
     # 角标预叠加到源片（2026-11-23 用户需求）：对 ×N 变体大批量任务只重编码
     # 一次源片（vs 之前每成品一次全量重编码，110 成品省 >1.5h）。
     # 角标全程覆盖固定位置 → 预叠加不改变时间轴，后续 -c copy 切割照常。
+    badges = []
+    if args.badges:
+        try:
+            raw_badges = json.loads(args.badges)
+            if isinstance(raw_badges, list):
+                badges = raw_badges
+        except (ValueError, TypeError):
+            badges = []
     if badges and os.path.isfile(source_path):
         badged_src = os.path.join(
             os.path.dirname(os.path.abspath(source_path)),
@@ -4750,14 +4758,7 @@ def main():
         print(f"动态文字水印已开启: {watermark.get('text', '')}", file=sys.stderr)
 
     # 图片角标：解析并缓存本地图片路径（Worker/后端已下载到本地）
-    badges = []
-    if args.badges:
-        try:
-            raw_badges = json.loads(args.badges)
-            if isinstance(raw_badges, list):
-                badges = raw_badges
-        except (ValueError, TypeError):
-            badges = []
+
     if badges:
         valid_paths = [b.get("path") for b in badges if b.get("path") and os.path.isfile(b["path"])]
         print(f"图片角标已开启: {len(valid_paths)} 个", file=sys.stderr)
