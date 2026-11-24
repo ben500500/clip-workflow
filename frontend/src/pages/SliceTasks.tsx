@@ -445,7 +445,16 @@ const SUBTITLE_MASK_PRESETS = [
         const done = typeof t.outputs_done === 'number' ? t.outputs_done : null;
         return (
         <Space direction="vertical" size={2} style={{ width: '100%' }}>
-          <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>
+          <Space size={4}>
+            <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>
+            {/* 成品再处理标记（2026-11-24 赶海集实锤需求）：源桶=sliced 说明这条任务的
+                源是既有切片成品（再处理/入库链路），与 AI 选点直接切片区分，避免混排误导 */}
+            {t.source_bucket === 'sliced' && (
+              <Tooltip title="源为既有切片成品（再处理/入库链路），非本集原片直接切片">
+                <Tag color="orange" style={{ marginInlineEnd: 0 }}>成品再处理</Tag>
+              </Tooltip>
+            )}
+          </Space>
           {running && (
             <Progress
               percent={Math.round((t.progress || 0) * 10) / 10}

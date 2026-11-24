@@ -158,6 +158,8 @@ export interface SliceTask {
   outputs_done?: number | null;
   // 计划成品总数（混搭批量配置或 cutlist 分组数；用于「已出 N/总数」分母）
   outputs_total?: number | null;
+  // 源桶：sliced=源是切片成品（再处理/入库链路），列表据此打「成品再处理」标记
+  source_bucket?: string | null;
   output_count: number;
   error_message: string | null;
   // 实际执行该任务的 Worker 节点 ID
