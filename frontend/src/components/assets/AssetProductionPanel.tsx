@@ -1186,7 +1186,9 @@ const AssetProductionPanel: React.FC<Props> = ({
               <Text type="secondary" style={{ fontSize: 12 }}>
                 接下来不用守着：机器去企微后台排队出片，一条 25 分钟起、整批更久。
                 出好的片子自动回到本页各单的「成片」列（回来点「刷新」或看顶部任务横幅）；
-                板上失败的会计成失败、在行上写清成因。{pre.note ? `｜${pre.note}` : ''}
+                板上失败的会计成失败、在行上写清成因。
+                失败单机器会在这次轮询窗口内自动重启（整批全失败才重启，次数到顶就交人工判读，不隔夜补投）；
+                窗口关掉后还缺的版次在本行标「缺 N 版」，用「操作 → 按同文案重开单」补差额。{pre.note ? `｜${pre.note}` : ''}
               </Text>
             </Space>
           ),
@@ -1456,19 +1458,38 @@ const AssetProductionPanel: React.FC<Props> = ({
     {
       // 批 I（链路收敛）：「投完不知道去向」的正解——片子回来了就在这一列，
       // 点开就地预览/下载，不用再去别处找产物。
+      //
+      // 11-24 缺口口径（用户：「我需要多少素材，最终就能给我回收多少素材」）：这一列把
+      // 「应收 vs 实收」说在一句话里。short_by 由后端算（board_total − 已收），前端**绝不自己减**
+      // ——口径只有一处，且只在终态行上非零，减了就会把「还在出片」画成「缺料」。
       title: '成片',
       key: 'outputs',
-      width: 110,
-      render: (_, r) =>
-        (r.output_count ?? 0) > 0 ? (
-          <Button size="small" icon={<VideoCameraOutlined />} onClick={() => openOutputs(r)}>
-            已收 {r.output_count} 段
-          </Button>
-        ) : (
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            还没收片
-          </Text>
-        ),
+      width: 132,
+      render: (_, r) => {
+        const short = Number(r.short_by ?? 0);
+        return (
+          <Space size={2} wrap>
+            {(r.output_count ?? 0) > 0 ? (
+              <Button size="small" icon={<VideoCameraOutlined />} onClick={() => openOutputs(r)}>
+                已收 {r.output_count} 段
+              </Button>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                还没收片
+              </Text>
+            )}
+            {short > 0 && (
+              <Tooltip
+                title={`这张单要 ${r.board_total} 版、只回收 ${r.output_count ?? 0} 版，还缺 ${short} 版。
+机器已经在这次轮询窗口内自动重启过整批全失败的单（部分版失败不重启——那会把已到手的版次再烧一遍额度）。
+补法：这行「操作 → 按同文案重开单」只补差额；隔夜不自动补投是定死的口径。`}
+              >
+                <Tag color="orange">缺 {short} 版</Tag>
+              </Tooltip>
+            )}
+          </Space>
+        );
+      },
     },
     ...(canWriteBack
       ? [

@@ -422,6 +422,14 @@ export interface AssetProduction {
   concat_last_result: AssetAutoConcatResult | null;
   /** 批 I（链路收敛）：本单已收进的成片段数（排除 package/copy 附属文件），生产单列表口才有 */
   output_count?: number;
+  /**
+   * 11-24 缺口口径：应收 board_total − 实收 output_count，**后端读侧派生**（不建列、不迁移）。
+   * >0＝这张单还欠几版。补法是人工「按同文案重开单」，机器不隔夜补投。
+   *
+   * 后端只在**终态行**（success/failed）上算非零值：queued/running 的 output_count 天然还是 0，
+   * 那时报「缺 N 版」是把「还在出片」说成「缺料」。所以这里 null/0 直接不画，别在前端自己减。
+   */
+  short_by?: number;
   status: ProductionState;
   /** 板上失败行**没有原因字段**：这里只能记我们侧的判读，别当成豆包给的成因 */
   error: string | null;
@@ -2268,10 +2276,37 @@ export interface AssetDispatchResultItem {
   board_status: string | null;
   outputs: string[];
   restarted: boolean;
+  /**
+   * 11-24 需求④（有界自动重试）：这张单本次**实际自动重启了几次**。
+   * 只有「整批全失败」才有重启资格——重启是整条 payload 重投，部分成功时重启等于
+   * 把已到手的版次再烧一遍号池，所以那种缺口只能人工补。
+   */
+  retries?: number;
+  /** 本次生效的重试上限（`ASSET_BOARD_RETRY_MAX`，默认 2）；界面据此说「已到顶」还是「还能重试」 */
+  retry_max?: number;
+  /** 应收版数（＝板上 total） */
+  expected?: number;
+  /** 账上实收版数（按 production_id 数产物，排除 package/copy 附属行） */
+  collected?: number;
+  /** expected − collected；只在**已终态**的行有意义（还在板上跑时它是过程值，不显示） */
+  short_by?: number;
   error?: string;
   note?: string;
   last_read_error?: string;
   download_errors?: { tid: string; error: string }[];
+}
+
+/** 本次投递的缺口账（11-24 批：做不到「要几版来几版」，就必须把还缺几版说明白） */
+export interface AssetDispatchGap {
+  /** 这批一共要几版 */
+  expected: number;
+  /** 账上一共收了几版 */
+  collected: number;
+  /** 还缺几版（0＝齐了） */
+  short_by: number;
+  retry_max: number;
+  /** 这批一共自动重启了几次（逐张之和） */
+  retries: number;
 }
 
 /** POST /assets/productions/dispatch 的同步结果（异步档请判 `isAssetJobAck`） */
@@ -2296,6 +2331,11 @@ export interface AssetDispatchResponse {
   dispatch: AssetDispatchCounts;
   /** 批 Q：本次回收后自动拼接的结果（没提要求也没有钉着的行时 attempted=0、note 为空串） */
   concat?: AssetAutoConcatSummary | null;
+  /**
+   * 11-24 需求④：这批的缺口账。`short_by>0` 时后端的 `message` 里已经带了那句
+   * 「缺几版／为什么机器不再自己补／到哪补」，前端只需把 message 摆出来，别自己另算一套。
+   */
+  gap?: AssetDispatchGap;
   message: string;
 }
 

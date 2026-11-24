@@ -7,7 +7,9 @@
  *    然后你的什么组合出片、什么行列写在那里，谁看得懂？**素材也没有预览**。
  *    我要的那个拼接是最后一步，你可以先不做……」
  * 所以本门不再验「极简＝零页签」（那是上一版的判据，已被这条推翻），改成验：
- *   ① 极简是**四步页签**（① 导稿／② 脚本库／③ 投豆包／④ 看成片），顶层恰 4 个；
+ *   ① 极简是**三步页签**（① 脚本库（顶部就是「导入」卡）／② 投豆包／③ 看成片），顶层恰 3 个
+ *      ——11-24 用户第二轮：「导稿那一小行的功能块直接放在脚本库的上方，这样就少一个 tab；
+ *        名称不要叫"先弄到稿"，就叫"导入"」，所以四步页签又收掉一个；
  *   ② 每屏有**素材预览**（缩略图＝该脚本出处那条片子的首帧，点一下真播得出画面）；
  *   ③ **组合出片那屏从界面撤下**（后端 compose/matrix 不动，界面不摆行列矩阵）；
  *   ④ 旧五环（完整模式）没被带坏；
@@ -20,16 +22,22 @@
  *
  * 全程不点「投豆包」（花钱），只做勾选/切页签/点开预览这类只读动作。
  *
- * 11-24 踩坑：shot() 不 await 会抢下一跳的页面——p3 那张截成了 ④ 的内容，
+ * 11-24 踩坑：shot() 不 await 会抢下一跳的页面——p3 那张截成了下一屏（③）的内容，
  * p4/c 两张干脆没落盘（进程退出前 capture 还没回）。所有截图一律 await。
  * 跑之前请清一次偏好，让 admin 从「未存偏好 → 后端按角色默认＝full」起步：
  *   docker exec clip-postgres psql -U clipworkflow -d clipworkflow -c 'delete from user_preferences'
  *   （163 上库名/用户都是 clip，本机是 clipworkflow）
+ * ⚠️ 两个 token 文件**只有 30 分钟寿命**（settings.JWT_EXPIRE_MINUTES=30），过期就是满屏 401；
+ *   跑之前现取现用（容器内 mint 一条 user_sessions + access_token，别去动用户密码）。
  * T 段还需要一条**属于同事（materialtest）**的脚本，本机栈种子（用 material 的 token 建，
  * 归属才会真是 materialtest；「谁的」列与收藏判据都靠它）：
  *   curl -s -X POST http://127.0.0.1:3000/api/assets/scripts \
  *     -H "Authorization: Bearer $(cat /tmp/.cdp_tok_material)" -H 'Content-Type: application/json' \
  *     -d '{"name":"CDP门·同事的稿","body":"（门禁用）这条属于 materialtest，用来验收藏只改可见范围不改归属。"}'
+ * ⚠️ 种子的 **body 一定要长过 100 字**（X 段拿「抽屉字数 vs 列表格字数」比大小，列表口只回
+ *   前 100 字；正文短于 100 时两头一样长，判据就成了空的）。本机刷新种子长度：
+ *   docker exec clip-postgres psql -U clipworkflow -d clipworkflow -c \\
+ *     "update asset_scripts set body = body || ' 补齐到列表预览之外的一段，' || repeat('让全文比预览长。', 6) where name like 'CDP门%' and length(body) < 200"
  * 跑完 T 段会把收藏关系和「仅看自己」开关都还原，这条脚本留着不删（下次继续用）。
  * 预览段需要本机栈有一条「定稿脚本 + 出处素材有帧 + 帧对象真在桶里」的数据，
  * 种子做法见本次会话记录（/api/assets/upload/batch 传两个小 mp4 → 自动抽帧 →
@@ -152,7 +160,7 @@ async function main() {
     }
   };
   // 浏览器端不能用 Node 的 flat()，全部走内联 replace
-  // 只取**最外层**页签：④ 看成片里成片墙自带页签，混进来会把「恰 4 个」判成假红
+  // 只取**最外层**页签：③ 看成片里成片墙自带页签，混进来会把「恰 3 个」判成假红
   const grabTabs = async () => js(`
     (() => Array.from(document.querySelectorAll('.ant-tabs-tab'))
       .filter((t) => {
@@ -242,7 +250,8 @@ async function main() {
   await shot('b1-timeout-fallback');
 
   // ───────────────────────────────────────────────────────────
-  // A. 点「极简」→ 四步页签（11-24 用户：原来的 tab 形式要保留，好分清步骤）
+  // A. 点「极简」→ 三步页签（11-24 用户：原来的 tab 形式要保留，好分清步骤；
+  //    ①「导稿那一小行直接放脚本库上方，少一个 tab」）
   // ───────────────────────────────────────────────────────────
   const clickSeg = await js(`(() => {
     const items = Array.from(document.querySelectorAll('.ant-segmented-item'));
@@ -254,13 +263,17 @@ async function main() {
   assert('A1 Segmented 「极简」点击成功', clickSeg === 'ok', clickSeg);
   await sleep(2500);   // 等 saveUiPreferences 落库＋React 重渲染
   const tabsSimple = await grabTabs();
-  const wantSimple = ['① 导稿', '② 脚本库', '③ 投豆包', '④ 看成片'];
+  const wantSimple = ['① 脚本库', '② 投豆包', '③ 看成片'];
   const missSimple = wantSimple.filter((w) => !String(tabsSimple).includes(w));
   const tabCount = String(tabsSimple).split('｜').filter(Boolean).length;
-  assert('A2 极简＝四步页签齐（导稿/脚本库/投豆包/看成片）', missSimple.length === 0, `tabs=${tabsSimple}`);
-  assert('A3 顶层页签恰 4 个（旧「零页签」判据作废）', tabCount === 4, `tabs=${tabsSimple}`);
+  assert('A2 极简＝三步页签齐（脚本库/投豆包/看成片）', missSimple.length === 0, `tabs=${tabsSimple}`);
+  assert('A3 顶层页签恰 3 个（用户①：导稿并入脚本库顶部，少一个 tab；旧的 4 页签判据作废）',
+    tabCount === 3, `tabs=${tabsSimple}`);
   const cards = await grabCards();
-  assert('A4 ① 导稿屏有「1. 先弄到稿」卡', /1\. 先弄到稿/.test(cards), cards);
+  assert('A4 ① 屏顶部是「导入」卡，与「改稿 · 定稿」同屏（用户①：名称就叫「导入」，不叫「先弄到稿」）',
+    // ⚠️ 这里必须是**半角** `|` 才是「或」：写成全角 `｜` 时 `(^｜)` 变成「串首必须是一个全角竖线」，
+    //     「导入」这张卡明明在最前面也判红（11-24 首跑踩的坑，门禁自己写的字）。
+    /(^|｜)导入(｜|$)/.test(String(cards)) && /改稿/.test(String(cards)) && !/先弄到稿/.test(String(cards)), cards);
   const btns = parseJson(await grabButtons());
   assert('A5 ① 屏主按钮齐全（导入钩子／上传脚本／手写）',
     !!(btns && btns.importHook && btns.uploadScript && btns.writeScript),
@@ -272,12 +285,12 @@ async function main() {
   // ───────────────────────────────────────────────────────────
   // P. 素材预览（11-24 用户：「素材也没有预览」）
   // ───────────────────────────────────────────────────────────
-  assert('P0 切到 ② 脚本库', (await clickTab('脚本库')) === 'ok');
+  assert('P0 切到 ① 脚本库', (await clickTab('脚本库')) === 'ok');
   await sleep(2500);   // 等 scripts 列表 + /assets/frames 首帧回来
   const heads = await js(`
     (() => Array.from((${ACTIVE}).querySelectorAll('.ant-table-thead th')).map(x=>x.textContent.replace(/\\s+/g,' ').trim()).join('｜'))()
   `);
-  assert('P1 ② 表格有「预览」列', /预览/.test(String(heads)), heads);
+  assert('P1 ① 表格有「预览」列', /预览/.test(String(heads)), heads);
   // 硬判据＝naturalWidth>0（图真从桶里取回来了），不是「有 img 标签」
   let pic = { loaded: 0, sample: '' };
   for (let i = 0; i < 20; i++) {
@@ -325,6 +338,81 @@ async function main() {
   await sleep(1200);
   assert('P5 关窗后无残留 Modal', (await js(`document.querySelectorAll('.ant-modal-wrap:not([style*="display: none"])').length`)) <= 1);
 
+  // ───────────────────────────────────────────────────────────
+  // X. 用户③（11-24）：「列表中有详细的内容，但是打开后却没有」＋「点脚本的标题也直接打开」
+  //    两条判据各钉一头：**入口**（点标题＝打开，不必再找「打开」按钮）与
+  //    **正文**（抽屉里的正文是全文，不是列表那条 100 字预览）。
+  //    正文这次是真从详情口 GET /assets/scripts/{id} 取回来的——列表口只回 preview（前 100 字），
+  //    所以判据取「抽屉字数 > 列表那格字数」两个实测值比大小，既不拍种子长度也不看「有没有字」。
+  //    ⚠️ ① 屏有**两张表**（待过审 ＋ 改稿·定稿），一切查找锁到「改稿」那张卡里，
+  //    否则会把待过审的行也算进来（那张表没有标题链接，点不出抽屉）。
+  // ───────────────────────────────────────────────────────────
+  const EDIT_SCOPE = `(() => {
+    const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+    const pane = Array.from(document.querySelectorAll('.ant-tabs-tabpane-active'))
+      .filter(x => !(x.parentElement && x.parentElement.closest('.ant-tabs-tabpane')))[0] || document.body;
+    const card = Array.from(pane.querySelectorAll('.ant-card')).find(c =>
+      norm((c.querySelector('.ant-card-head-title') || {}).textContent).includes('改稿'));
+    return card || pane;
+  })()`;
+  const titleClick = parseJson(await js(`(() => {
+    const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+    const scope = ${EDIT_SCOPE};
+    const ths = Array.from(scope.querySelectorAll('.ant-table-thead th')).map((x) => norm(x.innerText));
+    const ni = ths.findIndex((t) => /^脚本/.test(t));
+    if (ni < 0) return JSON.stringify({ r: 'NO-COL[' + ths.join('/') + ']' });
+    const hit = Array.from(scope.querySelectorAll('.ant-table-tbody tr'))
+      .find(r => (r.innerText || '').includes('CDP门'));
+    if (!hit) return JSON.stringify({ r: 'no-row' });
+    const cell = Array.from(hit.children)[ni];
+    const link = cell ? (cell.querySelector('a') || cell.querySelector('.ant-typography')) : null;
+    if (!link) return JSON.stringify({ r: 'no-title-link' });
+    // 把点中的那条**脚本名**带回去：X2 要拿它去对列表口的字数，
+    // 否则点了 C、却拿 A 的字数当准，判据就是假的。
+    const name = norm(cell.innerText);
+    // 同时量一下**列表这一屏给人看到的正文**有多长（后端 preview 口只给前 100 字）：
+    // 抽屉里的全文必须明显比它长，才算真的「打开后有详细内容」。
+    const pi = ths.findIndex((t) => /预览|内容|正文/.test(t));
+    const pcell = pi >= 0 ? Array.from(hit.children)[pi] : null;
+    const shown = pcell ? norm(pcell.innerText).length : -1;
+    link.click();
+    return JSON.stringify({ r: 'ok', name, shown });
+  })()`)) || {};
+  assert('X1 点表格里的脚本标题就直接开抽屉（不是只有「打开」按钮能用）', titleClick.r === 'ok', JSON.stringify(titleClick));
+  await sleep(2500);   // 等详情口把全文取回来（取回前 textarea 是禁用＋「正文读取中…」）
+  const drawerBody = parseJson(await js(`(() => {
+    const d = Array.from(document.querySelectorAll('.ant-drawer-open')).pop();
+    if (!d) return JSON.stringify({ open: false });
+    const ta = d.querySelector('textarea');
+    const counter = (d.innerText.replace(/\\s+/g, ' ').match(/(\\d+) \\/ 20000 字/) || [])[1] || '';
+    return JSON.stringify({
+      open: true, len: ta ? ta.value.length : 0, disabled: !!(ta && ta.disabled),
+      counter, head: ta ? ta.value.slice(0, 24) : '',
+    });
+  })()`)) || {};
+  // 判据不写死「>100」这种凭种子长度拍的数：**列表那一格给人看到的字数**（shown）
+  // 与**抽屉里的字数**（len）两个实测值比大小——后端列表口只回 body 前 100 字（misc.py:15585
+  // `preview = " ".join(... )[:100]`），所以只要种子正文比 100 长，len > shown 就等价于
+  // 「抽屉取的是全文，不是列表那条预览」。11-24 首跑就是栽在这：种子正文只有 87 字，
+  // 写死 >100 判成假红，改成两头实测才既真又稳。
+  assert('X2 抽屉打开且正文是**全文**（抽屉字数 > 列表那格显示出来的字数，且已解禁可编辑态）',
+    drawerBody.open === true && Number(titleClick.shown) >= 0
+      && Number(drawerBody.len) > Number(titleClick.shown) && drawerBody.disabled === false,
+    JSON.stringify({ shown: titleClick.shown, drawer: drawerBody }));
+  assert('X3 字数计数器与正文同源（界面那个「N / 20000 字」不是摆设，取到全文才敢让人保存）',
+    Number(drawerBody.counter || 0) === Number(drawerBody.len || 0),
+    JSON.stringify({ counter: drawerBody.counter, len: drawerBody.len }));
+  await shot('x1-drawer-full-body');
+  await js(`(() => {
+    const d = Array.from(document.querySelectorAll('.ant-drawer-open')).pop();
+    const x = d ? d.querySelector('.ant-drawer-close') : null;
+    if (x) x.click();
+    return 1;
+  })()`);
+  await sleep(1200);
+  assert('X4 关掉抽屉不残留（遮罩没留在页面上挡后续点击）',
+    (await js(`document.querySelectorAll('.ant-drawer-open').length`)) === 0);
+
   // 只有定稿的能勾——预览这次改版没动这条闸门
   // 注意：加了「预览」列后名字格不是 nth-child(2) 了，一律按整行 innerText 认行
   const cb = parseJson(await js(`(() => {
@@ -352,8 +440,8 @@ async function main() {
   assert('P7 勾上那条定稿脚本', picked === 'ok', picked);
   await sleep(800);
 
-  // ③ 投豆包：勾选的稿子要带图看得见（不是只有一行列文字）
-  assert('P8 切到 ③ 投豆包', (await clickTab('投豆包')) === 'ok');
+  // ② 投豆包：勾选的稿子要带图看得见（不是只有一行列文字）
+  assert('P8 切到 ② 投豆包', (await clickTab('投豆包')) === 'ok');
   await sleep(1800);
   const chip = parseJson(await js(`(() => {
     const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
@@ -365,22 +453,22 @@ async function main() {
     return JSON.stringify({ card: true, title: norm((card.querySelector('.ant-card-head-title') || {}).textContent),
       hasName: (card.innerText || '').includes('CDP门'), thumb: imgs.length });
   })()`)) || {};
-  assert('P9 ③ 活动面板里就摆着「这次要投的脚本」，列出勾中那条且带预览图',
+  assert('P9 ② 活动面板里就摆着「这次要投的脚本」，列出勾中那条且带预览图',
     !!(chip.card && chip.hasName && chip.thumb >= 1), JSON.stringify(chip));
   const pBtns = parseJson(await grabButtons());
-  assert('P10 ③ 主按钮按已勾条数说真话（含「投豆包（1）」/「轻量过审并投豆包（1）」）',
+  assert('P10 ② 主按钮按已勾条数说真话（含「投豆包（1）」/「轻量过审并投豆包（1）」）',
     !!(pBtns && pBtns.dispatch && pBtns.dispatch.some(b => /（1）/.test(b.t))),
     JSON.stringify(pBtns && pBtns.dispatch));
   await shot('p3-produce-chips');
 
-  // ④ 看成片：成片墙 + 拼接去短剧切片的指引
-  assert('P11 切到 ④ 看成片', (await clickTab('看成片')) === 'ok');
+  // ③ 看成片：成片墙 + 拼接去短剧切片的指引
+  assert('P11 切到 ③ 看成片', (await clickTab('看成片')) === 'ok');
   await sleep(2000);
   const outNote = await js(`(() => {
     const scope = ${ACTIVE};
     return scope.innerText.replace(/\\s+/g, ' ').includes('短剧切片');
   })()`);
-  assert('P12 ④ 活动面板说明「要拼接先去短剧切片」（不摆看不懂的矩阵）', outNote === true, outNote);
+  assert('P12 ③ 活动面板说明「要拼接先去短剧切片」（不摆看不懂的矩阵）', outNote === true, outNote);
   const wall = await js(`(() => {
     const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
     const scope = ${ACTIVE};
@@ -388,7 +476,7 @@ async function main() {
     return JSON.stringify({ hasEmpty: !!scope.querySelector('.ant-empty'), hasWallWord: /成片|产物/.test(norm(t)) });
   })()`);
   const wallInfo = parseJson(wall) || {};
-  assert('P13 ④ 成片墙渲染（有墙/空态，不是白屏）', !!(wallInfo.hasWallWord || wallInfo.hasEmpty), wall);
+  assert('P13 ③ 成片墙渲染（有墙/空态，不是白屏）', !!(wallInfo.hasWallWord || wallInfo.hasEmpty), wall);
   await shot('p4-outputs-wall');
 
   // ───────────────────────────────────────────────────────────
@@ -471,6 +559,12 @@ async function main() {
   // 判归属只认 owner_id——显示名是给人看的，收藏改的是可见范围、不动 owner_id。
   const meSelf = await api('/api/auth/me');
   const ADMIN_ID = String(meSelf.body?.id || '');
+  // 用户②（11-24）「选"我的"之后，未定稿的即使不在我的收藏里也会展现」——真因是极简页
+  // 「待过审」那次请求（carrier_status=pending）漏传 owner，把全员的待审稿摆了进来。
+  // 界面行数在 admin 单机上看不出差（本地数据几乎全属于 admin），**只有请求参数骗不了人**，
+  // 所以从这一行起就把 /api/assets 的 URL 录下来，在开关翻动后验那颗参数到底传没传。
+  netOn = true;
+  netLog.length = 0;
   const seedAll = await api('/api/assets/scripts?owner=all&page_size=200');
   const seedRow = (seedAll.body?.items || []).find((x) => String(x.name).includes('同事的稿')) || {};
   const MATE_ID = String(seedRow.owner_id || '');
@@ -493,15 +587,21 @@ async function main() {
   assert('T2d 只写了一个键，「极简/完整」的选择没被冲掉（按键合并）',
     pref1.body?.ui_config?.asset_library_mode === 'simple', JSON.stringify(pref1.body?.ui_config));
 
-  assert('T3a 切到 ② 脚本库', (await clickTab('脚本库')) === 'ok');
+  assert('T3a 切到 ① 脚本库', (await clickTab('脚本库')) === 'ok');
   await sleep(2200);
   const whoSeg = await segSelected();
   assert('T3b 全局开关翻了，脚本库的「我的/全部」跟着落到「我的」（一处翻动五处一起收）', whoSeg === '我的', whoSeg);
+  // 用户②那条的硬判据：待过审那次请求（carrier_status=pending）**必须带上 owner**。
+  // 少了这颗参数，「我的」里就会混进别人的未定稿——正是用户看到的现象。
+  const pendReqs = netLog.filter((u) => u.includes('carrier_status=pending'));
+  assert('T3e 「待过审」区跟着开关一起收：底层请求带上了 owner=me（漏传＝别人的稿会冒出来）',
+    pendReqs.length >= 1 && pendReqs.every((u) => /[?&]owner=me(&|$)/.test(u)),
+    JSON.stringify({ n: pendReqs.length, sample: pendReqs.slice(0, 3) }));
   const headsT = await js(`
     (() => Array.from((${SCOPE}).querySelectorAll('.ant-table-thead th'))
       .map(x=>x.textContent.replace(/\\s+/g,' ').trim()).join('｜'))()
   `);
-  assert('T3c ② 表头有「收藏」列', /收藏/.test(String(headsT)), headsT);
+  assert('T3c ① 表头有「收藏」列', /收藏/.test(String(headsT)), headsT);
   const starCount = parseJson(await js(`(() => {
     const rows = Array.from((${SCOPE}).querySelectorAll('${DATA_ROWS}'));
     const withStar = rows.filter(r => r.querySelector('button[aria-label="收藏"], button[aria-label="取消收藏"]')).length;
@@ -655,7 +755,7 @@ async function main() {
     })()`);
     assert('C1 material 默认极简（后端角色映射）', matMode === '极简', matMode);
     const matTabs = await grabTabs();
-    assert('C2 material 的极简也是四步页签', ['导稿', '脚本库', '投豆包', '看成片']
+    assert('C2 material 的极简也是三步页签', ['脚本库', '投豆包', '看成片']
       .every((w) => String(matTabs).includes(w)), `tabs=${matTabs}`);
     await clickTab('投豆包');
     await sleep(1500);

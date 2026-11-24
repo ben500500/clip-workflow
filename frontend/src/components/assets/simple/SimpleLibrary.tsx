@@ -21,7 +21,7 @@ import { ThumbCell, VideoPreviewModal, useCoverMap } from './SimplePreviewBits';
 import { reportVerdict } from './scriptResult';
 import { useOwnerView } from '../../../hooks/useOwnerView';
 
-const { Text } = Typography;
+const { Text, Link } = Typography;
 
 /** 每个脚本出几版＝板上 total（1..ASSET_BOARD_TOTAL_MAX，与后端同上限） */
 const BOARD_TOTAL_MAX = 20;
@@ -173,11 +173,14 @@ const ImportHookModal: React.FC<ImportHookModalProps> = ({
  * 「（界面）虽然是要基建，但也不是让人一头雾水、摸不着头脑的那种」
  *
  * 所以这一版：
- *   ① 导稿 → ② 脚本库（改稿·定稿）→ ③ 投豆包 → ④ 看成片，**一步一个页签**，
+ *   ① 脚本库（导入 ＋ 改稿·定稿）→ ② 投豆包 → ③ 看成片，**一步一个页签**，
  *   页签带序号与待办数，每屏顶部一句话讲清"这步做什么、下一步去哪"；
  *   每屏都能**看见片子**（缩略图＋点开即播，见 SimplePreviewBits）；
  *   组合出片那一屏**从界面撤下**（后端 compose/matrix 与用例原样留着，等把短剧切片
  *   那套拼接功能搬过来再放，别在中间态摆一张行列矩阵让人猜）。
+ *   导入**不再是独立一屏**（11-24 用户：「那一小行的功能块直接放在脚本库的上方，
+ *   这样就少一个 tab；名称不要叫"先弄到稿"，就叫"导入"」）——它是脚本库顶部的
+ *   一张卡，与"收进脚本库""待过审""改稿·定稿"同屏，省掉一次页签往返。
  *
  * 只折叠界面、不旁路逻辑：导入、反推、投产、投板全走五环同一个接口；钩子号、跨人确认、
  * 风险词闸都在后端。定稿冻结／生产载体见后端 assets/misc.py 脚本库段。
@@ -188,8 +191,8 @@ const SimpleLibrary: React.FC<Props> = ({
   const cats = useAssetCategories();
   const [defaultCat, setDefaultCat] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState('');
-  /** 分步页签（11-24 用户要求保留 tab 形式好分清步骤） */
-  const [tab, setTab] = useState<'grab' | 'scripts' | 'produce' | 'outputs'>('grab');
+  /** 分步页签（11-24 用户要求保留 tab 形式好分清步骤；导稿并入脚本库后只剩三步） */
+  const [tab, setTab] = useState<'scripts' | 'produce' | 'outputs'>('scripts');
 
   // ── 脚本库 ──
   // 默认**全部**（11-24 用户口径「默认是要能看到全部的」），全局开关打开才收成"我的"。
@@ -225,6 +228,9 @@ const SimpleLibrary: React.FC<Props> = ({
   }, [qInput]);
 
   // ── 待过审（只有有审核职能的人看得到）：同事送审的脚本在这里点那一下 ──
+  // 口径跟「改稿·定稿」那张表同一个开关：选了「我的」就只留我写的∪我收藏的，
+  // 别在一屏里一半按开关筛、一半硬编 all（11-24 用户：「选择我的之后，
+  // 未定稿的即使不在我的收藏里也会展现」——漏的就是这里原先写死的 'all'）。
   const [pending, setPending] = useState<AssetScript[]>([]);
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const fetchPending = useCallback(async () => {
@@ -233,12 +239,12 @@ const SimpleLibrary: React.FC<Props> = ({
       return;
     }
     try {
-      const res = await assetApi.listScripts({ owner: 'all', carrier_status: 'pending', page_size: 100 });
+      const res = await assetApi.listScripts({ owner, carrier_status: 'pending', page_size: 100 });
       setPending(res.items || []);
     } catch {
       /* 待审数读不到不拦主流程 */
     }
-  }, [canReview]);
+  }, [canReview, owner]);
   useEffect(() => { void fetchPending(); }, [fetchPending, reloadToken]);
 
   const refreshAll = useCallback(
@@ -491,7 +497,7 @@ const SimpleLibrary: React.FC<Props> = ({
       reportVerdict(res.results, res.message, '条投出');
       nudgeAssetJobBanner();
       setSelectedIds([]);
-      // 投完直接把人带到 ④：这步之后能看的只有等片，别让他在 ③ 空等（11-24 分步页签）
+      // 投完直接把人带到 ③：这步之后能看的只有等片，别让他在 ② 空等（11-24 分步页签）
       if (res.results.some((r) => r.ok)) setTab('outputs');
     } catch (e) {
       message.error((e as Error).message || '投豆包没成功', 8);
@@ -583,7 +589,10 @@ const SimpleLibrary: React.FC<Props> = ({
       render: (_: unknown, r) => (
         <Space direction="vertical" size={0}>
           <Space size={6}>
-            <Text strong style={{ fontSize: 13 }}>{r.name}</Text>
+            {/* 11-24 用户：「点击脚本的标题也直接打开吧，不要只有那个"打开"按钮可以开启」 */}
+            <Link strong style={{ fontSize: 13 }} onClick={() => setEditor({ open: true, script: r })}>
+              {r.name}
+            </Link>
             {r.source_kind === 'reverse' && <Tag style={{ marginInlineEnd: 0 }}>反推</Tag>}
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }} ellipsis={{ tooltip: r.preview }}>
@@ -698,7 +707,7 @@ const SimpleLibrary: React.FC<Props> = ({
   const hint = !canProduce
     ? '你的账号没有投产职能——找管理员在用户管理里开通'
     : !selected.length
-      ? '先到 ② 脚本库 勾选要投的脚本'
+      ? '先到 ① 脚本库 勾选要投的脚本'
       : undefined;
 
   /** 页签标题＝序号＋步骤名＋这一屏还欠的件数（11-24 用户：原来的 tab 形式要保留，好分清步骤） */
@@ -709,11 +718,11 @@ const SimpleLibrary: React.FC<Props> = ({
     </Space>
   );
 
-  // ── ① 导稿：链接／文件／脚本文件／手写 → 反推 → 收进脚本库 ──
-  const paneGrab = (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+  // ── 导入：链接／文件／脚本文件／手写 → 反推 → 收进脚本库（11-24 用户：这一小块直接放脚本库上方，别再单独一个页签）──
+  const importBlock = (
+    <>
       {/* 三种来路一行放完 */}
-      <Card size="small" title="1. 先弄到稿">
+      <Card size="small" title="导入">
         <Space wrap size={8} align="center">
           <Button
             icon={<ThunderboltOutlined />}
@@ -753,7 +762,7 @@ const SimpleLibrary: React.FC<Props> = ({
         <div style={{ marginTop: 8 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
             贴链接或传视频＝系统把片子反推成稿（一条一两分钟）；上传脚本文件／手写＝直接进库。
-            稿子进库后到 <Text strong>② 脚本库</Text> 改稿、定稿。
+            稿子进库后在下面的表格里改稿、定稿。
           </Text>
         </div>
       </Card>
@@ -764,7 +773,7 @@ const SimpleLibrary: React.FC<Props> = ({
           size="small"
           title={
             <Space size={6}>
-              2. 收进脚本库
+              收进脚本库
               <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
                 （{hookAssets.length} 条{hookRunning ? '，反推在后台跑' : ''}）
               </Text>
@@ -826,15 +835,16 @@ const SimpleLibrary: React.FC<Props> = ({
       )}
       {!hookAssets.length && (
         <Text type="secondary" style={{ fontSize: 12, paddingLeft: 2 }}>
-          这里会列出刚导入的钩子视频：反推在后台跑，出稿后点「全部收进脚本库」，再去 ② 改稿。
+          这里会列出刚导入的钩子视频：反推在后台跑，出稿后点「全部收进脚本库」，再到下面的表格里改稿。
         </Text>
       )}
-    </Space>
+    </>
   );
 
-  // ── ② 脚本库：改稿 · 定稿（· 待过审）──
+  // ── ① 脚本库：导入 ＋ 改稿 · 定稿（· 待过审）──
   const paneScripts = (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {importBlock}
       <Text type="secondary" style={{ fontSize: 12 }}>
         打开改到满意点「定稿」，<Text strong>只有定稿的脚本能投豆包</Text>；
         改一份已定稿的会派生新草稿，投过的稿子不会被覆盖。
@@ -954,12 +964,12 @@ const SimpleLibrary: React.FC<Props> = ({
     </Space>
   );
 
-  // ── ③ 投豆包：勾脚本 → 三视图 → 出几版 → （轻量过审）投 ──
+  // ── ② 投豆包：勾脚本 → 三视图 → 出几版 → （轻量过审）投 ──
   const paneProduce = (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <Text type="secondary" style={{ fontSize: 12 }}>
         一个脚本占一个钩子号；「每个出几版」＝板上那条任务的产出数。
-        投出去约 25 分钟出片，回来在 ④ 看成片。
+        投出去约 25 分钟出片，回来在 ③ 看成片。
       </Text>
       {/* 投豆包这一屏 */}
       <Card size="small" title={`这次要投的脚本（${selected.length}）`}>
@@ -991,7 +1001,7 @@ const SimpleLibrary: React.FC<Props> = ({
           ) : (
             <Space size={10} wrap>
               <Text type="secondary" style={{ fontSize: 12 }}>还没勾脚本。</Text>
-              <Button size="small" onClick={() => setTab('scripts')}>回 ② 脚本库勾选</Button>
+              <Button size="small" onClick={() => setTab('scripts')}>回 ① 脚本库勾选</Button>
             </Space>
           )}
           <Space wrap size={16}>
@@ -1000,7 +1010,7 @@ const SimpleLibrary: React.FC<Props> = ({
               <InputNumber min={1} max={BOARD_TOTAL_MAX} value={boardTotal} onChange={(v) => setBoardTotal(v || 1)} />
             </Space>
             <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setTab('outputs')}>
-              ④ 看成片 →
+              ③ 看成片 →
             </Button>
           </Space>
           <div>
@@ -1008,7 +1018,7 @@ const SimpleLibrary: React.FC<Props> = ({
             <AssetCardPicker value={cardIds} onChange={setCardIds} active />
           </div>
           <Space size={8} wrap>
-            <Tooltip title={hint || '投出去占当天号池额度（一个脚本一个钩子号）；约 25 分钟出片，投完自动跳到 ④ 看成片'}>
+            <Tooltip title={hint || '投出去占当天号池额度（一个脚本一个钩子号）；约 25 分钟出片，投完自动跳到 ③ 看成片'}>
               <Button
                 type="primary"
                 danger
@@ -1028,7 +1038,7 @@ const SimpleLibrary: React.FC<Props> = ({
     </Space>
   );
 
-  // ── ④ 看成片（拼接这步暂时走短剧切片，见卡顶说明）──
+  // ── ③ 看成片（拼接这步暂时走短剧切片，见卡顶说明）──
   const paneOutputs = (
     <Space direction="vertical" size={10} style={{ width: '100%' }}>
       <Alert
@@ -1054,10 +1064,9 @@ const SimpleLibrary: React.FC<Props> = ({
         activeKey={tab}
         onChange={(k) => setTab(k as typeof tab)}
         items={[
-          { key: 'grab', label: tabLabel('①', '导稿', collectable.length), children: paneGrab },
-          { key: 'scripts', label: tabLabel('②', '脚本库', pending.length), children: paneScripts },
-          { key: 'produce', label: tabLabel('③', '投豆包', selected.length), children: paneProduce },
-          { key: 'outputs', label: '④ 看成片', children: paneOutputs },
+          { key: 'scripts', label: tabLabel('①', '脚本库', pending.length), children: paneScripts },
+          { key: 'produce', label: tabLabel('②', '投豆包', selected.length), children: paneProduce },
+          { key: 'outputs', label: '③ 看成片', children: paneOutputs },
         ]}
       />
 
