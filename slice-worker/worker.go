@@ -302,8 +302,22 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 		}
 
-		// 检查并发上限（专属队列与公共池共用 MaxConcurrent 槽位，互不挤占超限）
-		if int(atomic.LoadInt32(&w.currentTasks)) >= w.config.MaxConcurrent {
+		// 检查并发上限并原子占槽（专属队列与公共池共用 MaxConcurrent 槽位，互不挤占超限）。
+		// 必须用 CAS 占槽：此前是「本循环 Load 检查 + runTask 内 Add 自增」两段式，
+		// 两条消息连续到达时都能通过检查（TOCTOU），实测 max_concurrent=1 的节点
+		// 同时跑起 2 个任务（2026-11-25 Run A：两台单并发 Mac 节点各接 2 个任务）。
+		slotTaken := false
+		for {
+			cur := atomic.LoadInt32(&w.currentTasks)
+			if int(cur) >= w.config.MaxConcurrent {
+				break
+			}
+			if atomic.CompareAndSwapInt32(&w.currentTasks, cur, cur+1) {
+				slotTaken = true
+				break
+			}
+		}
+		if !slotTaken {
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
@@ -311,6 +325,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		// 取任务优先级：专属队列（BRPOP）> 公共 Stream（XReadGroup）
 		msg := w.fetchNextTask(directCh, wakeCh, streams)
 		if msg == nil {
+			atomic.AddInt32(&w.currentTasks, -1) // 释放占槽（本轮无任务）
 			continue
 		}
 
@@ -318,10 +333,11 @@ func (w *Worker) Run(ctx context.Context) error {
 		if !w.matchTags(msg.Task.RequiredTags) {
 			w.log("debug", "标签不匹配，重新入队: %s", msg.Task.TaskID)
 			w.requeue(msg)
+			atomic.AddInt32(&w.currentTasks, -1) // 释放占槽
 			continue
 		}
 
-		// 启动任务
+		// 启动任务（槽位已在上面占好；runTask 不再自增，defer 里统一释放）
 		go w.runTask(msg)
 	}
 }
@@ -695,6 +711,17 @@ func (w *Worker) requeueStuckTask(rt *RunningTask) {
 func (w *Worker) runTask(msg *StreamMessage) {
 	task := msg.Task
 
+	// 并发槽位由消费主循环 CAS 预占；本函数任何退出路径（去重/幂等/租约失败/
+	// 正常结束/卡死重投）都必须正好归还一次——用幂等标志防止重复递减。
+	slotReleased := false
+	releaseSlot := func() {
+		if !slotReleased {
+			slotReleased = true
+			atomic.AddInt32(&w.currentTasks, -1)
+		}
+	}
+	defer releaseSlot()
+
 	// 去重：若任务已在运行中则跳过
 	if _, exists := w.runningTasks.Load(task.TaskID); exists {
 		return
@@ -753,13 +780,14 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	}
 	rt.LastProgress.Store(time.Now().UnixNano())
 	w.runningTasks.Store(task.TaskID, rt)
-	atomic.AddInt32(&w.currentTasks, 1)
+	// 并发槽位已在消费主循环 CAS 占好（防 TOCTOU 超限），此处不再自增；
+	// 释放统一在下面 defer 里做。
 	defer func() {
 		// 仅删除/递减当前这个 rt（卡死重投时旧 rt 已在 handleTaskError 中先被清理，
 		// 这里通过指针一致性避免误删新 runTask 存入的同 TaskID 记录）。
 		if cur, ok := w.runningTasks.Load(task.TaskID); ok && cur == rt {
 			w.runningTasks.Delete(task.TaskID)
-			atomic.AddInt32(&w.currentTasks, -1)
+			// 槽位统一由 runTask 顶部 defer 归还，这里不再递减
 		}
 		// 清理本任务的进度节流表与传输方向标注（防长生命周期 worker 内存缓涨）
 		w.progressLast.Range(func(k, _ interface{}) bool {
@@ -1024,7 +1052,7 @@ func (w *Worker) handleTaskError(taskCtx context.Context, task *SliceTask, msg *
 	if rt, ok := w.runningTasks.Load(task.TaskID); ok && rt.(*RunningTask).stuckKilled.Load() {
 		w.log("warn", "任务 %s 因卡死被强制终止，重新入队", task.TaskID)
 		w.runningTasks.Delete(task.TaskID)
-		atomic.AddInt32(&w.currentTasks, -1)
+		// 槽位归还交给 runTask 顶部 defer（releaseSlot），避免双递减
 		w.requeueStuckTask(rt.(*RunningTask))
 		return
 	}
