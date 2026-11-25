@@ -387,6 +387,10 @@ async def _apply_compat_migrations():
         ("asset_summaries", "prompt_preview", "TEXT"),
         ("asset_summaries", "prompt_preview_at", "TIMESTAMP"),
         ("asset_summaries", "cost_preview", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
+        # 脚本生产载体标记（11-25 批 X，0079）：极简脚本送审造的「壳」候选行。
+        # NOT NULL DEFAULT false 安全：存量行全是真候选/真文案，补列时数据库自己填 false，
+        # 存量壳（被脚本引用着的 3 行）由 scripts/backfill_summary_is_shell.py 补标。
+        ("asset_summaries", "is_shell", "BOOLEAN NOT NULL DEFAULT false"),
         # 时效直链缓存（11-06 播放直链修复）：resolve 成功后存 play_url + 取链时间，
         # 有效期内 source-preview/resolve 免费回放；过期作数、重取自愈。全部可空不回填。
         ("asset_items", "play_url", "TEXT"),

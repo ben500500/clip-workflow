@@ -95,6 +95,13 @@ const AssetReviewCard: React.FC<Props> = ({ row, slot, framesLoading, canReview,
           </Text>
         </Tooltip>
         {row.is_recommended && <Tag color="green">推荐</Tag>}
+        {/* 批 X：脚本送审造的「壳」候选行——过审走轻量口径（无原片，不吃形态/一致性复核），
+            改后通过不适用（脚本定稿即冻结）。标出来让人知道这是脚本稿，不是素材出的文案。 */}
+        {row.is_shell && (
+          <Tooltip title="脚本稿：极简模式脚本库送审的稿子（没有原片）。过审后脚本库里那条立即可投。">
+            <Tag color="purple">脚本稿</Tag>
+          </Tooltip>
+        )}
         <Tooltip title={row.reject_reason ? `理由：${row.reject_reason}` : undefined}>
           <span>
             <AuditStatusTag status={row.audit_status} />

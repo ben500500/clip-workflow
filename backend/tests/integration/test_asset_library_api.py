@@ -14586,3 +14586,182 @@ def test_script_produce_reuses_parked_hook_codes():
         await client.aclose()
 
     _run(_scenario())
+
+
+# ─────────────  16. 文案写入面打通（11-25 批 X：候选 ↔ 脚本）  ─────────────
+
+_X_HOOK = "总裁摘下手表扔进火锅，全场安静。秘书递上一份新合同：该签字了。"
+
+
+def test_paste_import_mirrors_script_rows_and_candidate_stays_visible():
+    """贴文案导入的候选同步镜像成脚本行（ready/mirror/载体=真候选），真候选不被藏。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        r = await client.post(
+            "/api/assets/summaries/import-copy",
+            json={"batch_name": "批X门禁", "texts": [_X_HOOK]}, headers=ho)
+        assert r.status_code == 200, r.text
+        sid = r.json()["items"][0]["summary_id"]
+
+        # ① 镜像脚本：ready + mirror + 载体=真候选（pending）
+        lst = await client.get(_SCRIPT_URL, params={"owner": "all"}, headers=ho)
+        row = next(x for x in lst.json()["items"] if x["source_kind"] == "mirror")
+        assert row["state"] == "ready" and row["body_chars"] == len(_X_HOOK)
+        assert row["carrier"]["summary_id"] == sid, row["carrier"]
+        assert row["carrier"]["audit_status"] == "pending"
+
+        # ② 真候选不被藏：summaries 默认口径可见且 is_shell=false
+        lst2 = await client.get("/api/assets/summaries", params={"page_size": 300}, headers=ho)
+        hit = next(x for x in lst2.json()["items"] if x["id"] == sid)
+        assert hit["is_shell"] is False, hit
+
+        # ③ 镜像行带「候选」来源，普通手写行不受影响
+        assert all(x["source_kind"] != "mirror" for x in lst.json()["items"] if x["name"] != row["name"])
+
+    _run(_scenario())
+
+
+def test_mirror_becomes_producible_when_candidate_approved():
+    """候选在 ③ 过审的那一刻，镜像脚本立即可投（carrier_status=approved 捞得到）——无同步写。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        r = await client.post(
+            "/api/assets/summaries/import-copy",
+            json={"batch_name": "批X门禁2", "texts": [_X_HOOK + "他站起身。"]}, headers=ho)
+        sid = r.json()["items"][0]["summary_id"]
+
+        ap = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+        assert ap.status_code == 200, ap.text
+        assert ap.json()["results"][0]["ok"] is True, ap.text
+
+        lst = await client.get(
+            _SCRIPT_URL, params={"owner": "all", "carrier_status": "approved"}, headers=ho)
+        mirror = [x for x in lst.json()["items"] if x["source_kind"] == "mirror"]
+        assert len(mirror) == 1 and mirror[0]["carrier"]["audit_status"] == "approved", mirror
+
+    _run(_scenario())
+
+
+def test_shell_hidden_by_default_visible_for_review():
+    """极简送审的壳：② 素材/③ 文案默认口径继续藏；include_carriers=true 显形带 is_shell。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        s = await _mk_script(client, ho, name="批X壳稿")
+        fin = await _finalize(client, ho, s["id"])
+        assert fin.status_code == 200, fin.text
+        sub = await client.post(f"{_SCRIPT_URL}/submit", json={"script_ids": [s["id"]]}, headers=ho)
+        assert sub.status_code == 200, sub.text
+
+        # 载体 id 从脚本列表拿
+        lst = await client.get(_SCRIPT_URL, params={"owner": "all"}, headers=ho)
+        row = next(x for x in lst.json()["items"] if x["id"] == s["id"])
+        shell_sid = row["carrier"]["summary_id"]
+        assert row["carrier"]["audit_status"] == "pending"
+
+        # ③ 默认藏壳
+        hidden = await client.get("/api/assets/summaries", params={"page_size": 300}, headers=ho)
+        assert all(x["id"] != shell_sid for x in hidden.json()["items"]), "默认口径不该看到壳"
+        # include_carriers=true 显形且带 is_shell=true
+        shown = await client.get(
+            "/api/assets/summaries", params={"page_size": 300, "include_carriers": "true"}, headers=ho)
+        hit = next(x for x in shown.json()["items"] if x["id"] == shell_sid)
+        assert hit["is_shell"] is True, hit
+
+        # ② 素材列表看不到壳素材（壳素材 id 从显形行的 asset_id 拿）
+        shell_asset = hit["asset_id"]
+        items = await client.get("/api/assets", params={"page_size": 300}, headers=ho)
+        assert all(x["id"] != shell_asset for x in items.json()["items"]), "壳素材不该进素材列表"
+
+    _run(_scenario())
+
+
+def test_review_shell_routes_to_light_approve():
+    """③ 审核台审壳：approve 委托轻量口径放行；pass_edited 拒；reject 走通用路径。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+
+        async def _shell(name):
+            # 三条壳必须各用独立正文：finalize 对「同 owner 同正文」幂等返回已有 ready 行
+            # （定稿即冻结的既有设计），同正文会把甲乙丙并成一条
+            s = await _mk_script(client, ho, name=name, body=_SCRIPT_BODY + f"{name}收尾。")
+            fin = await _finalize(client, ho, s["id"])
+            assert fin.status_code == 200, fin.text
+            sub = await client.post(f"{_SCRIPT_URL}/submit", json={"script_ids": [s["id"]]}, headers=ho)
+            assert sub.status_code == 200, sub.text
+            lst = await client.get(_SCRIPT_URL, params={"owner": "all"}, headers=ho)
+            row = next(x for x in lst.json()["items"] if x["id"] == s["id"])
+            return s, row["carrier"]["summary_id"]
+
+        # ① approve 委托轻量口径：壳没有原片，通用复核的形态闸不吃它
+        s1, sid1 = await _shell("批X壳甲")
+        ap = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [sid1], "action": "approve"}, headers=ho)
+        assert ap.status_code == 200, ap.text
+        assert ap.json()["results"][0]["ok"] is True, ap.text
+        lst = await client.get(
+            _SCRIPT_URL, params={"owner": "all", "carrier_status": "approved"}, headers=ho)
+        assert any(x["id"] == s1["id"] for x in lst.json()["items"])
+
+        # ② pass_edited 对壳没有意义：脚本定稿即冻结
+        s2, sid2 = await _shell("批X壳乙")
+        pe = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [sid2], "action": "pass_edited", "new_text": _X_HOOK}, headers=ho)
+        assert pe.status_code == 200, pe.text
+        assert pe.json()["results"][0]["ok"] is False, pe.text
+        assert "脚本稿不支持" in pe.json()["results"][0]["error"], pe.text
+
+        # ③ reject 走通用路径：载体育 rejected，脚本仍 ready（可投闸门拦住它，不靠状态同步）
+        s3, sid3 = await _shell("批X壳丙")
+        rj = await client.post(
+            "/api/assets/summaries/review",
+            json={"summary_ids": [sid3], "action": "reject", "reason": "钩子太软"}, headers=ho)
+        assert rj.status_code == 200, rj.text
+        assert rj.json()["results"][0]["ok"] is True, rj.text
+        lst = await client.get(_SCRIPT_URL, params={"owner": "all"}, headers=ho)
+        row = next(x for x in lst.json()["items"] if x["id"] == s3["id"])
+        assert row["state"] == "ready" and row["carrier"]["audit_status"] == "rejected", row
+
+    _run(_scenario())
+
+
+def test_mirror_twin_adopts_candidate():
+    """同正文的手写稿已存在（ready）→ 镜像不新建，把真候选收编为它的载体。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        s = await _mk_script(client, ho, name="撞稿手写", body=_X_HOOK)
+        fin = await _finalize(client, ho, s["id"])
+        assert fin.status_code == 200, fin.text
+
+        r = await client.post(
+            "/api/assets/summaries/import-copy",
+            json={"batch_name": "批X门禁3", "texts": [_X_HOOK]}, headers=ho)
+        assert r.status_code == 200, r.text
+        sid = r.json()["items"][0]["summary_id"]
+
+        lst = await client.get(_SCRIPT_URL, params={"owner": "all"}, headers=ho)
+        mirrors = [x for x in lst.json()["items"] if x["source_kind"] == "mirror"]
+        assert mirrors == [], "同正文已有 ready 脚本，不该再镜像一条"
+        row = next(x for x in lst.json()["items"] if x["id"] == s["id"])
+        assert row["carrier"]["summary_id"] == sid, row["carrier"]
+        assert row["carrier"]["audit_status"] == "pending"
+
+    _run(_scenario())

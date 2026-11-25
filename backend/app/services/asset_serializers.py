@@ -118,6 +118,8 @@ def _serialize_summary(
         "category_name": category_name,
         "word_count": s.word_count,
         "is_recommended": bool(s.is_recommended),
+        # 批 X：脚本送审造的「壳」候选行（审核台给这类行打「脚本稿」标，过审走轻量口径）
+        "is_shell": bool(getattr(s, "is_shell", False)),
         "consistency_ok": s.consistency_ok,
         "consistency_note": s.consistency_note,
         "risk_hit": s.risk_hit,

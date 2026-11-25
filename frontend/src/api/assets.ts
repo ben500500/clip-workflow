@@ -264,6 +264,8 @@ export interface AssetSummary {
   word_count: number | null;
   /** 模型标注的推荐条：审核页默认只批量放推荐条，防橡皮章式全过 */
   is_recommended: boolean;
+  /** 批 X：脚本送审造的「壳」候选行（审核台打「脚本稿」标，过审走轻量口径） */
+  is_shell?: boolean;
   /** 一致性校验（文案实体能否在反推文案稿里命中）：null=未校验 */
   consistency_ok: boolean | null;
   consistency_note: string | null;
@@ -1189,6 +1191,12 @@ export interface AssetListParams {
 export interface AssetSummaryListParams {
   /** 逗号分隔的多状态（11-09 起后端支持）：`approved,passed_edited` 一次拿全「能投产的」 */
   audit_status?: AuditStatus | string;
+  /**
+   * 批 X（文案打通）：带上脚本送审造的「壳」候选行。默认（不传）＝藏壳——
+   * 挑选器/开单屏绝不能看见壳（对它做展开＝把一篇脚本当文案展开，白烧钩子号）；
+   * **审核台显式传 true**：极简送审的稿子必须在 ③ 能被看到并审得了。
+   */
+  include_carriers?: boolean;
   asset_id?: string;
   /**
    * 批 M（11-09）：一次按多条素材取文案（逗号分隔，后端上限 300 个）。
@@ -2809,7 +2817,7 @@ const MODEL_WAIT_TIMEOUT = 960000;
 // 这里的「脚本」＝直接投给豆包的成品提示词，**不是**钩子文案（不展开、不过 ≤80 字形态闸）。
 
 export type AssetScriptState = 'draft' | 'ready' | 'retired';
-export type AssetScriptSourceKind = 'manual' | 'upload' | 'reverse';
+export type AssetScriptSourceKind = 'manual' | 'upload' | 'reverse' | 'mirror';
 
 export interface AssetScript {
   id: string;

@@ -245,6 +245,8 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, sco
         const res = await assetApi.listSummaries({
           page: p,
           page_size: ps,
+          // 批 X（文案打通）：审核台要能看到极简送审的脚本稿（壳）——别处（挑选器/开单屏）仍然藏
+          include_carriers: true,
           audit_status: auditStatus,
           recommended_only: recommendedOnly,
           only_risk: onlyRisk,

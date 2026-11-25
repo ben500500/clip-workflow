@@ -1828,6 +1828,8 @@ async def import_copy_summaries(
     # idle_in_transaction_session_timeout=60s 会把"事务开着等外部调用"的连接直接掐掉
     # （11-03 预览栈真链路就是这么整口 500 丢候选的）。文案先落库，号随后一枪补上——
     # 预取是便利不是前置条件，取不到号也不该把这批稿回滚掉。
+    # 批 X 写入面打通：贴文案导入的候选同步镜像成脚本行（失败不阻断，见 helper docstring）
+    await _mirror_scripts_for_summaries(db, summary_rows, operator=current_user)
     await db.commit()
     park = await _auto_park_hook_codes(db, summary_rows, operator=current_user, source="import_copy")
     await db.commit()
@@ -2287,6 +2289,8 @@ async def import_paired_batch(
     # 而异步会话在非 greenlet 上下文里懒加载直接抛 MissingGreenlet（既有序列化都遵循这个次序）
     batch_payload = [_serialize_batch(b) for b in kept]
 
+    # 批 X 写入面打通：配对导入的钩子文案槽同步镜像成脚本行
+    await _mirror_scripts_for_summaries(db, park_rows, operator=current_user)
     await db.commit()
 
     # 11-09 批 O：真入库了才自动预取编号——放在 `if not created` 那道回滚闸门与首次 commit
@@ -5457,6 +5461,7 @@ async def generate_summaries(
     # 调用在提交后——外部模型调用前事务必须干净（idle_in_transaction 60s 掐连接）。
     web_jobs: List[dict] = []
     new_copy_rows: List[AssetSummary] = []  # 11-09 批 O：整批新出的候选，出料后一次性自动预取号
+    all_generated: List[AssetSummary] = []  # 批 X：本批全部新候选（含非推荐条），收尾统一镜像成脚本行
     for asset, script in targets:
         aid = str(asset.id)
         # 批 G：图片没有详规、也不该有 —— 出文案要读 doc/120 的脚本，喂一张 jpg 进去
@@ -5642,7 +5647,10 @@ async def generate_summaries(
             # 审核时真挑了非推荐那条，开单屏照旧手工填或点「代取」，跟批 N 之前一样。
             new_copy_rows.append(next((s for s in created_rows if s.is_recommended), created_rows[0]))
             web_jobs.append({"asset": asset, "script": script, "summaries": created_rows})
+            all_generated.extend(created_rows)
 
+    # 批 X 写入面打通：出文案的每条候选同步镜像成脚本行（一份文案两处都有）
+    await _mirror_scripts_for_summaries(db, all_generated, operator=current_user)
     await _write_audit(
         db,
         action="asset.summary_generate",
@@ -7191,6 +7199,44 @@ async def review_summaries(
             results.append({"summary_id": str(uuid_s), "ok": False, "code": asset.code, "error": str(e)})
             continue
 
+        # 批 X（文案打通）：壳候选（脚本送审造的生产载体）在 ③ 审核台显形后，「过」走
+        # 轻量过审同一套判定（_approve_script_carrier）——壳没有原片，通用复核的形态闸
+        # 会把整篇脚本当超长文案拦下来（老问题「点过又过不了」的根因）。
+        # 改后通过（pass_edited）对壳没有意义：脚本定稿即冻结，要改回脚本库派生草稿。
+        if getattr(summary, "is_shell", False) and to_state in (RV_APPROVED, RV_PASSED_EDITED):
+            if to_state == RV_PASSED_EDITED:
+                results.append({
+                    "summary_id": str(uuid_s), "ok": False, "code": asset.code,
+                    "error": "脚本稿不支持「改后通过」：脚本定稿即冻结，要改回脚本库派生一条草稿再送审",
+                })
+                continue
+            own_script = (
+                await db.execute(select(AssetScript).where(AssetScript.carrier_summary_id == summary.id))
+            ).scalars().first()
+            if own_script is None:
+                results.append({
+                    "summary_id": str(uuid_s), "ok": False, "code": asset.code,
+                    "error": "这条壳候选找不到挂它的脚本（数据被手工改过），请从脚本库重送审",
+                })
+                continue
+            verdict = await _approve_script_carrier(
+                db,
+                script=own_script,
+                carrier=summary,
+                operator=current_user,
+                is_admin=is_admin,
+                self_allowed=self_allowed,
+                waive_reason=data.waive_reason,
+                book=book,
+                exemptions=exemptions,
+            )
+            results.append({
+                "summary_id": str(uuid_s),
+                "code": own_script.name,
+                **verdict,
+            })
+            continue
+
         before = {"audit_status": summary.audit_status, "text": summary.text}
         was_passed = summary.audit_status in REVIEW_PASSED_STATES
         waived: Optional[dict] = None
@@ -8470,10 +8516,16 @@ async def create_productions(
         _carrier_ids = [
             _as_uuid(k, "script_texts 的键") for k in _d_keys
         ]
+        # 批 X：镜像脚本也会把 carrier_summary_id 指到**真候选**上，但 script_texts 这条
+        # 「审的＝投的」逐字比对只对**壳载体**（脚本送审造的）有意义——真候选不是壳，
+        # 它走五环投产时的展开稿本来就该从候选正文出。join is_shell 把镜像排除在外。
         _carrier_rows = (
             await db.execute(
-                select(AssetScript.carrier_summary_id, AssetScript.body).where(
-                    AssetScript.carrier_summary_id.in_(_carrier_ids)
+                select(AssetScript.carrier_summary_id, AssetScript.body)
+                .join(AssetSummary, AssetSummary.id == AssetScript.carrier_summary_id)
+                .where(
+                    AssetScript.carrier_summary_id.in_(_carrier_ids),
+                    AssetSummary.is_shell.is_(True),
                 )
             )
         ).all()
@@ -8497,12 +8549,17 @@ async def create_productions(
     # 放行——expand=false 建出一张没有正文的裸单；expand=true 把整篇脚本当钩子文案送去
     # autoclip 展开，展开稿对不上原稿还白烧一个钩子号。脚本载体只认脚本直投那一条路。
     _sid_uuids = [_as_uuid(x, "summary_id") for x in data.summary_ids]
+    # 批 X：只拦**壳**载体（is_shell）。镜像脚本指着的真候选照常可从五环投产——
+    # 镜像只是让候选在脚本库也可见可投，不改变候选本身的投产路径。
     _carrier_sids = {
         str(cid)
         for (cid,) in (
             await db.execute(
-                select(AssetScript.carrier_summary_id).where(
-                    AssetScript.carrier_summary_id.in_(_sid_uuids)
+                select(AssetScript.carrier_summary_id)
+                .join(AssetSummary, AssetSummary.id == AssetScript.carrier_summary_id)
+                .where(
+                    AssetScript.carrier_summary_id.in_(_sid_uuids),
+                    AssetSummary.is_shell.is_(True),
                 )
             )
         ).all()
@@ -15702,23 +15759,31 @@ async def _enqueue_preview(
 
 
 def _not_script_carrier(col: Any, via_asset: bool = False):
-    """「不是脚本的生产载体」过滤条件（极简模式 S1，2026-11-23）。
+    """「不是脚本的生产载体」过滤条件（极简模式 S1；11-25 批 X 改读 is_shell 列）。
 
     脚本库给每个脚本配一个素材壳＋候选行当生产载体（生产单必须挂在候选文案上），
     但载体**不是钩子文案**：正文是整篇脚本、不过 ≤80 字形态闸。混进五环的列表会
     ①污染「等审核」角标 ②出现在「从过审文案开单」挑选器里（对它做 autoclip 展开＝
     把一篇脚本当文案展开，白烧钩子号）。所以五环的 ②③ 读口默认把载体及其素材壳藏起来，
     极简模式自己的读口（/assets/scripts）不走这里。
+
+    批 X 为什么改读列：原来判别是**引用式**（有脚本指着它＝壳），批 X 的镜像脚本会把
+    **真候选**也指给脚本（carrier_summary_id 指真候选，候选过审＝脚本可投）——引用式
+    会把真候选误藏进 ②③。改成壳自带 `is_shell=true`（_ensure_script_carrier 造壳时置），
+    真候选永远不藏。存量壳由 scripts/backfill_summary_is_shell.py 补标。
     """
     if via_asset:
+        # 该素材名下有任何壳候选行（col=AssetItem.id，内表是 AssetSummary——异表才能正确相关）
         return ~exists(
-            select(AssetScript.id)
-            .join(AssetSummary, AssetSummary.id == AssetScript.carrier_summary_id)
-            .where(AssetSummary.asset_id == col)
+            select(AssetSummary.id).where(
+                AssetSummary.asset_id == col,
+                AssetSummary.is_shell.is_(True),
+            )
         )
-    return ~exists(
-        select(AssetScript.id).where(AssetScript.carrier_summary_id == col)
-    )
+    # 摘要侧就一行，直接判列。⚠️ 不能写 `exists(… WHERE AssetSummary.id == col)`：
+    # col 就是外层这列，自比较不会触发相关子查询，EXISTS 变成全局「存在任一壳」，
+    # NOT EXISTS 把整张表过滤成 0（2026-11-25 本机实测抓出来的）。
+    return AssetSummary.is_shell.is_(False)
 
 
 def _split_ids(raw: Optional[str], field: str) -> List[str]:
@@ -15917,11 +15982,69 @@ async def _ensure_script_carrier(
         is_recommended=True,
         audit_status=RV_PENDING,
         category_id=script.category_id,
+        is_shell=True,
     )
     db.add(carrier)
     await db.flush()
     script.carrier_summary_id = carrier.id
     return carrier
+
+
+async def _mirror_scripts_for_summaries(
+    db: AsyncSession, summaries: List[AssetSummary], *, operator: User
+) -> List[AssetScript]:
+    """批 X 写入面打通（11-25 用户口径「两种模式下的文案数据要打通」）：候选 → 脚本行镜像。
+
+    每条真候选同步落一行**可投稿**脚本，carrier_summary_id **直接指真候选**——
+    候选在 ③ 过审的那一刻，极简脚本库的那条立即可投（produce 闸门读的就是载体
+    审核态，不需要任何同步写）。载体判别读 is_shell 列（同批改属性式），
+    真候选不会被误判成壳藏进 ②③。
+
+    幂等：同 owner 同正文的在用脚本已存在（`_find_twin_ready`）就不新建——
+    若它还没挂载体，把真候选挂给它（收编：手写稿撞上候选正文＝同一篇文案）。
+    失败不阻断主流程：镜像挂了只影响极简可见性，候选本体已落库，打日志不抛。
+    """
+    summaries = [x for x in summaries if (x.text or "").strip()]
+    if not summaries:
+        return []
+    try:
+        title_map = {}
+        asset_ids = {x.asset_id for x in summaries if x.asset_id}
+        if asset_ids:
+            trows = (
+                await db.execute(
+                    select(AssetItem.id, AssetItem.title).where(AssetItem.id.in_(asset_ids))
+                )
+            ).all()
+            title_map = {str(r[0]): (r[1] or "") for r in trows}
+        made = []
+        for summary in summaries:
+            text = summary.text.strip()
+            body_hash = _script_hash(text)
+            twin = await _find_twin_ready(db, operator.id, body_hash)
+            if twin is not None:
+                if not twin.carrier_summary_id:
+                    twin.carrier_summary_id = summary.id
+                continue
+            title = (title_map.get(str(summary.asset_id)) or "").strip() or "未命名"
+            row = AssetScript(
+                owner_id=operator.id,
+                name=f"候选·{title[:26]}·{summary.seq}号"[:60],
+                body=text,
+                state=SCRIPT_READY,
+                source_kind="mirror",
+                origin_asset_id=summary.asset_id,
+                carrier_summary_id=summary.id,
+                body_hash=body_hash,
+            )
+            db.add(row)
+            made.append(row)
+        if made:
+            await db.flush()
+        return made
+    except Exception:  # noqa: BLE001 — 镜像失败不把导入/出文案整枪打死
+        logger.exception("候选镜像脚本落库失败（不影响候选本体），本批 %s 条没进脚本库", len(summaries))
+        return []
 
 
 async def _serialize_scripts(

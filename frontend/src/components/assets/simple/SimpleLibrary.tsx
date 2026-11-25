@@ -681,6 +681,7 @@ const SimpleLibrary: React.FC<Props> = ({
               {r.name}
             </Link>
             {r.source_kind === 'reverse' && <Tag style={{ marginInlineEnd: 0 }}>反推</Tag>}
+            {r.source_kind === 'mirror' && <Tag color="purple" style={{ marginInlineEnd: 0 }}>候选</Tag>}
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }} ellipsis={{ tooltip: r.preview }}>
             {r.preview || '（空）'}
@@ -961,7 +962,13 @@ const SimpleLibrary: React.FC<Props> = ({
                 width: 62,
                 render: (_: unknown, r) => previewOf(r.origin_asset_id, r.name),
               },
-              { title: '脚本', dataIndex: 'name', ellipsis: true, render: (v: string) => <Text strong>{v}</Text> },
+              { title: '脚本', dataIndex: 'name', ellipsis: true, render: (v: string, r) => (
+                  <Space size={4}>
+                    <Text strong>{v}</Text>
+                    {/* 批 X：镜像候选行（出文案/导入同步落进脚本库的那条）在待过审区也要认得出 */}
+                    {r.source_kind === 'mirror' && <Tag color="purple" style={{ marginInlineEnd: 0 }}>候选</Tag>}
+                  </Space>
+                ) },
               { title: '谁的', dataIndex: 'owner_name', width: 100 },
               {
                 title: '原型',

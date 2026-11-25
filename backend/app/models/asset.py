@@ -426,6 +426,12 @@ class AssetSummary(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     asset_id = Column(UUID(as_uuid=True), ForeignKey("asset_items.id", ondelete="CASCADE"), nullable=False, index=True)
     seq = Column(Integer, nullable=False, default=1)
+
+    # 脚本生产载体标记（11-25 批 X：极简脚本送审造的「壳」候选行）。
+    # 以前的判别是引用式（有脚本指向它＝壳），批 X 起镜像脚本会把**真候选**也指给脚本，
+    # 引用式会把真候选误藏进 ②③——所以改成壳自身带标记，真候选永远不藏。
+    # 贴文案导入的素材行（link 且无 url）与壳同形，引用式/属性式都分不开它们，只有这列分得开。
+    is_shell = Column(Boolean, nullable=False, default=False, server_default="false", index=True)
     text = Column(Text, nullable=False)
     style_tag = Column(String(20), nullable=True)          # question/statement/dialogue
     formula_tag = Column(String(60), nullable=True)        # 命中的爆款公式（防同质化用）
