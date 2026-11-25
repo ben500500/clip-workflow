@@ -77,11 +77,13 @@ const OutputGrid: React.FC<{
   kind?: string;
   qc?: string;
   owner?: 'me' | 'all';
+  /** 批 AA：按投产人点名筛（与组层/在途同一口径） */
+  ownerId?: string;
   active?: boolean;
   reloadToken?: number;
   /** P1：勾选上报到跨组篮子（output_id, checked) */
   onBasketChange?: (outputId: string, checked: boolean) => void;
-}> = ({ assetId, batchId, kind, qc, owner, active = true, reloadToken, onBasketChange }) => {
+}> = ({ assetId, batchId, kind, qc, owner, ownerId, active = true, reloadToken, onBasketChange }) => {
   const [items, setItems] = useState<AssetOutput[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -102,6 +104,7 @@ const OutputGrid: React.FC<{
           kind,
           qc_status: qc || undefined,
           owner,
+          owner_id: ownerId || undefined,
           limit: PAGE_SIZE,
           offset: (p - 1) * PAGE_SIZE,
         });
@@ -114,7 +117,7 @@ const OutputGrid: React.FC<{
         setLoading(false);
       }
     },
-    [assetId, batchId, kind, qc, owner],
+    [assetId, batchId, kind, qc, owner, ownerId],
   );
 
   // A′ UX：页签切回来自动刷新（网格跟着组层一起）
@@ -484,17 +487,19 @@ const OutputGrid: React.FC<{
  */
 const InflightStrip: React.FC<{
   owner?: 'me' | 'all';
+  /** 批 AA：墙选了「上传人」点名时在途卡同口径收窄，不串人 */
+  ownerId?: string;
   batchId?: string;
   active?: boolean;
   reloadToken?: number;
   onGoToProduction?: () => void;
-}> = ({ owner, batchId, active = true, reloadToken, onGoToProduction }) => {
+}> = ({ owner, ownerId, batchId, active = true, reloadToken, onGoToProduction }) => {
   const [data, setData] = useState<AssetInflightResult | null>(null);
   const [stale, setStale] = useState(false);
 
   const fetchInflight = useCallback(async () => {
     try {
-      const res = await assetApi.listInflightOutputs({ owner, batch_id: batchId });
+      const res = await assetApi.listInflightOutputs({ owner, owner_id: ownerId || undefined, batch_id: batchId });
       setData(res);
       setStale(false);
     } catch {
@@ -502,7 +507,7 @@ const InflightStrip: React.FC<{
       // 别 toast——它在 20 秒轮里，失败刷屏比不显示更糟。
       setStale(true);
     }
-  }, [owner, batchId]);
+  }, [owner, ownerId, batchId]);
 
   useEffect(() => {
     if (active) fetchInflight();
@@ -871,6 +876,27 @@ const AssetOutputWall: React.FC<{
   useEffect(() => {
     setOwnerView(ownerDefault);
   }, [ownerDefault]);
+  /**
+   * 批 AA（11-25 用户口径「可以选择按上传人筛选」）：点名筛某个人投的片——
+   * 组清单、组内网格、在途占位三层同一个 owner_id，计数才对得上。/auth/users 只有
+   * admin 可读，候选就从 outputs 最新 300 条抽样收（拼接公共产物没有投产人，不进候选）。
+   */
+  const [ownerFilter, setOwnerFilter] = useState<string | undefined>(undefined);
+  const [ownerChoices, setOwnerChoices] = useState<{ value: string; label: string }[]>([]);
+  useEffect(() => {
+    assetApi
+      .listOutputs({ owner: 'all', limit: 300 })
+      .then((res) => {
+        const m = new Map<string, string>();
+        (res.items || []).forEach((o) => {
+          if (o.owner_id && !m.has(o.owner_id)) m.set(o.owner_id, o.owner_name || `用户 ${o.owner_id.slice(0, 8)}`);
+        });
+        setOwnerChoices(Array.from(m, ([id, name]) => ({ value: id, label: name })));
+      })
+      .catch(() => {
+        /* 候选收不到只是下拉空着，不拦墙主流程 */
+      });
+  }, []);
   const [packaging, setPackaging] = useState(false);
   // P1（评审定稿⑧）：跨组投放篮子——勾选跨组/跨页/刷新持久（sessionStorage）
   const [basket, setBasket] = useState<Set<string>>(() => {
@@ -918,6 +944,7 @@ const AssetOutputWall: React.FC<{
         kind: kindFilter,
         qc_status: qcFilter || undefined,
         owner: ownerView,
+        owner_id: ownerFilter || undefined,
       });
       setGroups(res.groups || []);
       setAwaiting(res.awaiting);
@@ -927,7 +954,7 @@ const AssetOutputWall: React.FC<{
     } finally {
       setGroupsLoading(false);
     }
-  }, [viewMode, batchFilter, kindFilter, qcFilter, ownerView]);
+  }, [viewMode, batchFilter, kindFilter, qcFilter, ownerView, ownerFilter]);
 
   useEffect(() => {
     fetchGroups();
@@ -1044,6 +1071,18 @@ const AssetOutputWall: React.FC<{
             ]}
           />
         )}
+        <Tooltip title="点名看某一个人投产的成片（组／片／在途三层一起收窄）；公共拼接产物没有投产人，点名时不出。清掉即回到「我的／全部」。">
+          <Select
+            style={{ width: 140 }}
+            placeholder="上传人（可选）"
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            value={ownerFilter}
+            onChange={(v) => setOwnerFilter(v || undefined)}
+            options={ownerChoices}
+          />
+        </Tooltip>
         <Segmented
           value={viewMode}
           onChange={(v) => setViewMode(v as 'asset' | 'batch')}
@@ -1127,6 +1166,7 @@ const AssetOutputWall: React.FC<{
       {/* ── 批 V：已投板、豆包还没回片的占位（跟组清单同一套 owner／批次口径） ── */}
       <InflightStrip
         owner={ownerView}
+        ownerId={ownerFilter}
         batchId={viewMode === 'asset' ? batchFilter : undefined}
         active={active}
         reloadToken={reloadToken}
@@ -1208,6 +1248,7 @@ const AssetOutputWall: React.FC<{
                     kind={kindFilter}
                     qc={qcFilter}
                     owner={ownerView}
+                    ownerId={ownerFilter}
                     active={active}
                     reloadToken={reloadToken}
                     onBasketChange={handleBasketChange}

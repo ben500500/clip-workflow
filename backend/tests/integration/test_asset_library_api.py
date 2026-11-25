@@ -14421,6 +14421,72 @@ def test_my_view_pending_filter_does_not_leak_others_drafts():
     _run(_scenario())
 
 
+def test_owner_id_names_one_person_in_scripts_and_outputs():
+    """批 AA「按上传人筛选」：owner_id 点名某一个人。
+
+    钉两条口径：
+    - 脚本口：owner_id＝谁**写的**；收藏不改归属（收藏只在 owner=me 那一侧生效），
+      给了 owner_id 时 owner 让位——前端不必自己算该藏哪颗开关；
+    - 成片口：owner_id 走 production.created_by 点名，拼接产物（production_id NULL）
+      ＝公共，不冒充任何人的作品，点名时不出；行内回 owner_id 供前端下拉候选直接用。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+        op_id = await _user_id(OPERATOR_USER)
+        mat_id = await _user_id(MATERIAL_USER)
+
+        s_op = await _mk_script(client, ho, name="AA·运营写的", body=_SCRIPT_BODY + "AA镜头：运营写的一条。")
+        s_mat = await _mk_script(client, hm, name="AA·我写的", body=_SCRIPT_BODY + "AA镜头：我写的一条。")
+
+        def ids(resp):
+            assert resp.status_code == 200, resp.text
+            return {it["id"] for it in resp.json()["items"]}
+
+        # ① 素材专员身份点名运营：只回运营那条（owner 缺省 me，owner_id 让位给点名）
+        assert ids(await client.get(_SCRIPT_URL, params={"owner_id": str(op_id)}, headers=hm)) == {s_op["id"]}
+        # ② 收藏不算归属：我把运营那条收藏进"我的"，点名我自己时仍不含它
+        await client.put(f"{_SCRIPT_URL}/{s_op['id']}/favorite", headers=hm)
+        assert ids(await client.get(_SCRIPT_URL, params={"owner_id": str(mat_id)}, headers=hm)) == {s_mat["id"]}
+        # ③ 同一批 WHERE 的 AND：点名＋一个没有的状态＝空集，不是拿全量糊弄
+        assert ids(await client.get(_SCRIPT_URL, params={
+            "owner_id": str(op_id), "state": "ready"}, headers=hm)) == set()
+
+        # ④ 成片：两张单各归一人＋一条公共拼接产物
+        a_id, _t = await _make_ready_asset(client, hm, DOUYIN_2)
+        async with dbmod.async_session_factory() as s:
+            summ = AssetSummary(asset_id=uuid.UUID(a_id), seq=1, text="AA候选")
+            s.add(summ)
+            await s.flush()
+            p_op = AssetProduction(asset_id=uuid.UUID(a_id), summary_id=summ.id, seq=1, created_by=op_id)
+            p_mat = AssetProduction(asset_id=uuid.UUID(a_id), summary_id=summ.id, seq=2, created_by=mat_id)
+            s.add_all([p_op, p_mat])
+            await s.flush()
+            s.add(AssetOutput(production_id=p_op.id, asset_id=uuid.UUID(a_id), kind="doubao_raw",
+                              file_key="aa/op.mp4", bucket=settings.MINIO_BUCKET_SLICED))
+            s.add(AssetOutput(production_id=p_mat.id, asset_id=uuid.UUID(a_id), kind="doubao_raw",
+                              file_key="aa/mat.mp4", bucket=settings.MINIO_BUCKET_SLICED))
+            s.add(AssetOutput(asset_id=uuid.UUID(a_id), kind="composed",
+                              file_key="aa/pub.mp4", bucket=settings.MINIO_BUCKET_SLICED))
+            await s.commit()
+
+        def keyed(resp):
+            assert resp.status_code == 200, resp.text
+            return {i["file_key"]: i for i in resp.json()["items"]}
+
+        all_rows = keyed(await client.get("/api/assets/outputs", params={"owner": "all"}, headers=hm))
+        assert set(all_rows) == {"aa/op.mp4", "aa/mat.mp4", "aa/pub.mp4"}
+        assert all_rows["aa/op.mp4"]["owner_id"] == str(op_id), "行内要回 owner_id，前端候选靠它"
+        assert all_rows["aa/pub.mp4"]["owner_id"] is None, "公共拼接产物无主"
+        only_op = keyed(await client.get("/api/assets/outputs", params={"owner_id": str(op_id)}, headers=hm))
+        assert set(only_op) == {"aa/op.mp4"}, f"点名筛：公共产物与别人的片都不该出：{set(only_op)}"
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_owner_scope_defaults_to_everything_and_prefers_the_user():
     """素材隔离的两条默认值：查询口缺省＝看全部；`owner=me` 才收进自己那一侧。
 

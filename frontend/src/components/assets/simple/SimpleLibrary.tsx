@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Badge, Button, Card, Input, InputNumber, Modal, Segmented, Space, Table, Tabs, Tag, Tooltip,
+  Alert, Badge, Button, Card, Input, InputNumber, Modal, Segmented, Select, Space, Table, Tabs, Tag, Tooltip,
   Typography, Upload, message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -37,6 +37,15 @@ const PROD_STATUS: Record<string, string> = {
 
 const STAGE_COLOR: Record<string, string> = {
   success: 'green', failed: 'red', running: 'processing', pending: 'processing', skipped: 'default',
+};
+
+/** 列表「更新」列的紧凑时间（MM-DD HH:mm）；坏值出破折号不出 NaN */
+const fmtTime = (v: string | null | undefined): string => {
+  if (!v) return '—';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return '—';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
 /**
@@ -218,6 +227,8 @@ const SimpleLibrary: React.FC<Props> = ({
   // ── 脚本库 ──
   // 默认**全部**（11-24 用户口径「默认是要能看到全部的」），全局开关打开才收成"我的"。
   const [owner, setOwner] = useOwnerView(scopeMine);
+  /** 批 AA：按上传人点名筛（优先级高于 owner，收藏不算归属）；候选从已加载行里收 */
+  const [ownerFilter, setOwnerFilter] = useState<string | undefined>(undefined);
   const [qInput, setQInput] = useState('');
   const [q, setQ] = useState('');
   const [items, setItems] = useState<AssetScript[]>([]);
@@ -230,7 +241,9 @@ const SimpleLibrary: React.FC<Props> = ({
     const reqId = ++listReqRef.current;
     setLoading(true);
     try {
-      const res = await assetApi.listScripts({ owner, q: q || undefined, page_size: 200 });
+      const res = await assetApi.listScripts({
+        owner, owner_id: ownerFilter || undefined, q: q || undefined, page_size: 200,
+      });
       // 请求序号守卫：筛选变更与任务收敛重拉并发时，慢的旧回包不能盖掉新的
       if (reqId !== listReqRef.current) return;
       setItems(res.items || []);
@@ -240,7 +253,7 @@ const SimpleLibrary: React.FC<Props> = ({
     } finally {
       if (reqId === listReqRef.current) setLoading(false);
     }
-  }, [owner, q]);
+  }, [owner, ownerFilter, q]);
   useEffect(() => { void fetchScripts(); }, [fetchScripts, reloadToken]);
   // 搜索 400ms 防抖（逐键打接口会让列表一卡一卡）
   useEffect(() => {
@@ -260,12 +273,14 @@ const SimpleLibrary: React.FC<Props> = ({
       return;
     }
     try {
-      const res = await assetApi.listScripts({ owner, carrier_status: 'pending', page_size: 100 });
+      const res = await assetApi.listScripts({
+        owner, owner_id: ownerFilter || undefined, carrier_status: 'pending', page_size: 100,
+      });
       setPending(res.items || []);
     } catch {
       /* 待审数读不到不拦主流程 */
     }
-  }, [canReview, owner]);
+  }, [canReview, owner, ownerFilter]);
   useEffect(() => { void fetchPending(); }, [fetchPending, reloadToken]);
 
   const refreshAll = useCallback(
@@ -412,6 +427,60 @@ const SimpleLibrary: React.FC<Props> = ({
     );
     if (waiting) message.info(`另有 ${waiting} 条还没出稿，出了再收`, 6);
     await refreshAll();
+  };
+
+  /**
+   * 批 AA（11-25 用户：「极简模式里出不了文案，我只有审核台一个入口，给极简也加一个」）：
+   * 出候选文案走完整模式同一个口（POST /assets/summaries/generate，提交即回后台跑）。
+   * 候选出来后批 X 后端自动镜像进 ① 脚本库，这里不用再搬。
+   */
+  const genHooks = async (ids: string[], overwrite: boolean) => {
+    setBusy('gen');
+    try {
+      const res = await withCrossPersonConfirm((c) =>
+        assetApi.generateSummaries({ asset_ids: ids, async_mode: true, overwrite, cross_person_confirm: c }));
+      if (!res) return; // 取消了「替他人批次」确认：什么都不做
+      if (isAssetJobAck(res)) {
+        // 回执只有任务号：去哪儿看让横幅说，别在这里猜跑没跑完
+        message.success(res.message, 8);
+        nudgeAssetJobBanner();
+      } else {
+        message.success(res.message || '已提交出文案');
+      }
+      void refreshAll();
+    } catch (e) {
+      message.error((e as Error).message || '出文案失败', 8);
+    } finally {
+      setBusy('');
+    }
+  };
+
+  /** 出文案前的「只补／覆盖」确认——与完整模式 AssetListPanel 同一套话术同一套按钮 */
+  const generateHooks = (rows: AssetItem[]) => {
+    const ok = rows.filter((a) => a.stage_prompt === 'success');
+    if (!ok.length) {
+      message.info('没有「反推文案成功」的素材——文案是从反推稿里出的，得先反推一遍', 6);
+      return;
+    }
+    const hasCopies = ok.filter((a) => (a.summary_count ?? 0) > 0);
+    if (hasCopies.length) {
+      Modal.confirm({
+        title: `选中的素材里 ${hasCopies.length} 条已经有候选文案`,
+        content: (
+          <p style={{ marginBottom: 6 }}>「覆盖重出」会把这些旧候选删掉重新生成（已过审的会拦下，必须先撤审）；旧的留档按「只补」。</p>
+        ),
+        okText: `覆盖重出（${hasCopies.length} 条旧的删掉）`,
+        cancelText: '只补还没有文案的',
+        onOk: () => void genHooks(ok.map((a) => a.id), true),
+        onCancel: () => {
+          const onlyNew = ok.filter((a) => (a.summary_count ?? 0) === 0);
+          if (onlyNew.length) void genHooks(onlyNew.map((a) => a.id), false);
+          else message.info('选中的都有候选了，没有要补的', 6);
+        },
+      });
+      return;
+    }
+    void genHooks(ok.map((a) => a.id), false);
   };
 
   /** 上传脚本文件：读出正文直接存成库稿，并打开让人改（原型用顶部那个选择器） */
@@ -642,6 +711,21 @@ const SimpleLibrary: React.FC<Props> = ({
     }
   };
 
+  // 批 AA：/auth/users 只有 admin 能读，上传人候选就从已加载的行里收（owner_id/owner_name 同行带回）
+  const ownerOptions = useMemo(() => {
+    const m = new Map<string, string>();
+    items.forEach((s) => {
+      if (s.owner_id && !m.has(s.owner_id)) {
+        m.set(s.owner_id, s.owner_name || (s.owner_id === userId ? '我' : '他人'));
+      }
+    });
+    if (ownerFilter && !m.has(ownerFilter)) m.set(ownerFilter, '筛选中…');
+    return Array.from(m, ([id, name]) => ({
+      value: id,
+      label: id === userId ? `${name}（我）` : name,
+    }));
+  }, [items, ownerFilter, userId]);
+
   const columns: ColumnsType<AssetScript> = [
     {
       title: '预览',
@@ -712,6 +796,7 @@ const SimpleLibrary: React.FC<Props> = ({
       title: '已投',
       key: 'prod',
       width: 120,
+      sorter: (a, b) => (a.production_count ?? 0) - (b.production_count ?? 0),
       render: (_: unknown, r) => (r.production_count && r.last_production ? (
         <Tooltip title={`钩子号 ${r.last_production.hook_code || '—'}（最近一单）`}>
           <Text style={{ fontSize: 12 }}>
@@ -722,16 +807,24 @@ const SimpleLibrary: React.FC<Props> = ({
     },
     // 「仅看自己」里也会出现别人的脚本（收藏来的）。这一列的判据跟着**数据**走而不是跟着
     // 开关走：只要当前页里混进了不是我的行，就把「谁的」亮出来，否则用户只会看到一条来路不明的脚本。
-    ...((owner === 'all' || items.some((s) => s.owner_id !== userId)) ? [{
+    ...((owner === 'all' || !!ownerFilter || items.some((s) => s.owner_id !== userId)) ? [{
       title: '谁的',
       dataIndex: 'owner_name',
       width: 90,
+      sorter: (a: AssetScript, b: AssetScript) => (a.owner_name || '').localeCompare(b.owner_name || ''),
       render: (v: string | null, r: AssetScript) => (
         r.owner_id === userId
           ? <Text type="secondary" style={{ fontSize: 12 }}>我的</Text>
           : <Text type="secondary" style={{ fontSize: 12 }}>{v || '他人'}{r.favorited ? ' · 收藏' : ''}</Text>
       ),
     }] : []),
+    {
+      title: '更新',
+      dataIndex: 'updated_at',
+      width: 105,
+      sorter: (a, b) => (a.updated_at || '').localeCompare(b.updated_at || ''),
+      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{fmtTime(v)}</Text>,
+    },
     {
       title: '操作',
       key: 'ops',
@@ -868,15 +961,25 @@ const SimpleLibrary: React.FC<Props> = ({
             </Space>
           }
           extra={
-            <Button
-              size="small"
-              type="primary"
-              loading={busy === 'collect'}
-              disabled={!collectable.length || busy !== ''}
-              onClick={() => void collect(hookAssets)}
-            >
-              全部收进脚本库
-            </Button>
+            <Space size={8}>
+              <Button
+                size="small"
+                loading={busy === 'gen'}
+                disabled={!collectable.length || busy !== ''}
+                onClick={() => generateHooks(hookAssets)}
+              >
+                全部出文案
+              </Button>
+              <Button
+                size="small"
+                type="primary"
+                loading={busy === 'collect'}
+                disabled={!collectable.length || busy !== ''}
+                onClick={() => void collect(hookAssets)}
+              >
+                全部收进脚本库
+              </Button>
+            </Space>
           }
         >
           <Table
@@ -905,16 +1008,28 @@ const SimpleLibrary: React.FC<Props> = ({
               {
                 title: '操作',
                 key: 'ops',
-                width: 120,
+                width: 190,
                 render: (_: unknown, r) => (
-                  <Button
-                    size="small" type="link"
-                    loading={busy === 'collect'}
-                    disabled={r.stage_prompt !== 'success' || busy !== ''}
-                    onClick={() => void collect([r])}
-                  >
-                    收进脚本库
-                  </Button>
+                  <Space size={0}>
+                    <Tooltip title="出候选文案（后台跑）；候选出来会自动镜像进下面的脚本库">
+                      <Button
+                        size="small" type="link"
+                        loading={busy === 'gen'}
+                        disabled={r.stage_prompt !== 'success' || busy !== ''}
+                        onClick={() => generateHooks([r])}
+                      >
+                        出文案{(r.summary_count ?? 0) > 0 ? `（已有 ${r.summary_count}）` : ''}
+                      </Button>
+                    </Tooltip>
+                    <Button
+                      size="small" type="link"
+                      loading={busy === 'collect'}
+                      disabled={r.stage_prompt !== 'success' || busy !== ''}
+                      onClick={() => void collect([r])}
+                    >
+                      收进脚本库
+                    </Button>
+                  </Space>
                 ),
               },
             ]}
@@ -1019,6 +1134,18 @@ const SimpleLibrary: React.FC<Props> = ({
               onChange={(v) => { setOwner(v as 'me' | 'all'); setSelectedIds([]); }}
               options={[{ label: '我的', value: 'me' }, { label: '全部', value: 'all' }]}
             />
+            <Tooltip title="点名看某一个人写的脚本（收藏不算归属）；清掉即回到「我的／全部」">
+              <Select
+                allowClear
+                showSearch
+                placeholder="上传人"
+                style={{ width: 130 }}
+                optionFilterProp="label"
+                value={ownerFilter}
+                onChange={(v) => { setOwnerFilter(v || undefined); setSelectedIds([]); }}
+                options={ownerOptions}
+              />
+            </Tooltip>
             <Input
               allowClear
               placeholder="搜脚本"
@@ -1144,7 +1271,7 @@ const SimpleLibrary: React.FC<Props> = ({
       <AssetOutputWall
         key="simple-outputs"
         reloadToken={reloadToken}
-        ownerDefault={canReview && !isAdmin ? 'me' : 'all'}
+        ownerDefault="all"
         ownerSwitchable={canReview}
         active={tab === 'outputs'}
         onGoToProduction={() => onOpenFullTab('production')}

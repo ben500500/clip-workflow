@@ -465,6 +465,8 @@ export interface AssetOutput {
   asset_code: string | null;
   /** A′：投产人显示名（拼接产物 production_id NULL＝公共） */
   owner_name?: string | null;
+  /** 批 AA：投产人用户 id（公共拼接产物＝null）；墙「上传人」下拉候选用它 */
+  owner_id?: string | null;
   hook_code: string | null;
   /** 产物首帧直链（1 小时过期）；没帧 = null，卡片画「没有预览图」占位 */
   thumb_url: string | null;
@@ -1283,6 +1285,8 @@ export interface AssetOutputListParams {
   qc_status?: string;
   /** A′：owner=me 只看自己的链路（查询偏好，写口不受影响）；all/缺省＝全量 */
   owner?: "me" | "all";
+  /** 批 AA：按投产人点名（用户 id）。拼接公共产物不冒充任何人，点名时不出 */
+  owner_id?: string;
 }
 
 // ──────────────────────────────────────────────
@@ -2877,6 +2881,8 @@ export interface AssetScriptListParams {
    * 批 T：收藏列就是把别人的脚本挪进 `me` 的那只手。
    */
   owner?: 'me' | 'all';
+  /** 批 AA：按上传人点名（用户 id）；给了它 owner 让位，且收藏不算归属 */
+  owner_id?: string;
   /** 逗号多值；不传＝在用的（库稿＋可投稿） */
   state?: string;
   category_id?: string;
@@ -3250,14 +3256,14 @@ export const assetApi = {
 
   // 成片墙两级视图第一级：按素材（钩子）或按批次聚合的组清单（每组带成片数/最近回收/最新缩略图）
   // awaiting＝空态要说真话用的三个数（11-10）：投板在途／只建单没投／最近回收时间
-  listOutputGroups: (params?: { group_by?: 'asset' | 'batch'; batch_id?: string; kind?: string; qc_status?: string; owner?: 'me' | 'all'; limit?: number }) =>
+  listOutputGroups: (params?: { group_by?: 'asset' | 'batch'; batch_id?: string; kind?: string; qc_status?: string; owner?: 'me' | 'all'; owner_id?: string; limit?: number }) =>
     client.get('/assets/outputs/groups', {
       params,
     }) as Promise<{ group_by: string; groups: AssetOutputGroup[]; awaiting?: AssetOutputsAwaiting }>,
 
   // 批 V 需求②：投出去还没回片的单子（成片墙的灰占位卡用）。轻量口：单表查询＋两把小映射，
   // 不 presign、不打企微后台，所以敢每 20 秒轮一次；在途清零后前端自动停轮。
-  listInflightOutputs: (params?: { batch_id?: string; owner?: 'me' | 'all'; limit?: number }) =>
+  listInflightOutputs: (params?: { batch_id?: string; owner?: 'me' | 'all'; owner_id?: string; limit?: number }) =>
     client.get('/assets/outputs/inflight', { params }) as Promise<AssetInflightResult>,
 
   // 批 Y（11-25 用户口径「成片墙没有删除功能，比如超时生成的豆包素材无法删掉」）：

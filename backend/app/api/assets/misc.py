@@ -11884,6 +11884,7 @@ async def list_outputs(
     kind: Optional[str] = None,
     qc_status: Optional[str] = None,
     owner: Optional[str] = None,
+    owner_id: Optional[str] = None,
     include_trial: bool = False,
     limit: int = 100,
     offset: int = 0,
@@ -11930,6 +11931,16 @@ async def list_outputs(
                 select(AssetProduction.id).where(AssetProduction.created_by == current_user.id)
             ),
         ))
+    if owner_id and owner_id.strip():
+        # 批 AA：按投产人点名筛。与 owner=me 不同，公共拼接产物（production_id NULL）
+        # 不冒充任何人的作品，点名时不出。
+        conds.append(
+            AssetOutput.production_id.in_(
+                select(AssetProduction.id).where(
+                    AssetProduction.created_by == _as_uuid(owner_id, "owner_id")
+                )
+            )
+        )
     # 试产单的成片（2026-11-12）：默认不进成片墙/交付链路——它们只进审核台判定。
     # include_trial=true（审核台试产区拉片用）才放开；单点 production_id 查询不过滤
     #（详情/打包单点口自己有闸）。
@@ -12031,6 +12042,8 @@ async def list_outputs(
                 "owner_name": prod_owner_names.get(prod_owner[o.production_id])
                 if o.production_id and o.production_id in prod_owner
                 else None,
+                # 批 AA：回显投产人 id，前端「上传人」筛选下拉的候选就从行里收
+                "owner_id": prod_owner.get(o.production_id) if o.production_id else None,
                 "thumb_url": thumb_urls.get(o.id),
                 # 11-24 需求三：矩阵拼的成片带上「哪支钩子×哪条正片＋叠了什么」，
                 # 没这个快照的行是 null。
@@ -12107,6 +12120,7 @@ async def list_output_groups(
     kind: Optional[str] = None,
     qc_status: Optional[str] = None,
     owner: Optional[str] = None,
+    owner_id: Optional[str] = None,
     limit: int = 100,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -12135,6 +12149,16 @@ async def list_output_groups(
                 select(AssetProduction.id).where(AssetProduction.created_by == current_user.id)
             ),
         ))
+    if owner_id and owner_id.strip():
+        # 批 AA：按投产人点名筛，与 /assets/outputs 同口径——拼接公共产物（production_id
+        # NULL）不冒充任何人的作品，点名时不出；组层计数跟着收窄，点开看到的才对得上。
+        conds.append(
+            AssetOutput.production_id.in_(
+                select(AssetProduction.id).where(
+                    AssetProduction.created_by == _as_uuid(owner_id, "owner_id")
+                )
+            )
+        )
     if batch_id:
         conds.append(
             AssetOutput.asset_id.in_(
@@ -12329,6 +12353,7 @@ _WALL_FAILED_WINDOW_HOURS = 24
 @router.get("/assets/outputs/inflight")
 async def list_inflight_outputs(
     owner: Optional[str] = None,
+    owner_id: Optional[str] = None,
     batch_id: Optional[str] = None,
     limit: int = 100,
     current_user: User = Depends(get_current_user),
@@ -12360,6 +12385,9 @@ async def list_inflight_outputs(
     scope = []
     if owner == "me":
         scope.append(AssetProduction.created_by == current_user.id)
+    if owner_id and owner_id.strip():
+        # 批 AA：墙「按上传人」筛选时在途占位卡同口径，否则选了人还冒出别人的生成中卡
+        scope.append(AssetProduction.created_by == _as_uuid(owner_id, "owner_id"))
     if batch_id:
         scope.append(AssetProduction.batch_id == _as_uuid(batch_id, "batch_id"))
     cap = min(max(1, limit), 200)
@@ -16388,6 +16416,7 @@ async def list_scripts(
         None, description="按载体的审核态筛：pending 待审／approved 已过审／none 还没送审；不传＝不限"
     ),
     q: Optional[str] = Query(None, description="按脚本名或正文模糊搜"),
+    owner_id: Optional[str] = Query(None, description="按上传人精确筛（用户 id）；给了它 owner 参数让位"),
     page: int = 1,
     page_size: int = Query(50, ge=1, le=200),
     current_user: User = Depends(get_current_user),
@@ -16413,7 +16442,11 @@ async def list_scripts(
             status_code=400, detail=f"state 里有不认的值：{'、'.join(bad)}（只认 {'/'.join(SCRIPT_STATES)}）"
         )
     conds.append(AssetScript.state.in_(states))
-    if owner == "me":
+    if owner_id and owner_id.strip():
+        # 批 AA：「按上传人筛」精确到某个人**写的**——收藏并集只在 owner=me 那侧生效，
+        # 点名的时候把别人的收藏混进来就不是"看这个人"了。给了 owner_id 就跳过 owner。
+        conds.append(AssetScript.owner_id == _as_uuid(owner_id, "owner_id"))
+    elif owner == "me":
         my_favs = select(AssetScriptFavorite.script_id).where(
             AssetScriptFavorite.user_id == current_user.id
         )
