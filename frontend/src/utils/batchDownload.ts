@@ -40,9 +40,12 @@ export async function downloadFilesSequentially(
   files: BatchDownloadFile[],
   opts?: { onProgress?: (p: BatchDownloadProgress) => void; retries?: number },
 ): Promise<BatchDownloadResult> {
-  const retries = opts?.retries ?? 1; // 失败重试次数（不含首试）
+  const retries = opts?.retries ?? 2; // 失败重试次数（不含首试）
   const ok: string[] = [];
   const failed: { name: string; reason: string }[] = [];
+  // 大批量（GB 级总传输）下偶发 TCP 中断不可避免：整批跑完后对失败项自动
+  // 再补一轮完整重试，把瞬时失败捞回来（2026-11-25 实测：100 条 8.5GB 批量
+  // 下载中 2 条失败，均为传输中断而非文件问题）
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     const name = f.file_name || `file_${i + 1}.mp4`;
