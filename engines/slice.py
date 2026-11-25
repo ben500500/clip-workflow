@@ -984,32 +984,92 @@ def slice_segment(src, start, end, out, vf=None, af=None, threads=1, encoder="li
     run_ffmpeg(cmd, timeout=3600, threads=threads)
 
 
-def _has_audio_stream(path: str) -> bool:
-    """该段有没有音轨。探测失败一律回 True ＝沿用旧行为（裸引用 `[i:a]`，让 ffmpeg 自己报错）。
+def _probe_concat_spec(path: str) -> dict:
+    """一次 ffprobe 取拼接要用的三件事：有无音轨、时长、帧率。
 
-    反向默认会把「有声」悄悄变成「无声」——那种产物能播、时长对，只有耳朵听得出，
-    验收里最难发现，宁可当场失败也不要静默降级。
+    合成一次而不是三次子进程：拼接是每支成品都会走的热口，逐字段各起一次 ffprobe
+    在大批量任务上能多出几十秒。
+    探不到音轨（ffprobe 失败／整包没流信息）＝按「有音轨」处理，沿用旧行为让 ffmpeg
+    自己报错；只有「确实解析出流列表、里面没有 audio」才判无声。反向默认会把有声悄悄
+    变成无声——那种产物能播、时长对，只有耳朵听得出，验收里最难发现。
     """
     try:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a:0",
-             "-show_entries", "stream=index", "-of", "csv=p=0", path],
-            capture_output=True, text=True, timeout=30,
-        )
-        return bool((out.stdout or "").strip())
+        raw = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json",
+             "-show_streams", "-show_format", path],
+            capture_output=True, timeout=30,
+        ).stdout
+        meta = json.loads(raw or b"{}")
     except Exception:  # noqa: BLE001
-        return True
-
-
-def _fps_rounded(path: str) -> float:
-    """该段帧率（四舍五入到 3 位小数，30000/1001 与 29.97 视为同一个数），探不到回 0.0。"""
-    fr = ffprobe_framerate(path)
+        meta = {}
+    streams = meta.get("streams") or []
+    video = next((s for s in streams if s.get("codec_type") == "video"), None) or {}
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    duration = 0.0
+    for candidate in ((meta.get("format") or {}).get("duration"), video.get("duration")):
+        try:
+            value = float(candidate)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            duration = value
+            break
     try:
-        num, _, den = (fr or "").partition("/")
+        num, _, den = (video.get("r_frame_rate") or "").partition("/")
         n, d = float(num), float(den or 1)
-        return round(n / d, 3) if n > 0 and d > 0 else 0.0
+        fps = round(n / d, 3) if n > 0 and d > 0 else 0.0
     except (ValueError, ZeroDivisionError):
-        return 0.0
+        fps = 0.0
+    return {
+        "has_audio": (audio is not None) if streams else True,
+        "duration": duration,
+        "fps": fps,
+    }
+
+
+def build_concat_filtergraph(specs, tw, th):
+    """按各段实测规格生成 concat 滤镜图（纯函数，不起子进程，单测直接喂 dict）。
+
+    返回 `(filter_complex, 要追加的 lavfi 静音输入个数, 给人看的说明)`。
+
+    三条口径：
+    1. 几何统一取**首段**尺寸（`tw/th` 由调用方探好传入），段与段混规格时 pad 补齐；
+    2. 帧率归一**只在各段帧率真的不一致时**启用——同帧率时加 `fps=` 等于再做一次
+       CFR 重采样，会让切片线既有成功产物逐帧变样；混帧率（AI 成片 24/25 ＋ 切片 30）
+       不归一则产出 VFR，时长与抽帧都对不齐。目标帧率取首段，与几何同源；
+    3. 无音轨的段接一条后面追加的 `anullsrc` 输入（索引 `len(specs)+k`）并按该段
+       时长 `atrim`——anullsrc 是无限长 source，不剪住 concat 永不收尾。
+    """
+    n = len(specs)
+    silent_idx = [i for i, s in enumerate(specs) if not s.get("has_audio")]
+    fps_list = [float(s.get("fps") or 0.0) for s in specs]
+    mixed_fps = len({f for f in fps_list if f > 0}) > 1
+    fps_vf = f",fps={fps_list[0]:g}" if (mixed_fps and fps_list and fps_list[0] > 0) else ""
+    notes: list[str] = []
+    if silent_idx:
+        notes.append(f"{len(silent_idx)} 段无音轨，按段时长补静音轨：索引 {silent_idx}")
+    if fps_vf:
+        notes.append(f"各段帧率不一致 {fps_list}，按首段 {fps_list[0]:g} 归一")
+    aformat = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+    chains: list[str] = []
+    for i in range(n):
+        chains.append(
+            f"[{i}:v]scale={tw}:{th}:force_original_aspect_ratio=decrease,"
+            f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2,setsar=1{fps_vf}[v{i}]"
+        )
+    silent_pos = {p: n + k for k, p in enumerate(silent_idx)}
+    for i in range(n):
+        if i in silent_pos:
+            dur = float(specs[i].get("duration") or 0.0) or 0.1
+            chains.append(
+                f"[{silent_pos[i]}:a]atrim=0:{round(max(dur, 0.1), 3)},"
+                f"asetpts=PTS-STARTPTS,{aformat}[a{i}]"
+            )
+        else:
+            chains.append(f"[{i}:a]{aformat}[a{i}]")
+    concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(n))
+    filter_complex = ";".join(chains) + ";" + concat_inputs + f"concat=n={n}:v=1:a=1[v][a]"
+    return filter_complex, len(silent_idx), notes
 
 
 def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True,
@@ -1070,50 +1130,21 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
             TW, TH = int(_tw), int(_th)
     except Exception:
         pass
-    # 音轨兜底（2026-11-25）：某段整片无声时，旧写法裸引用 `[i:a]` 会让整条命令
+    # 音轨/帧率兜底（2026-11-25）：某段整片无声时，旧写法裸引用 `[i:a]` 会让整条命令
     # 当场失败（Stream map ... matches no streams）。素材库拼接的输入常见
     # 「豆包成片（有声）＋片尾/包装段（无声）」，切片线的「本体＋片尾」同理。
-    # 无音轨的段改为接一条在后面追加的 anullsrc 输入（索引 len(parts)+k）：
-    # anullsrc 是无限长 source，必须按该段视频时长 atrim，否则 concat 永不收尾。
-    silent_idx = [i for i, p in enumerate(parts) if not _has_audio_stream(p)]
-    fps_list = [_fps_rounded(p) for p in parts]
-    # 帧率归一**只在各段帧率真的不一致时**启用：同帧率时加 fps= 等于再做一次 CFR
-    # 重采样，会让切片线既有成功产物逐帧变样。混帧率（AI 成片 24/25 ＋ 切片 30）
-    # 不归一则产出 VFR，时长与抽帧都对不齐。目标帧率取首段，与几何同源。
-    mixed_fps = len({f for f in fps_list if f > 0}) > 1
-    fps_vf = f",fps={fps_list[0]:g}" if (mixed_fps and fps_list[0] > 0) else ""
-    if silent_idx:
-        print(f"[concat] {len(silent_idx)} 段无音轨，按段时长补静音轨：索引 {silent_idx}",
-              file=sys.stderr)
-    if fps_vf:
-        print(f"[concat] 各段帧率不一致 {fps_list}，按首段 {fps_list[0]:g} 归一",
-              file=sys.stderr)
-    aformat = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
-    chains: list[str] = []
-    for i in range(len(parts)):
-        chains.append(
-            f"[{i}:v]scale={TW}:{TH}:force_original_aspect_ratio=decrease,"
-            f"pad={TW}:{TH}:(ow-iw)/2:(oh-ih)/2,setsar=1{fps_vf}[v{i}]"
-        )
-    silent_pos = {p: len(parts) + k for k, p in enumerate(silent_idx)}
-    for i in range(len(parts)):
-        if i in silent_pos:
-            dur = ffprobe_duration(parts[i]) or 0.1
-            chains.append(
-                f"[{silent_pos[i]}:a]atrim=0:{round(max(dur, 0.1), 3)},"
-                f"asetpts=PTS-STARTPTS,{aformat}[a{i}]"
-            )
-        else:
-            chains.append(f"[{i}:a]{aformat}[a{i}]")
-    concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(parts)))
-    filter_complex = ";".join(chains) + ";" + concat_inputs + f"concat=n={len(parts)}:v=1:a=1[v][a]"
+    # 具体配方见 build_concat_filtergraph（纯函数，单测直接喂 dict，不依赖真装 ffmpeg）。
+    specs = [_probe_concat_spec(p) for p in parts]
+    filter_complex, silent_inputs, notes = build_concat_filtergraph(specs, TW, TH)
+    for note in notes:
+        print(f"[concat] {note}", file=sys.stderr)
     cmd = [
         "ffmpeg", "-y",
         "-threads", str(threads),
     ]
     for part in parts:
         cmd += ["-i", part]
-    for _ in silent_idx:
+    for _ in range(silent_inputs):
         cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
     cmd += [
         "-filter_complex", filter_complex,

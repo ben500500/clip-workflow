@@ -422,6 +422,14 @@ export interface AssetProduction {
   concat_last_result: AssetAutoConcatResult | null;
   /** 批 I（链路收敛）：本单已收进的成片段数（排除 package/copy 附属文件），生产单列表口才有 */
   output_count?: number;
+  /**
+   * 11-24 缺口口径：应收 board_total − 实收 output_count，**后端读侧派生**（不建列、不迁移）。
+   * >0＝这张单还欠几版。补法是人工「按同文案重开单」，机器不隔夜补投。
+   *
+   * 后端只在**终态行**（success/failed）上算非零值：queued/running 的 output_count 天然还是 0，
+   * 那时报「缺 N 版」是把「还在出片」说成「缺料」。所以这里 null/0 直接不画，别在前端自己减。
+   */
+  short_by?: number;
   status: ProductionState;
   /** 板上失败行**没有原因字段**：这里只能记我们侧的判读，别当成豆包给的成因 */
   error: string | null;
@@ -1093,6 +1101,11 @@ export interface AssetListParams {
   has_approved_copy?: boolean;
   /** 命中 code / title / source_url */
   keyword?: string;
+  /**
+   * 批 T（11-24）素材隔离开关的后端口径：`me`＝只看自己导入的，`all`＝全量（**缺省即 all**）。
+   * 与 `created_by` 是两条独立的条件，同时传＝取交集（后端拿 created_by 再收窄一次）。
+   */
+  owner?: 'me' | 'all';
   created_by?: string;
   /** YYYY-MM-DD，含端点、按 CST 自然日（别的格式 400） */
   date_from?: string;
@@ -2263,10 +2276,37 @@ export interface AssetDispatchResultItem {
   board_status: string | null;
   outputs: string[];
   restarted: boolean;
+  /**
+   * 11-24 需求④（有界自动重试）：这张单本次**实际自动重启了几次**。
+   * 只有「整批全失败」才有重启资格——重启是整条 payload 重投，部分成功时重启等于
+   * 把已到手的版次再烧一遍号池，所以那种缺口只能人工补。
+   */
+  retries?: number;
+  /** 本次生效的重试上限（`ASSET_BOARD_RETRY_MAX`，默认 2）；界面据此说「已到顶」还是「还能重试」 */
+  retry_max?: number;
+  /** 应收版数（＝板上 total） */
+  expected?: number;
+  /** 账上实收版数（按 production_id 数产物，排除 package/copy 附属行） */
+  collected?: number;
+  /** expected − collected；只在**已终态**的行有意义（还在板上跑时它是过程值，不显示） */
+  short_by?: number;
   error?: string;
   note?: string;
   last_read_error?: string;
   download_errors?: { tid: string; error: string }[];
+}
+
+/** 本次投递的缺口账（11-24 批：做不到「要几版来几版」，就必须把还缺几版说明白） */
+export interface AssetDispatchGap {
+  /** 这批一共要几版 */
+  expected: number;
+  /** 账上一共收了几版 */
+  collected: number;
+  /** 还缺几版（0＝齐了） */
+  short_by: number;
+  retry_max: number;
+  /** 这批一共自动重启了几次（逐张之和） */
+  retries: number;
 }
 
 /** POST /assets/productions/dispatch 的同步结果（异步档请判 `isAssetJobAck`） */
@@ -2291,6 +2331,11 @@ export interface AssetDispatchResponse {
   dispatch: AssetDispatchCounts;
   /** 批 Q：本次回收后自动拼接的结果（没提要求也没有钉着的行时 attempted=0、note 为空串） */
   concat?: AssetAutoConcatSummary | null;
+  /**
+   * 11-24 需求④：这批的缺口账。`short_by>0` 时后端的 `message` 里已经带了那句
+   * 「缺几版／为什么机器不再自己补／到哪补」，前端只需把 message 摆出来，别自己另算一套。
+   */
+  gap?: AssetDispatchGap;
   message: string;
 }
 
@@ -2692,6 +2737,12 @@ export interface AssetScript {
   based_on_script_id: string | null;
   owner_id: string;
   owner_name: string | null;
+  /**
+   * 批 T（11-24）素材隔离：这条脚本**是不是我收藏进「我的」的**。
+   * true 不等于我拥有它——写权限仍看 `owner_id`（别人的定稿只能派生，草稿改不动）。
+   * 「仅看自己」＝ `owner_id == 我` **或** `favorited == true`（后端 `owner=me` 同口径）。
+   */
+  favorited?: boolean;
   note: string | null;
   body_chars: number;
   /** 正文前 100 字（列表不随全文，全文走 getScript） */
@@ -2725,7 +2776,10 @@ export interface AssetScript {
 }
 
 export interface AssetScriptListParams {
-  /** me（默认，我的）｜all（所有人的） */
+  /**
+   * me（缺省，我的＝**我写的＋我收藏的**）｜all（所有人的）。
+   * 批 T：收藏列就是把别人的脚本挪进 `me` 的那只手。
+   */
   owner?: 'me' | 'all';
   /** 逗号多值；不传＝在用的（库稿＋可投稿） */
   state?: string;
@@ -2777,6 +2831,13 @@ export interface AssetScriptProduceResult {
 export interface UiPreferences {
   /** simple 极简（脚本屏＋钩子视频屏）｜full 完整五环 */
   asset_library_mode: 'simple' | 'full';
+  /**
+   * 批 T（11-24）素材隔离开关：**仅看自己**。
+   * `false`（缺省）＝看全部——上一轮拍板「素材内容全量可见」仍是默认，隔离只能自己打开。
+   * `true` ＝素材/文案/脚本/生产单/成片都按 `owner=me` 收，脚本库里被别人收藏过的也算「我的」。
+   * 存在后端（按人），换台电脑/换个浏览器跟着账号走。
+   */
+  asset_scope_mine: boolean;
 }
 
 export const assetApi = {
@@ -3286,6 +3347,28 @@ export const assetApi = {
   retireScript: (scriptId: string) =>
     client.delete(`/assets/scripts/${scriptId}`) as Promise<{ ok: boolean; id: string; state: string }>,
 
+  /**
+   * 收藏／取消收藏（11-24 素材隔离）。用户这条原话是「仅看自己……也可以在已有的
+   * 脚本库里面勾选，然后收藏起来」——所以「我的」不只是"我写的"。
+   * 收藏**只加一条关系**，不动 owner：别人的定稿照样改不动（只能派生），
+   * 这条口改的是**可见范围**，不是**写权限**。
+   */
+  favoriteScript: (scriptId: string) =>
+    client.put(`/assets/scripts/${scriptId}/favorite`, {}) as Promise<{
+      ok: boolean;
+      script_id: string;
+      favorited: boolean;
+    }>,
+
+  unfavoriteScript: (scriptId: string) =>
+    client.delete(`/assets/scripts/${scriptId}/favorite`) as Promise<{
+      ok: boolean;
+      script_id: string;
+      favorited: boolean;
+      /** 实际删掉的行数：0＝本来就没收藏（重复点不报错） */
+      removed: number;
+    }>,
+
   /** 定稿：库稿 → 可投稿。风险词 block 命中 409；正文冻结，之后要改只能派生 */
   finalizeScript: (
     scriptId: string,
@@ -3323,8 +3406,17 @@ export const assetApi = {
   getUiPreferences: () =>
     client.get('/assets/ui/preferences') as Promise<{ ui_config: UiPreferences }>,
 
-  saveUiPreferences: (uiConfig: UiPreferences) =>
-    client.put('/assets/ui/preferences', { ui_config: uiConfig }) as Promise<{ ok: boolean; ui_config: UiPreferences }>,
+  /**
+   * 存偏好。**只传要改的那一个键**——后端是按键合并（11-24 起），
+   * 整包 PUT 会把没带的键清掉吗？不会，但传局部对象才是这套语义的正确用法，
+   * 否则将来加第三颗开关时又回到「切模式顺手把隔离清回默认」那个坑。
+   * 响应里的 `ui_config` 是库里合并后的结果，可能不含默认值（默认只在 GET 口并进去）。
+   */
+  saveUiPreferences: (uiConfig: Partial<UiPreferences>) =>
+    client.put('/assets/ui/preferences', { ui_config: uiConfig }) as Promise<{
+      ok: boolean;
+      ui_config: Partial<UiPreferences>;
+    }>,
 };
 
 // ──────────────────────────────────────────────

@@ -23,6 +23,18 @@ import { HelpDot, MonoText, durationText } from '../AssetBits';
 
 const { Text } = Typography;
 
+/**
+ * ⚠️ 本卡**当前没有挂载**（2026-11-24 用户反馈：「你的什么组合出片、什么行列写在那里，谁看得懂？
+ * 我要的那个拼接是最后一步，你可以先不做，到时候直接把短剧切片中的那个功能搬过来就可以了」）。
+ *
+ * `SimpleLibrary` 已改回分步页签 ①导稿／②脚本库／③投豆包／④看成片，这一屏从界面上撤了。
+ * 保留文件**不删**的理由：它的调用合同（矩阵入参、叠加预设、0 元口径、超 20 条的分两次话术）
+ * 都测过、也还在后端，等把短剧切片那套拼接功能搬过来时按新交互重写，比从零想口径省一轮。
+ * 后端 `POST /assets/compose/matrix`＋`/assets/overlay-presets` 与 pytest 用例**一律没动**。
+ * 相应地 `frontend/evidence/shoot-compose-matrix*.mjs` 两道 UI 门随界面一起暂停（拼接的
+ * 逻辑覆盖仍由后端用例兜着）。
+ */
+
 interface Props {
   /** 组合导出要花钱吗？不要——但开单职能照样是门槛（后端 require_roles(*_PROD_ROLES)） */
   canProduce: boolean;

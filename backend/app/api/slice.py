@@ -2053,7 +2053,13 @@ async def retry_slice_task(
         raise HTTPException(status_code=400, detail="Episode has no source file")
 
     # 派发前防呆（同 run_slice）：重试用旧 cutlist+旧源，源若被换短同样会错位
-    await _validate_cutlist_fits_source(source_bucket, source_file_key, task.cutlist or "", eid)
+    # 末参只进日志，传 task.episode_id（retry 口没有 run_slice 里那个 `eid` 局部变量，
+    # 钉住它的用例是 test_publish_dispatch_commit_race.py::
+    #   test_publish_to_worker_retry_entry_slice_task_visible_at_dispatch_time
+    # （11-25 全套跑出来那次红就是这里的 NameError：重试口没有 eid，只有 tid）
+    await _validate_cutlist_fits_source(
+        source_bucket, source_file_key, task.cutlist or "", task.episode_id
+    )
 
     engine = _resolve_engine(None)  # 沿用默认引擎
 

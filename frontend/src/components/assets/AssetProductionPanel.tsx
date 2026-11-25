@@ -23,6 +23,7 @@ import AssetCardPicker from './AssetCardPicker';
 import AssetConcatPicker from './AssetConcatPicker';
 import AssetPromptElementDrawer from './AssetPromptElementDrawer';
 import { HelpDot, HighlightedPrompt, MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
+import { useOwnerView } from '../../hooks/useOwnerView';
 
 const { Text, Paragraph } = Typography;
 
@@ -31,6 +32,8 @@ interface Props {
   canWriteBack: boolean;
   /** 「带违禁词强行导出」只有 admin 能做（后端同一道闸，前端只决定按钮给不给） */
   isAdmin: boolean;
+  /** 批 T（11-24）全局「仅看自己」：true＝本列表默认收成 owner=me（我自己投产的单） */
+  scopeMine?: boolean;
   batchId?: string;
   /** 后台投产任务收敛后自增（D-1）：生产单是后端建行的，只能重新拉才看得到 */
   reloadToken?: number;
@@ -354,7 +357,7 @@ const PromptDraftDiff: React.FC<{ before: string; after: string }> = ({ before, 
  * 两条路的闸门、payload、状态迁移共用后端同一套判据，前端不要自己复述规则数字。
  */
 const AssetProductionPanel: React.FC<Props> = ({
-  canWriteBack, isAdmin, batchId, reloadToken, active = true,
+  canWriteBack, isAdmin, scopeMine, batchId, reloadToken, active = true,
   dispatchIds, dispatchNotes, onDispatchConsumed, onGoToOutputs,
 }) => {
   const [items, setItems] = useState<AssetProduction[]>([]);
@@ -371,10 +374,10 @@ const AssetProductionPanel: React.FC<Props> = ({
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
   const [assetFilter, setAssetFilter] = useState<string | undefined>();
   /**
-   * A′ 按运营隔离（2026-11-07）：owner=me 只看自己投产的单（查询偏好）。
-   * 默认矩阵：operator=我的、admin=全部；统计两行并排（我的／全站），号池一本账。
+   * A′ 按运营隔离（2026-11-07）→ 11-24 起初始值改由全局「仅看自己」开关给（默认＝全部）。
+   * 统计两行并排（我的／全站）与号池一本账不受这里影响——那是另一套口径。
    */
-  const [ownerView, setOwnerView] = useState<'me' | 'all'>(isAdmin ? 'all' : 'me');
+  const [ownerView, setOwnerView] = useOwnerView(scopeMine);
 
   const [selected, setSelected] = useState<AssetProduction[]>([]);
   const [writeOpen, setWriteOpen] = useState(false);
@@ -1183,7 +1186,9 @@ const AssetProductionPanel: React.FC<Props> = ({
               <Text type="secondary" style={{ fontSize: 12 }}>
                 接下来不用守着：机器去企微后台排队出片，一条 25 分钟起、整批更久。
                 出好的片子自动回到本页各单的「成片」列（回来点「刷新」或看顶部任务横幅）；
-                板上失败的会计成失败、在行上写清成因。{pre.note ? `｜${pre.note}` : ''}
+                板上失败的会计成失败、在行上写清成因。
+                失败单机器会在这次轮询窗口内自动重启（整批全失败才重启，次数到顶就交人工判读，不隔夜补投）；
+                窗口关掉后还缺的版次在本行标「缺 N 版」，用「操作 → 按同文案重开单」补差额。{pre.note ? `｜${pre.note}` : ''}
               </Text>
             </Space>
           ),
@@ -1453,19 +1458,38 @@ const AssetProductionPanel: React.FC<Props> = ({
     {
       // 批 I（链路收敛）：「投完不知道去向」的正解——片子回来了就在这一列，
       // 点开就地预览/下载，不用再去别处找产物。
+      //
+      // 11-24 缺口口径（用户：「我需要多少素材，最终就能给我回收多少素材」）：这一列把
+      // 「应收 vs 实收」说在一句话里。short_by 由后端算（board_total − 已收），前端**绝不自己减**
+      // ——口径只有一处，且只在终态行上非零，减了就会把「还在出片」画成「缺料」。
       title: '成片',
       key: 'outputs',
-      width: 110,
-      render: (_, r) =>
-        (r.output_count ?? 0) > 0 ? (
-          <Button size="small" icon={<VideoCameraOutlined />} onClick={() => openOutputs(r)}>
-            已收 {r.output_count} 段
-          </Button>
-        ) : (
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            还没收片
-          </Text>
-        ),
+      width: 132,
+      render: (_, r) => {
+        const short = Number(r.short_by ?? 0);
+        return (
+          <Space size={2} wrap>
+            {(r.output_count ?? 0) > 0 ? (
+              <Button size="small" icon={<VideoCameraOutlined />} onClick={() => openOutputs(r)}>
+                已收 {r.output_count} 段
+              </Button>
+            ) : (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                还没收片
+              </Text>
+            )}
+            {short > 0 && (
+              <Tooltip
+                title={`这张单要 ${r.board_total} 版、只回收 ${r.output_count ?? 0} 版，还缺 ${short} 版。
+机器已经在这次轮询窗口内自动重启过整批全失败的单（部分版失败不重启——那会把已到手的版次再烧一遍额度）。
+补法：这行「操作 → 按同文案重开单」只补差额；隔夜不自动补投是定死的口径。`}
+              >
+                <Tag color="orange">缺 {short} 版</Tag>
+              </Tooltip>
+            )}
+          </Space>
+        );
+      },
     },
     ...(canWriteBack
       ? [

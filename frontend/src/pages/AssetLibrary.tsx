@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Badge, Button, Card, Drawer, Modal, Popover, Segmented, Space, Spin, Table, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
+import { Alert, Badge, Button, Card, Drawer, Modal, Popover, Segmented, Space, Spin, Switch, Table, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
 import { ApartmentOutlined, BellOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import client from '../api/client';
@@ -87,6 +87,14 @@ const AssetLibrary: React.FC = () => {
   // 没存过按角色给默认值（素材/运营＝极简、管理员＝全量，后端给）。
   // null＝偏好还没读到：这时**先不渲染页签**，否则运营每次进页面都会先闪一下五环再跳极简。
   const [mode, setMode] = useState<'simple' | 'full' | null>(null);
+  /**
+   * 批 T（11-24）素材隔离「仅看自己」。用户原话：
+   * 「默认是要能看到全部的，但是可以加入一个开关或者复选框，仅看自己。这个仅看自己，
+   * 不是说仅仅是自己导入的文案，也可以在已有的脚本库里面勾选，然后收藏起来。」
+   * ⇒ 默认 **false＝看全部**（隔离是 opt-in，不是新默认）；开关存后端按人走，
+   *   一处翻动，素材/文案/脚本/生产单/成片五处列表一起收。
+   */
+  const [scopeMine, setScopeMine] = useState(false);
   const modeRef = useRef<'simple' | 'full' | null>(null);
   modeRef.current = mode;
   useEffect(() => {
@@ -95,20 +103,33 @@ const AssetLibrary: React.FC = () => {
     // catch 只兜得住「请求失败」，兜不住「请求一直挂着」——后端在重启、或同步等模型把连接占住时，
     // 这个 promise 既不 resolve 也不 reject，页面就永远停在 mode=null 的空白页，且没有重试入口。
     // ⇒ 2.5s 内没结果就先落全量视图（宁可闪一下五环，也不能让人进不来）；真接口随后到了也不覆盖。
-    const tooSlow = new Promise<'full'>((resolve) => { timer = setTimeout(() => resolve('full'), 2500); });
+    // 一次请求拿**整份 ui_config**：两颗开关分别拉会各读各的，谁后到谁覆盖（老现象是开关自己跳回去）。
+    const tooSlow = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 2500); });
     Promise.race([
-      assetApi.getUiPreferences()
-        .then((r) => (r.ui_config?.asset_library_mode === 'simple' ? 'simple' : 'full') as 'simple' | 'full'),
+      assetApi.getUiPreferences().then((r) => (r.ui_config ?? {}) as Partial<UiPreferences>),
       tooSlow,
     ])
-      .then((next) => { if (alive) setMode(next); })
-      .catch(() => { if (alive) setMode('full'); });   // 读不到偏好＝按全量走，别把人挡在空白页
+      .then((cfg) => {
+        if (!alive) return;
+        setMode(cfg?.asset_library_mode === 'simple' ? 'simple' : 'full');
+        setScopeMine(cfg?.asset_scope_mine === true);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setMode('full');          // 读不到偏好＝按全量走，别把人挡在空白页
+        setScopeMine(false);      // 同理，隔离默认不开
+      });
     return () => { alive = false; if (timer) clearTimeout(timer); };
   }, []);
   const switchMode = (next: 'simple' | 'full') => {
     setMode(next);
-    const body: UiPreferences = { asset_library_mode: next };
-    assetApi.saveUiPreferences(body).catch(() => message.warning('界面偏好没存上（本次切换仍然有效）'));
+    // 只传自己那一个键：后端 11-24 起是按键合并，但整包 PUT 会让「切模式」带上
+    // 前端此刻记忆里的 scope 值——万一它是超时兜底的默认值，就会把用户真存的选择冲掉。
+    assetApi.saveUiPreferences({ asset_library_mode: next }).catch(() => message.warning('界面偏好没存上（本次切换仍然有效）'));
+  };
+  const switchScope = (next: boolean) => {
+    setScopeMine(next);
+    assetApi.saveUiPreferences({ asset_scope_mine: next }).catch(() => message.warning('仅看自己没存上（本次生效，下次进来会回到原状态）'));
   };
   /**
    * 任务横幅的「去看」要跳到某个五环页签：极简模式下没有页签，所以**先切到完整视图再落页签**
@@ -321,9 +342,13 @@ const AssetLibrary: React.FC = () => {
         // ⚠️ client 的响应拦截器已把 response 解包成 body（client.ts `(response)=>response.data`），
         // 这里拿到的 r1/r2 就是 {total,...} 本体——再 .then(r=>r.data) 会二次解包成 undefined，
         // 角标静默归零（11-14 CDP P-B1 实拍抓到的自伤，别再犯）。
+        // 批 T（11-24）：「待投」角标以前按角色算（operator 只看自己的），全局
+        // 「仅看自己」开关上线后它成了第六个不跟开关的面板——开着开关角标写 12、
+        // 点进去生产单只有 3，正是用户最烦的「对不上」。改成跟开关走。
+        // 「等审核」那颗不用动：后端 owner=me 时 pending 区仍是全量共享（挑文案是大家的事）。
         const [r1, r2] = await Promise.all([
           client.get('/assets/summaries', { params: { audit_status: 'pending', page_size: 1 } }) as Promise<{ total?: number }>,
-          client.get('/assets/productions', { params: { status: 'order_ready', owner: role === 'operator' ? 'me' : 'all', page_size: 1 } }) as Promise<{ total?: number }>,
+          client.get('/assets/productions', { params: { status: 'order_ready', owner: scopeMine ? 'me' : 'all', page_size: 1 } }) as Promise<{ total?: number }>,
         ]);
         if (alive) setBadges({ review: r1.total ?? 0, ready: r2.total ?? 0 });
       } catch {
@@ -342,7 +367,7 @@ const AssetLibrary: React.FC = () => {
       clearInterval(t);
       window.removeEventListener('asset-badges-refresh', onRefresh);
     };
-  }, [role, reloadToken]);
+  }, [scopeMine, reloadToken]);
   const isAdmin = role === 'admin';
   // 2026-11-11 评审（审核/投放席 P0）：光看角色不够——管理员可以按人关掉审核/投产职能
   //（users.can_review / can_produce，/auth/me 已返回）。职能关了按钮必须真的不可用，
@@ -389,6 +414,7 @@ const AssetLibrary: React.FC = () => {
           key={`assets-${batchId ?? 'all'}`}
           canProduce={canProduce}
           isAdmin={isAdmin}
+          scopeMine={scopeMine}
           batchId={batchId}
           reloadToken={reloadToken}
           onGoToProduction={() => setActiveTab('production')}
@@ -411,6 +437,7 @@ const AssetLibrary: React.FC = () => {
           canReview={canReview}
           canProduce={canProduce}
           isAdmin={isAdmin}
+          scopeMine={scopeMine}
           batchId={batchId}
           reloadToken={reloadToken}
           onGoToProduction={() => setActiveTab('production')}
@@ -432,6 +459,7 @@ const AssetLibrary: React.FC = () => {
           key={`prod-${batchId ?? 'all'}`}
           canWriteBack={canProduce}
           isAdmin={isAdmin}
+          scopeMine={scopeMine}
           batchId={batchId}
           reloadToken={reloadToken}
           dispatchIds={dispatchIds}
@@ -455,7 +483,7 @@ const AssetLibrary: React.FC = () => {
           key={`outputs-${batchId ?? 'all'}`}
           batchId={batchId}
           reloadToken={reloadToken}
-          ownerDefault={canReview && !isAdmin ? 'me' : 'all'}
+          ownerDefault={scopeMine ? 'me' : 'all'}
           ownerSwitchable={canReview}
           active={activeTab === 'outputs'}
           onGoToProduction={() => setActiveTab('production')}
@@ -515,6 +543,19 @@ const AssetLibrary: React.FC = () => {
               ]}
             />
           </Tooltip>
+          {/* 素材隔离开关（11-24）：默认关＝全员内容都能看见；开＝各列表只摆自己相关的那部分 */}
+          <Tooltip
+            title={
+              scopeMine
+                ? '仅看自己：素材/文案/脚本/生产单/成片都只列你相关的（脚本库里你收藏过的也算你的）。点开＝恢复看全部，选择跟着你的账号走'
+                : '当前看全部人的内容。打开后只看自己导入的素材，以及你在脚本库里写过／收藏过的脚本'
+            }
+          >
+            <Space size={4}>
+              <Switch size="small" checked={scopeMine} onChange={switchScope} />
+              <Text style={{ fontSize: 12, color: 'rgba(0,0,0,0.65)' }}>仅看自己</Text>
+            </Space>
+          </Tooltip>
           {batchId && (
             <Tag closable onClose={() => setBatchId(undefined)} color="geekblue">
               批次：{batchNames[batchId] || batchId.slice(0, 8)}
@@ -561,6 +602,7 @@ const AssetLibrary: React.FC = () => {
 
       {mode === 'simple' ? (
         <SimpleLibrary
+          scopeMine={scopeMine}
           canImport={canProduce}
           canProduce={canReview && fnProduce}
           canReview={canReview}

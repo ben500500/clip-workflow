@@ -1,25 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Badge, Button, Card, Input, InputNumber, Modal, Segmented, Space, Table, Tag, Tooltip,
+  Alert, Badge, Button, Card, Input, InputNumber, Modal, Segmented, Space, Table, Tabs, Tag, Tooltip,
   Typography, Upload, message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  EditOutlined, LinkOutlined, QuestionCircleOutlined, StopOutlined, ThunderboltOutlined, UploadOutlined,
+  EditOutlined, LinkOutlined, QuestionCircleOutlined, StarFilled, StarOutlined, StopOutlined, ThunderboltOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import {
   ASSET_STAGE_LABELS, assetApi, isAssetJobAck,
   type AssetCategory, type AssetItem, type AssetScript, type AssetScriptVerdictItem,
 } from '../../../api/assets';
-import { CategorySelect, splitCategoryName, useAssetCategories } from '../AssetCategoryBits';
 import AssetCardPicker from '../AssetCardPicker';
+import AssetOutputWall from '../AssetOutputWall';
+import { CategorySelect, splitCategoryName, useAssetCategories } from '../AssetCategoryBits';
 import { nudgeAssetJobBanner } from '../AssetJobBanner';
 import { withCrossOwnerConfirm, withCrossPersonConfirm } from '../crossPerson';
 import ScriptEditorDrawer, { type SaveKind } from './ScriptEditorDrawer';
-import SimpleComposeCard from './SimpleComposeCard';
+import { ThumbCell, VideoPreviewModal, useCoverMap } from './SimplePreviewBits';
 import { reportVerdict } from './scriptResult';
+import { useOwnerView } from '../../../hooks/useOwnerView';
 
-const { Text } = Typography;
+const { Text, Link } = Typography;
 
 /** 每个脚本出几版＝板上 total（1..ASSET_BOARD_TOTAL_MAX，与后端同上限） */
 const BOARD_TOTAL_MAX = 20;
@@ -45,6 +47,13 @@ interface Props {
   /** 审核职能＋角色：轻量过审 */
   canReview: boolean;
   isAdmin: boolean;
+  /**
+   * 批 T（11-24）全局「仅看自己」：true＝脚本库默认只摆「我写的＋我收藏的」（后端 owner=me 口径），
+   * false／缺省＝看所有人的。用户原话：「默认是要能看到全部的，但是可以加入一个开关或者复选框，
+   * 仅看自己。这个仅看自己，不是说仅仅是自己导入的文案，也可以在已有的脚本库里面勾选，然后收藏起来。」
+   * ⇒ 默认全部 ＋ 收藏能把别人的脚本挪进"我的"，两件事都由这颗开关和下面那列 ⭐ 承接。
+   */
+  scopeMine?: boolean;
   /** 用户 id：sessionStorage 的键按人隔离（上一任留下的记录不能冒出来） */
   userId: string | null;
   /** 后台任务收敛一次 +1：刚导入的那几条要重拉反推状态 */
@@ -155,25 +164,39 @@ const ImportHookModal: React.FC<ImportHookModalProps> = ({
 // ─────────────────────────  极简模式主视图  ─────────────────────────
 
 /**
- * 素材库极简模式（2026-11-23，用户原话见 docs/1123-素材库极简模式-需求评审与实现方案.md §1）。
+ * 素材库极简模式（2026-11-23 建；**2026-11-24 按用户反馈改回分步页签**）。
  *
- * 一页上下几块，**不设页内页签**（验收口径「零页签切换」）：
- *   脚本库：导入钩子视频并反推 → 收进脚本库 → 打开改 → 定稿 ｜ 上传／手写脚本 → 定稿
- *   投豆包：勾脚本 → 选三视图 → 出几版 → （轻量过审）→ 投
- *   组合出片：勾豆包成片 × 勾正片 → 顺序 → 叠加 → 出包（需求三屏 3，纯本机 ffmpeg、0 元）
+ * 用户原话（11-24）：「你这个直接不是过度简化吗？**原来的 tab 形式还是要保留的，这样能分清步骤**」
+ * 「你的什么组合出片、什么行列写在那里，谁看得懂？**素材也没有预览**」
+ * 「我要的那个**拼接是最后一步，你可以先不做**，到时候直接把**短剧切片中的那个功能搬过来**就可以了」
+ * 「**先把前面的文案导入，然后生产豆包这些东西全部做做好**」
+ * 「（界面）虽然是要基建，但也不是让人一头雾水、摸不着头脑的那种」
+ *
+ * 所以这一版：
+ *   ① 脚本库（导入 ＋ 改稿·定稿）→ ② 投豆包 → ③ 看成片，**一步一个页签**，
+ *   页签带序号与待办数，每屏顶部一句话讲清"这步做什么、下一步去哪"；
+ *   每屏都能**看见片子**（缩略图＋点开即播，见 SimplePreviewBits）；
+ *   组合出片那一屏**从界面撤下**（后端 compose/matrix 与用例原样留着，等把短剧切片
+ *   那套拼接功能搬过来再放，别在中间态摆一张行列矩阵让人猜）。
+ *   导入**不再是独立一屏**（11-24 用户：「那一小行的功能块直接放在脚本库的上方，
+ *   这样就少一个 tab；名称不要叫"先弄到稿"，就叫"导入"」）——它是脚本库顶部的
+ *   一张卡，与"收进脚本库""待过审""改稿·定稿"同屏，省掉一次页签往返。
  *
  * 只折叠界面、不旁路逻辑：导入、反推、投产、投板全走五环同一个接口；钩子号、跨人确认、
  * 风险词闸都在后端。定稿冻结／生产载体见后端 assets/misc.py 脚本库段。
  */
 const SimpleLibrary: React.FC<Props> = ({
-  canImport, canProduce, canReview, isAdmin, userId, reloadToken, onOpenFullTab,
+  canImport, canProduce, canReview, isAdmin, scopeMine, userId, reloadToken, onOpenFullTab,
 }) => {
   const cats = useAssetCategories();
   const [defaultCat, setDefaultCat] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState('');
+  /** 分步页签（11-24 用户要求保留 tab 形式好分清步骤；导稿并入脚本库后只剩三步） */
+  const [tab, setTab] = useState<'scripts' | 'produce' | 'outputs'>('scripts');
 
   // ── 脚本库 ──
-  const [owner, setOwner] = useState<'me' | 'all'>('me');
+  // 默认**全部**（11-24 用户口径「默认是要能看到全部的」），全局开关打开才收成"我的"。
+  const [owner, setOwner] = useOwnerView(scopeMine);
   const [qInput, setQInput] = useState('');
   const [q, setQ] = useState('');
   const [items, setItems] = useState<AssetScript[]>([]);
@@ -205,6 +228,9 @@ const SimpleLibrary: React.FC<Props> = ({
   }, [qInput]);
 
   // ── 待过审（只有有审核职能的人看得到）：同事送审的脚本在这里点那一下 ──
+  // 口径跟「改稿·定稿」那张表同一个开关：选了「我的」就只留我写的∪我收藏的，
+  // 别在一屏里一半按开关筛、一半硬编 all（11-24 用户：「选择我的之后，
+  // 未定稿的即使不在我的收藏里也会展现」——漏的就是这里原先写死的 'all'）。
   const [pending, setPending] = useState<AssetScript[]>([]);
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const fetchPending = useCallback(async () => {
@@ -213,12 +239,12 @@ const SimpleLibrary: React.FC<Props> = ({
       return;
     }
     try {
-      const res = await assetApi.listScripts({ owner: 'all', carrier_status: 'pending', page_size: 100 });
+      const res = await assetApi.listScripts({ owner, carrier_status: 'pending', page_size: 100 });
       setPending(res.items || []);
     } catch {
       /* 待审数读不到不拦主流程 */
     }
-  }, [canReview]);
+  }, [canReview, owner]);
   useEffect(() => { void fetchPending(); }, [fetchPending, reloadToken]);
 
   const refreshAll = useCallback(
@@ -471,6 +497,8 @@ const SimpleLibrary: React.FC<Props> = ({
       reportVerdict(res.results, res.message, '条投出');
       nudgeAssetJobBanner();
       setSelectedIds([]);
+      // 投完直接把人带到 ③：这步之后能看的只有等片，别让他在 ② 空等（11-24 分步页签）
+      if (res.results.some((r) => r.ok)) setTab('outputs');
     } catch (e) {
       message.error((e as Error).message || '投豆包没成功', 8);
     } finally {
@@ -487,14 +515,84 @@ const SimpleLibrary: React.FC<Props> = ({
         ? `轻量过审并投豆包（${selected.length}）`
         : `投豆包（${selected.length}）`;
 
+  // ── 预览（11-24 用户：「素材也没有预览」）──
+  // 一张共享播放器＋按素材 id 批量取首帧：脚本行的图＝它出处那条钩子视频的首帧。
+  // 素材被删了脚本还在（origin_asset_id 置空／帧取不到）＝这格就是"无图"，不报错、不拦任何一步。
+  const coverIds = useMemo(() => {
+    const ids: Array<string | null | undefined> = hookAssets.map((a) => a.id);
+    items.forEach((s) => ids.push(s.origin_asset_id));
+    pending.forEach((s) => ids.push(s.origin_asset_id));
+    selected.forEach((s) => ids.push(s.origin_asset_id));
+    return ids;
+  }, [hookAssets, items, pending, selected]);
+  const { cover: covers, loading: coversLoading } = useCoverMap(coverIds);
+  const [play, setPlay] = useState<{ assetId: string; title: string } | null>(null);
+  const previewOf = (assetId: string | null | undefined, title: string, height = 56) => (
+    <ThumbCell
+      src={assetId ? covers[assetId] ?? null : null}
+      loading={coversLoading}
+      title={title}
+      height={height}
+      onPlay={assetId ? () => setPlay({ assetId, title }) : undefined}
+    />
+  );
+
+  // ── 批 T（11-24）收藏：用户口径「也可以在已有的脚本库里面勾选，然后收藏起来」──
+  // 收藏只改**可见范围**，不改归属：别人的定稿照样改不动（要动＝打开后派生新草稿）。
+  // 所以在「仅看自己」里取消收藏别人的脚本，这条会当场从列表消失——这是对的，不是 bug。
+  const toggleFavorite = async (r: AssetScript) => {
+    try {
+      if (r.favorited) {
+        await assetApi.unfavoriteScript(r.id);
+        message.success(`已取消收藏「${r.name}」`, 4);
+      } else {
+        await assetApi.favoriteScript(r.id);
+        message.success(`已收藏「${r.name}」——打开「仅看自己」就能看到并勾选它`, 5);
+      }
+      await fetchScripts();
+    } catch (e) {
+      message.error((e as Error).message || '收藏没改成', 8);
+    }
+  };
+
   const columns: ColumnsType<AssetScript> = [
+    {
+      title: '预览',
+      key: 'preview',
+      width: 62,
+      render: (_: unknown, r) => previewOf(r.origin_asset_id, r.name),
+    },
+    {
+      title: (
+        <Tooltip title="收藏＝把这条挪进「仅看自己」的清单，下次能直接找到并勾去投。只是让你看得到，不代表你能改它——别人的定稿要动，打开后另存一份草稿。">
+          <span>收藏</span>
+        </Tooltip>
+      ),
+      key: 'fav',
+      width: 60,
+      render: (_: unknown, r) => (
+        <Tooltip title={r.favorited ? '已收藏，点这里取消' : '点一下收藏进「我的」'}>
+          <Button
+            size="small" type="text"
+            aria-label={r.favorited ? '取消收藏' : '收藏'}
+            icon={r.favorited
+              ? <StarFilled style={{ color: '#faad14' }} />
+              : <StarOutlined style={{ color: 'rgba(0,0,0,.35)' }} />}
+            onClick={() => void toggleFavorite(r)}
+          />
+        </Tooltip>
+      ),
+    },
     {
       title: '脚本',
       dataIndex: 'name',
       render: (_: unknown, r) => (
         <Space direction="vertical" size={0}>
           <Space size={6}>
-            <Text strong style={{ fontSize: 13 }}>{r.name}</Text>
+            {/* 11-24 用户：「点击脚本的标题也直接打开吧，不要只有那个"打开"按钮可以开启」 */}
+            <Link strong style={{ fontSize: 13 }} onClick={() => setEditor({ open: true, script: r })}>
+              {r.name}
+            </Link>
             {r.source_kind === 'reverse' && <Tag style={{ marginInlineEnd: 0 }}>反推</Tag>}
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }} ellipsis={{ tooltip: r.preview }}>
@@ -534,11 +632,17 @@ const SimpleLibrary: React.FC<Props> = ({
         </Tooltip>
       ) : <Text type="secondary">—</Text>),
     },
-    ...(owner === 'all' ? [{
+    // 「仅看自己」里也会出现别人的脚本（收藏来的）。这一列的判据跟着**数据**走而不是跟着
+    // 开关走：只要当前页里混进了不是我的行，就把「谁的」亮出来，否则用户只会看到一条来路不明的脚本。
+    ...((owner === 'all' || items.some((s) => s.owner_id !== userId)) ? [{
       title: '谁的',
       dataIndex: 'owner_name',
       width: 90,
-      render: (v: string | null) => <Text type="secondary" style={{ fontSize: 12 }}>{v || '—'}</Text>,
+      render: (v: string | null, r: AssetScript) => (
+        r.owner_id === userId
+          ? <Text type="secondary" style={{ fontSize: 12 }}>我的</Text>
+          : <Text type="secondary" style={{ fontSize: 12 }}>{v || '他人'}{r.favorited ? ' · 收藏' : ''}</Text>
+      ),
     }] : []),
     {
       title: '操作',
@@ -603,14 +707,23 @@ const SimpleLibrary: React.FC<Props> = ({
   const hint = !canProduce
     ? '你的账号没有投产职能——找管理员在用户管理里开通'
     : !selected.length
-      ? '先在上面的脚本库勾选「可投稿」的脚本'
+      ? '先到 ① 脚本库 勾选要投的脚本'
       : undefined;
 
-  return (
-    <Space direction="vertical" size={12} style={{ width: '100%' }}>
-      {/* ① 导入／新建：三种来路一行放完 */}
-      <Card size="small">
-        <Space wrap size={8}>
+  /** 页签标题＝序号＋步骤名＋这一屏还欠的件数（11-24 用户：原来的 tab 形式要保留，好分清步骤） */
+  const tabLabel = (mark: string, text: string, count?: number) => (
+    <Space size={6}>
+      <span>{`${mark} ${text}`}</span>
+      {!!count && <Badge count={count} size="small" />}
+    </Space>
+  );
+
+  // ── 导入：链接／文件／脚本文件／手写 → 反推 → 收进脚本库（11-24 用户：这一小块直接放脚本库上方，别再单独一个页签）──
+  const importBlock = (
+    <>
+      {/* 三种来路一行放完 */}
+      <Card size="small" title="导入">
+        <Space wrap size={8} align="center">
           <Button
             icon={<ThunderboltOutlined />}
             disabled={!canImport || busy !== ''}
@@ -646,15 +759,21 @@ const SimpleLibrary: React.FC<Props> = ({
             width={220}
           />
         </Space>
+        <div style={{ marginTop: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            贴链接或传视频＝系统把片子反推成稿（一条一两分钟）；上传脚本文件／手写＝直接进库。
+            稿子进库后在下面的表格里改稿、定稿。
+          </Text>
+        </div>
       </Card>
 
-      {/* ② 刚导入的钩子视频：反推出稿后收进脚本库 */}
+      {/* 刚导入的钩子视频：反推出稿后收进脚本库 */}
       {!!hookAssets.length && (
         <Card
           size="small"
           title={
             <Space size={6}>
-              刚导入的钩子视频
+              收进脚本库
               <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>
                 （{hookAssets.length} 条{hookRunning ? '，反推在后台跑' : ''}）
               </Text>
@@ -678,6 +797,12 @@ const SimpleLibrary: React.FC<Props> = ({
             pagination={false}
             dataSource={hookAssets}
             columns={[
+              {
+                title: '预览',
+                key: 'preview',
+                width: 62,
+                render: (_: unknown, r) => previewOf(r.id, r.title || r.code),
+              },
               { title: '素材', dataIndex: 'title', ellipsis: true, render: (v: string | null, r) => v || r.code },
               {
                 title: '反推',
@@ -708,8 +833,23 @@ const SimpleLibrary: React.FC<Props> = ({
           />
         </Card>
       )}
+      {!hookAssets.length && (
+        <Text type="secondary" style={{ fontSize: 12, paddingLeft: 2 }}>
+          这里会列出刚导入的钩子视频：反推在后台跑，出稿后点「全部收进脚本库」，再到下面的表格里改稿。
+        </Text>
+      )}
+    </>
+  );
 
-      {/* ③ 待过审（只有有审核职能的人看得到） */}
+  // ── ① 脚本库：导入 ＋ 改稿 · 定稿（· 待过审）──
+  const paneScripts = (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {importBlock}
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        打开改到满意点「定稿」，<Text strong>只有定稿的脚本能投豆包</Text>；
+        改一份已定稿的会派生新草稿，投过的稿子不会被覆盖。
+      </Text>
+      {/* 待过审（只有有审核职能的人看得到） */}
       {canReview && !!pending.length && (
         <Card
           size="small"
@@ -728,6 +868,12 @@ const SimpleLibrary: React.FC<Props> = ({
             dataSource={pending}
             rowSelection={{ selectedRowKeys: pendingIds, onChange: (keys) => setPendingIds(keys.map(String)) }}
             columns={[
+              {
+                title: '预览',
+                key: 'preview',
+                width: 62,
+                render: (_: unknown, r) => previewOf(r.origin_asset_id, r.name),
+              },
               { title: '脚本', dataIndex: 'name', ellipsis: true, render: (v: string) => <Text strong>{v}</Text> },
               { title: '谁的', dataIndex: 'owner_name', width: 100 },
               {
@@ -763,13 +909,13 @@ const SimpleLibrary: React.FC<Props> = ({
         </Card>
       )}
 
-      {/* ④ 脚本库 */}
+      {/* 脚本库表格 */}
       <Card
         size="small"
         title={(
           <Space size={6}>
-            脚本库
-            <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>（{total} 条）</Text>
+            改稿 · 定稿
+            <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>（库里有 {total} 条）</Text>
           </Space>
         )}
         extra={
@@ -805,25 +951,66 @@ const SimpleLibrary: React.FC<Props> = ({
           }}
         />
       </Card>
+      <Space size={10} wrap>
+        <Button type="primary" disabled={!selected.length} onClick={() => setTab('produce')}>
+          下一步：投豆包{selected.length ? `（已勾 ${selected.length}）` : ''}
+        </Button>
+        {!selected.length && (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            在上面的表格里勾选脚本（库稿要先定稿才能勾）。
+          </Text>
+        )}
+      </Space>
+    </Space>
+  );
 
-      {/* ⑤ 投豆包 */}
-      <Card size="small" title="投豆包">
+  // ── ② 投豆包：勾脚本 → 三视图 → 出几版 → （轻量过审）投 ──
+  const paneProduce = (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        一个脚本占一个钩子号；「每个出几版」＝板上那条任务的产出数。
+        投出去约 25 分钟出片，回来在 ③ 看成片。
+      </Text>
+      {/* 投豆包这一屏 */}
+      <Card size="small" title={`这次要投的脚本（${selected.length}）`}>
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          {/* 11-24 用户：「素材也没有预览」——投之前就得看见这几个稿子是从哪条片子来的、点一下能播 */}
+          {selected.length ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+              {selected.map((s) => {
+                const st = scriptStatus(s);
+                return (
+                  <div key={s.id} style={{ width: 96 }}>
+                    {previewOf(s.origin_asset_id, s.name, 84)}
+                    <div style={{ marginTop: 4 }}>
+                      <Text style={{ fontSize: 12 }} ellipsis={{ tooltip: s.name }}>{s.name}</Text>
+                    </div>
+                    <Space size={4} style={{ marginTop: 2 }}>
+                      <Tag color={st.color} style={{ marginInlineEnd: 0 }}>{st.text}</Tag>
+                      <Button
+                        size="small" type="link" style={{ padding: 0, height: 18, fontSize: 12 }}
+                        onClick={() => setEditor({ open: true, script: s })}
+                      >
+                        改
+                      </Button>
+                    </Space>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <Space size={10} wrap>
+              <Text type="secondary" style={{ fontSize: 12 }}>还没勾脚本。</Text>
+              <Button size="small" onClick={() => setTab('scripts')}>回 ① 脚本库勾选</Button>
+            </Space>
+          )}
           <Space wrap size={16}>
-            <Text>
-              已选 <Text strong>{selected.length}</Text> 个脚本
-              {selected.length > 0 && (
-                <Tooltip title={selected.map((s) => s.name).join('、')}>
-                  <Text type="secondary" style={{ fontSize: 12, marginLeft: 6, cursor: 'help' }}>看是哪几个</Text>
-                </Tooltip>
-              )}
-            </Text>
             <Space>
               <Text>每个出几版</Text>
               <InputNumber min={1} max={BOARD_TOTAL_MAX} value={boardTotal} onChange={(v) => setBoardTotal(v || 1)} />
             </Space>
-            <Button type="link" size="small" style={{ padding: 0 }} onClick={() => onOpenFullTab('outputs')}>
-              去成片墙看片 →
+            <Button type="link" size="small" style={{ padding: 0 }} onClick={() => setTab('outputs')}>
+              ③ 看成片 →
             </Button>
           </Space>
           <div>
@@ -831,7 +1018,7 @@ const SimpleLibrary: React.FC<Props> = ({
             <AssetCardPicker value={cardIds} onChange={setCardIds} active />
           </div>
           <Space size={8} wrap>
-            <Tooltip title={hint || '投出去占当天号池额度（一个脚本一个钩子号）；约 25 分钟出片，回到成片墙'}>
+            <Tooltip title={hint || '投出去占当天号池额度（一个脚本一个钩子号）；约 25 分钟出片，投完自动跳到 ③ 看成片'}>
               <Button
                 type="primary"
                 danger
@@ -848,13 +1035,47 @@ const SimpleLibrary: React.FC<Props> = ({
           </Space>
         </Space>
       </Card>
+    </Space>
+  );
 
-      {/* ⑥ 组合出片（11-24 需求三 S4：屏 3 的组合导出矩阵＋叠加预设＋批量出包） */}
-      <SimpleComposeCard
-        canProduce={canProduce}
-        isAdmin={isAdmin}
-        onDone={refreshAll}
-        onOpenFullTab={onOpenFullTab}
+  // ── ③ 看成片（拼接这步暂时走短剧切片，见卡顶说明）──
+  const paneOutputs = (
+    <Space direction="vertical" size={10} style={{ width: '100%' }}>
+      <Alert
+        type="info"
+        showIcon
+        message="要拼接（角标／警示语／剧名／片尾引导）先去「短剧切片」"
+        description="左侧菜单 短剧切片 → 进剧集 → 详情页那套叠加功能现成能用；素材库这边的组合出片等把它搬过来再放，中间态不摆看不懂的行列矩阵。"
+      />
+      <AssetOutputWall
+        key="simple-outputs"
+        reloadToken={reloadToken}
+        ownerDefault={canReview && !isAdmin ? 'me' : 'all'}
+        ownerSwitchable={canReview}
+        active={tab === 'outputs'}
+        onGoToProduction={() => onOpenFullTab('production')}
+      />
+    </Space>
+  );
+
+  return (
+    <>
+      <Tabs
+        activeKey={tab}
+        onChange={(k) => setTab(k as typeof tab)}
+        items={[
+          { key: 'scripts', label: tabLabel('①', '脚本库', pending.length), children: paneScripts },
+          { key: 'produce', label: tabLabel('②', '投豆包', selected.length), children: paneProduce },
+          { key: 'outputs', label: '③ 看成片', children: paneOutputs },
+        ]}
+      />
+
+      {/* 一个共享播放器：列表几十上百行，每行挂一个 Modal 组件树白烧渲染 */}
+      <VideoPreviewModal
+        open={!!play}
+        onClose={() => setPlay(null)}
+        title={play?.title || ''}
+        assetId={play?.assetId ?? null}
       />
 
       <ImportHookModal
@@ -875,7 +1096,7 @@ const SimpleLibrary: React.FC<Props> = ({
         onSaved={onSaved}
         onClose={() => setEditor({ open: false, script: null })}
       />
-    </Space>
+    </>
   );
 };
 

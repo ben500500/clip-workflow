@@ -977,3 +977,32 @@ class AssetOverlayPreset(Base):
 
     def __repr__(self) -> str:
         return f"<AssetOverlayPreset(name={self.name!r}, scope={self.scope}, active={self.active})>"
+
+
+# ──────────────────────────────────────────────
+# 脚本收藏（11-24 素材隔离：「仅看自己」不止是自己写的）
+# ──────────────────────────────────────────────
+
+class AssetScriptFavorite(Base):
+    """某人把**别人**的脚本标成"我的"——一行 = 一个 (人, 脚本) 关系。
+
+    为什么单独建表，而不是给脚本加一列 `favorited_by`（数组）或改 owner：
+    - 改 owner 会把写权限带走（`_assert_script_owner` 只认 owner_id），收藏不等于拥有；
+    - 数组列既查不动（"我的收藏"要 `@>`）也没法在脚本删除时自动收干净。
+
+    两侧都 CASCADE：脚本下架硬删时收藏行跟着走，用户删除时他的收藏清单也不会留孤儿。
+    「仅看自己」＝ `owner_id == me` **或** 在本人收藏清单里（见 misc.py `list_scripts`）。
+    """
+
+    __tablename__ = "asset_script_favorites"
+    __table_args__ = (
+        UniqueConstraint("user_id", "script_id", name="uq_asset_script_favorites_user_script"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    script_id = Column(UUID(as_uuid=True), ForeignKey("asset_scripts.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def __repr__(self) -> str:
+        return f"<AssetScriptFavorite(user_id={self.user_id}, script_id={self.script_id})>"

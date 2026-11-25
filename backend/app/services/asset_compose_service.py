@@ -15,22 +15,37 @@
 点名过的那类坑。这里改成**以排在最前那一段的规格为准**归一：用户选顺序，
 等于顺带选了目标画幅，不需要再多一个"选画幅"的控件。
 
-第二条继承的结论：混规格**绝不流拷贝**。切片引擎历史上踩过（"混规格走流拷贝 →
-concat 出坏片"，`slice-worker/engines/slice.py:4577-4580` 因此含钩子时强制
-`filter_complex` 重编码），这里同样一律走 `filter_complex concat` + 显式重编码。
+**2026-11-25 改口径：转码配方不再由本模块持有，改为调切片线引擎。**
+用户原话：「拼接你可不可以直接用短剧切片的那套现成的代码？就是那边我更新了，
+你这边也无需再动。」此前本模块自带一套 `filter_complex`（`build_concat_filter` /
+`build_concat_cmd`），与 `engines/slice.py::concat_segments` 是同一件事的两份写法，
+切片线 11-23 加的「同规格免重编码（concat demuxer 流拷贝）」和 11-22 的
+「剔 `LC_*`/`LANG` 防中文豆腐块」都到不了素材库这一侧——两份必然漂移。
+现在本模块只剩**适配层**：闸门（2～3 段、必须探到视频流）、把阻塞的 ffmpeg 放线程池、
+把引擎异常翻成能给人看的原话。配方只在 `engines/slice.py` 一处。
 
-第三条继承的结论：段与段之间音频可能缺失。任一段没有音轨时直接 `-c:a aac` 会整条命令
-失败，所以探到缺音轨的那一段补一条 `anullsrc` 静音轨（时长按该段视频时长），
-接缝处不会崩，也不静默丢音轨。
+这条改动的分发前提（决定"那边更新这边不用动"成不成立）：backend 容器是
+`./engines:/app/engines:ro` **只读绑定挂载**（docker-compose.yml:358），改仓库根
+`engines/slice.py` **不需要重建镜像**，但 uvicorn 没有 `--reload`，**必须重启容器**
+才加载新模块；切片节点侧另有自己的 engines 副本（由 `api/workers.py` 推送）。
+唯一事实来源是**仓库根 `engines/`**，`slice-worker/engines/` 是 .gitignore 的构建副本。
+
+两条继承下来的硬口径（引擎侧同样成立，见 `engines/tests/test_concat_graph_regression.py`）：
+混规格**绝不流拷贝**——引擎先探各段 AV 签名，完全一致才走 demuxer 流拷贝，
+且拼完校验时长≈各段之和，不符就回退重编码；段与段之间**可能缺音轨**——
+缺音轨的段补一条 `anullsrc`（按该段视频时长 `atrim`），接缝不崩、也不静默丢音轨。
 """
 
 import asyncio
+import functools
 import hashlib
+import importlib.util
 import json
 import logging
 import os
 import shutil
 import subprocess
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -62,11 +77,14 @@ DEFAULT_FPS = "25"
 # 单段最长允许多少秒（拼接是同步等 ffmpeg 的 HTTP 请求，纯防御，别拿它当队列用）
 MAX_SEGMENT_SECONDS = 600.0
 # 一次拼接最多几段。**2＝11-04 的手工口，3＝11-24 需求三加了「片尾」**。
-# 上限钉在 3 不是技术原因（`build_concat_filter` 一直是按 len(segments) 通写、
-# concat=n=N 天生支持任意段数），是**语义**原因：需求三列的输入就是
+# 上限钉在 3 不是技术原因（引擎的滤镜图按段数通写，天然支持任意段数），
+# 是**语义**原因：需求三列的输入就是
 # 「钩子成片 ＋ 正片 ＋ 片尾」这三件，再多一段就属于「拿两条正片拼一条」那种
 # 真正的混剪需求，那需要选点/剪切——11-04 用户已经明确否掉过一次。
 # 放开这个数之前先回去问口径，别顺手改成 10。
+# ⚠️ MIN_SEGMENTS=2 同时是**引擎侧那道护栏**：`concat_segments` 收到单段会直接
+# `shutil.move` **搬走输入文件**（切片线传的是临时件，本来就要清；我们传的是
+# 下载缓存件／已入库产物，被搬走就是数据事故）。别下调到 1。
 MAX_SEGMENTS = 3
 MIN_SEGMENTS = 2
 
@@ -226,77 +244,130 @@ async def probe_media(path: str) -> Optional[Dict[str, Any]]:
     return parse_probe(data)
 
 
-def build_concat_filter(target: Dict[str, Any], segments: List[Dict[str, Any]]) -> Tuple[str, int]:
-    """按目标规格给每段生成 scale/pad/fps/setsar，缺音轨的段接一条静音轨。
+# ───────────────────────  引擎子口（转码配方只此一份）  ───────────────────────
+#
+# 这里不持有 ffmpeg 命令：拼接配方在仓库根 `engines/slice.py::concat_segments`。
+# 本模块的职责只剩三道——闸门（段数／是不是视频）、把阻塞的 ffmpeg 放线程池、
+# 把引擎异常翻成能给人看的原话。
+#
+# 为什么不复用 `asset_overlay_service._load_engine()`（它加载的是**同一个 slice.py**）：
+# 那层的缓存与必检函数（`apply_badges`/`apply_text_overlays`）属于叠加用例，
+# 单测直接拨它的 `_ENGINE`/`_engine_path` 全局（test_asset_overlay.py:237-280）。
+# 共用一份缓存＝拼接挂了会连累叠加、反之亦然，两边的打桩还会互相踩。
+_ENGINE: Any = None
+_ENGINE_ERROR: Optional[str] = None
 
-    返回 `(filter_complex 串, 要追加的 lavfi 输入个数)`。
-    target 是**排在最前那一段**探到的 {width,height,fps}——选顺序＝选画幅。
 
-    输入索引约定：两段视频占 0 和 1，缺音轨的段按顺序在后面追加 `anullsrc` 输入
-    （索引从 2 起）。追加的输入**本身就带音频流**，所以图里引用 `[j:a]` 再 atrim 到
-    该段时长；在滤镜图里裸写 `anullsrc` 是错的（那是 source 滤镜，没有输入可接）。
+def _settings_engines_dir() -> str:
+    """读 ENGINES_DIR 配置，延迟到调用时。
+
+    不在模块顶部 `from app.config import settings`：本模块被单测直接 import 时
+    不该把配置校验链（必填的 MINIO/JWT 那几项）一起拖进来——拼接口径的几个纯函数
+    （`_fps_expr` 等）值得能被裸 import。
     """
-    w, h = int(target["width"]), int(target["height"])
-    fps = target.get("fps") or DEFAULT_FPS
-    chain: List[str] = [
-        f"[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps},format=yuv420p[v{i}]"
-        for i in range(len(segments))
-    ]
-    extra_inputs = 0
-    for i, seg in enumerate(segments):
-        if seg.get("has_audio"):
-            chain.append(f"[{i}:a]aresample=async=1:first_pts=0[a{i}]")
-            continue
-        index = len(segments) + extra_inputs
-        extra_inputs += 1
-        dur = float(seg.get("duration") or target.get("duration") or 0.1)
-        chain.append(
-            f"[{index}:a]atrim=0:{max(0.1, round(dur, 3))},"
-            f"asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0[a{i}]"
+    try:
+        from app.config import settings
+
+        return (settings.ENGINES_DIR or "").strip()
+    except Exception:  # noqa: BLE001 - 配置读不到回空，由 _engine_path 报人话
+        return ""
+
+
+def _engine_path() -> Optional[str]:
+    """在 ENGINES_DIR 里找 slice.py。相对路径按 backend 容器 cwd（/app）解析。"""
+    candidates = []
+    configured = _settings_engines_dir()
+    if configured:
+        candidates.append(os.path.join(configured, "slice.py"))
+        if not os.path.isabs(configured):
+            # 本机从 backend/ 跑 pytest 时 ENGINES_DIR="engines" 指不到，兜一层 ../engines
+            candidates.append(os.path.join("..", configured, "slice.py"))
+    for cand in candidates:
+        if os.path.isfile(cand):
+            return os.path.abspath(cand)
+    return None
+
+
+def _load_engine() -> Tuple[Any, Optional[str]]:
+    """懒加载引擎模块，失败回 (None, 人话)。成功与失败都缓存（别每次重导）。
+
+    用 `spec_from_file_location` 而不是 `sys.path.insert + import slice`：后者把整个
+    engines 目录顶到 sys.path 最前面，`slice` 这名字太通用（backend 里已有一个
+    `app.engines` 包），万一日后被别的模块抢走，拼的就是**另一个文件**里的函数。
+
+    连 `SystemExit` 一起接：`engines/slice.py` 顶部对 Python<3.10 是**直接 sys.exit(1)**，
+    那是 BaseException 不是 Exception——不接住会把整个请求进程带走。
+    """
+    global _ENGINE, _ENGINE_ERROR
+    if _ENGINE is not None or _ENGINE_ERROR is not None:
+        return _ENGINE, _ENGINE_ERROR
+    path = _engine_path()
+    if path is None:
+        _ENGINE_ERROR = (
+            f"这台机器上找不到切片引擎（{_settings_engines_dir() or 'engines'}/slice.py）。"
+            "现网 backend 容器是挂载 ./engines 进来的，本地开发机没挂——"
+            "所以拼接只能在线上验，本地跑请把本模块的 concat_segments 打桩"
         )
-    labels = "".join(f"[v{i}][a{i}]" for i in range(len(segments)))
-    chain.append(f"{labels}concat=n={len(segments)}:v=1:a=1[outv][outa]")
-    return ";".join(chain), extra_inputs
+        logger.warning("%s", _ENGINE_ERROR)
+        return None, _ENGINE_ERROR
+    try:
+        spec = importlib.util.spec_from_file_location("asset_concat_engine", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"无法从 {path} 载入引擎模块")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        if not callable(getattr(module, "concat_segments", None)):
+            raise ImportError(f"引擎 {path} 里没有可调用的 concat_segments()")
+        _ENGINE = module
+        logger.info("拼接引擎已载入：%s", path)
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - 引擎载入失败不能让接口 500
+        _ENGINE_ERROR = f"拼接引擎载入失败（{type(exc).__name__}: {exc}）"
+        logger.exception("%s", _ENGINE_ERROR)
+        sys.modules.pop("asset_concat_engine", None)
+    return _ENGINE, _ENGINE_ERROR
 
 
-def build_concat_cmd(paths: List[str], out_path: str, target: Dict[str, Any],
-                     segments: List[Dict[str, Any]]) -> Tuple[List[str], str]:
-    """拼一条完整 ffmpeg 命令（单测就断这条，不依赖真装 ffmpeg）。"""
-    filter_body, extra_inputs = build_concat_filter(target, segments)
-    cmd: List[str] = ["ffmpeg", "-y"]
-    for p in paths:
-        cmd += ["-i", p]
-    for _ in range(extra_inputs):
-        cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
-    cmd += [
-        "-filter_complex", filter_body,
-        "-map", "[outv]", "-map", "[outa]",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "+faststart",
-        out_path,
-    ]
-    return cmd, filter_body
+def engine_available() -> Tuple[bool, Optional[str]]:
+    """老实回答「这台机器能不能自动拼接」，不抛异常（给界面/诊断用）。"""
+    module, err = _load_engine()
+    return module is not None, err
 
 
-async def _run(cmd: List[str]) -> Tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+def _run_engine_concat(engine: Any, paths: List[str], out_path: str) -> None:
+    """线程里同步跑引擎拼接（run_in_executor 的执行体，别在事件循环里直接调）。
+
+    参数口径：
+    - `threads=0`＝交给 ffmpeg 自适应。引擎默认 1（切片线为并发切片限 CPU），
+      而素材库一次只拼一条，照默认跑会把几秒的活儿拉成几十秒——本口是同步等
+      ffmpeg 的请求，慢就等于占着连接不放。
+    - `copy_if_possible=True`＝各段 AV 签名完全一致时走 concat demuxer 流拷贝
+      （引擎自己校验拼接时长，不符则回退重编码）。豆包成片＋同参切片这种常见组合
+      能免掉一次重编码，画质不掉。
+    - `faststart=True`＝产物 `moov` 前置，浏览器边下边播。引擎默认关是为了不动
+      切片线既有产物字节；素材库这一侧要挂网页上播，所以显式打开。
+    """
+    engine.concat_segments(
+        list(paths), out_path, threads=0, encoder="libx264",
+        copy_if_possible=True, faststart=True,
     )
-    _, stderr = await proc.communicate()
-    return proc.returncode or 0, stderr.decode(errors="replace")
 
 
 async def concat_segments(paths: List[str], target: Dict[str, Any], out_path: str) -> Optional[str]:
     """把 paths 按给定顺序拼成 out_path；成功回 None，失败回一句能给人看的原话。
 
-    `target` 是调用方按**顺序第一段**探到的规格（宽/高/帧率），本函数只补音轨有无与时长。
+    **素材库三处拼接口（手工口／回收自动拼／组合导出矩阵）都经 `_concat_render`
+    汇到这里**，函数名保留是为了让现有用例
+    （`patch("app.services.asset_compose_service.concat_segments", ...)`）照样打得通。
 
-    段数区间 `MIN_SEGMENTS..MAX_SEGMENTS`（2～3）。11-24 需求三从 2 放宽到 3 是
-    为了「＋片尾」，滤镜图与命令构造一直是按 `len(paths)` 通写的，没有为三段另写一套
-    ——**全仓只此一份 concat 实现**（§9.3 收口），另一处 `api/upload.py::_ffmpeg_concat`
-    已标死为「仅限多文件合并上传」。
+    `target` 是调用方按**顺序第一段**探到的规格（宽/高/帧率）。引擎自己也会探首段
+    几何（同一个「排在最前那一段＝目标画幅」口径），所以这里保留形参只为两件事：
+    调用点签名不必改、以及引擎探测万一回退这里还能顶上。**不再用 `target` 拼滤镜串。**
+
+    段数区间 `MIN_SEGMENTS..MAX_SEGMENTS`（2～3）。11-24 需求三从 2 放宽到 3 是为了
+    「＋片尾」；段数通写这件事现在在引擎里，本模块只守门。
+    **全仓只此一份 concat 实现**（§9.3 收口，现在这一份在 `engines/slice.py`），
+    另一处 `api/upload.py::_ffmpeg_concat` 已标死为「仅限多文件合并上传」。
     """
     if not MIN_SEGMENTS <= len(paths) <= MAX_SEGMENTS:
         return (
@@ -307,18 +378,24 @@ async def concat_segments(paths: List[str], target: Dict[str, Any], out_path: st
         return "服务器里没有 ffmpeg，拼不了（找运维持容器镜像）"
     if not shutil.which("ffprobe"):
         return "服务器里没有 ffprobe，探不了规格"
-    segments: List[Dict[str, Any]] = []
     for p in paths:
         info = await probe_media(p)
         if info is None:
             return f"这一段探不出视频流，不是能拼的视频文件：{p.rsplit('/', 1)[-1]}"
-        segments.append(info)
-    cmd, _ = build_concat_cmd(paths, out_path, target, segments)
-    code, err = await _run(cmd)
-    if code != 0 or not _nonempty(out_path):
-        tail = err[-800:] if err else "无 stderr"
-        logger.error("拼接失败 code=%s：%s", code, tail)
-        return f"ffmpeg 拼接失败（退出码 {code}）：{tail}"
+    engine, err = _load_engine()
+    if engine is None:
+        return err
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(
+            None, functools.partial(_run_engine_concat, engine, list(paths), out_path)
+        )
+    except Exception as exc:  # noqa: BLE001 - 引擎把 ffmpeg stderr 尾部塞在异常里
+        tail = " ".join(str(exc).split())[-800:] or "无错误输出"
+        logger.exception("拼接失败（引擎通道）：%s", tail)
+        return f"ffmpeg 拼接失败：{tail}"
+    if not _nonempty(out_path):
+        return "引擎报成功但产物文件不存在或是空的（别当成功交付）"
     return None
 
 

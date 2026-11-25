@@ -115,6 +115,11 @@ interface Props {
   canProduce: boolean;
   /** 仅 admin：余额闸门 blocked 时可以强行提交（余额接口有波动） */
   isAdmin: boolean;
+  /**
+   * 批 T（11-24）全局「仅看自己」：true＝只列我导入的素材（后端 `owner=me`）。
+   * 缺省 false＝看全部，与上一轮拍板「素材内容全量可见」一致。
+   */
+  scopeMine?: boolean;
   batchId?: string;
   /**
    * 后台任务收敛一次就自增（D-1）：出文案跑完 ⟶ 阶段标签/状态必须刷新，
@@ -154,7 +159,7 @@ interface Props {
  * 在弹窗里（风险词、一致性、钩子编号、号池），这里再写一套早晚对不上。
  */
 const AssetListPanel: React.FC<Props> = ({
-  canProduce, isAdmin, batchId, reloadToken, onGoToProduction, onProduced, active = true,
+  canProduce, isAdmin, scopeMine, batchId, reloadToken, onGoToProduction, onProduced, active = true,
 }) => {
   const [items, setItems] = useState<AssetItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -248,6 +253,8 @@ const AssetListPanel: React.FC<Props> = ({
           category_id: categoryFilter,
           date_from: dates?.[0] ? dates[0]!.format('YYYY-MM-DD') : undefined,
           date_to: dates?.[1] ? dates[1]!.format('YYYY-MM-DD') : undefined,
+          // 全局隔离开关：显式传，别靠后端缺省——后端哪天改默认，这里就静默变了
+          owner: scopeMine ? 'me' : 'all',
         });
         setItems(data.items || []);
         setTotal(data.total || 0);
@@ -258,13 +265,13 @@ const AssetListPanel: React.FC<Props> = ({
         setLoading(false);
       }
     },
-    [keyword, status, sourceKind, mediaKind, stagePrompt, batchFilter, categoryFilter, dates, page, pageSize],
+    [keyword, status, sourceKind, mediaKind, stagePrompt, batchFilter, categoryFilter, dates, scopeMine, page, pageSize],
   );
 
   useEffect(() => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, sourceKind, mediaKind, stagePrompt, batchFilter, categoryFilter, dates]);
+  }, [status, sourceKind, mediaKind, stagePrompt, batchFilter, categoryFilter, dates, scopeMine]);
 
   // 后台任务刚收敛完（横幅确认终态后 +1）：阶段标签和状态是后端算的，只能重新拉一次
   useEffect(() => {
