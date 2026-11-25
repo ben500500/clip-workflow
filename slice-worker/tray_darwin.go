@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/getlantern/systray"
 )
@@ -26,7 +27,13 @@ type MacOSTray struct {
 	mCPUItems map[int]*systray.MenuItem
 	mToggle   *systray.MenuItem
 	mQuit     *systray.MenuItem
+	// 「当前任务」子菜单：systray 不支持动态增删菜单项，预建固定 4 个槽位，
+	// 刷新时按运行中任务填充标题（任务 ID · 进度% · 阶段文案），空闲槽置「—」
+	mTasks     *systray.MenuItem
+	mTaskItems []*systray.MenuItem
 }
+
+const trayTaskSlots = 4
 
 // newPlatformTrayController 平台工厂：返回 macOS 托盘实现
 func newPlatformTrayController() TrayController {
@@ -66,6 +73,14 @@ func (t *MacOSTray) onReady() {
 
 	t.mStatus = systray.AddMenuItem("状态: 启动中...", "当前节点状态")
 	t.mStatus.Disable()
+
+	// 当前任务：展开显示本节点正在处理的切片任务（ID · 进度 · 阶段文案）
+	t.mTasks = systray.AddMenuItem("当前任务: 空闲", "本节点正在处理的切片任务（任务ID · 进度 · 当前阶段）")
+	t.mTaskItems = make([]*systray.MenuItem, trayTaskSlots)
+	for i := range t.mTaskItems {
+		t.mTaskItems[i] = t.mTasks.AddSubMenuItem("—", "空闲")
+		t.mTaskItems[i].Disable()
+	}
 
 	// CPU 分配：点击展开子菜单，直接选择预设值（当前值打勾标记）
 	t.mCPU = systray.AddMenuItem("CPU 分配: 50% ▸", "点击选择 CPU 资源分配比例")
@@ -140,6 +155,30 @@ func (t *MacOSTray) refresh() {
 	t.mStatus.SetTitle("状态: " + state)
 	t.mStatus.SetTooltip(t.ui.NodeID)
 
+	// 当前任务子菜单：按运行中任务填槽，空闲槽置「—」
+	if t.mTasks != nil {
+		if len(t.ui.Tasks) == 0 {
+			t.mTasks.SetTitle("当前任务: 空闲")
+		} else {
+			t.mTasks.SetTitle(fmt.Sprintf("当前任务: %d 个 ▸", len(t.ui.Tasks)))
+		}
+		for i, item := range t.mTaskItems {
+			if i < len(t.ui.Tasks) {
+				task := t.ui.Tasks[i]
+				detail := task.Detail
+				if detail == "" {
+					detail = "处理中"
+				}
+				item.SetTitle(fmt.Sprintf("%s · %.0f%% · %s · %s",
+					shortID(task.TaskID), task.Percent, detail, formatElapsed(task.Elapsed)))
+				item.SetTooltip(task.TaskID)
+			} else {
+				item.SetTitle("—")
+				item.SetTooltip("空闲")
+			}
+		}
+	}
+
 	if t.mCPU != nil {
 		t.mCPU.SetTitle(fmt.Sprintf("CPU 分配: %d%% ▸", t.ui.CPUPercent))
 		// 子菜单当前值打勾标记（其他项取消勾选）
@@ -171,4 +210,17 @@ func (t *MacOSTray) Notify(title, msg string) {
 
 func (t *MacOSTray) Stop() {
 	systray.Quit()
+}
+
+// formatElapsed 把任务已运行时长格式化为紧凑展示串（1h23m / 5m12s / 42s）。
+func formatElapsed(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh%dm", h, m)
+	}
+	return fmt.Sprintf("%dm%ds", m, int(d.Seconds())%60)
 }

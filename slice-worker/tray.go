@@ -39,6 +39,8 @@ type TrayUI struct {
 	Running   int
 	Completed int
 	Failed    int
+	// 运行中任务快照（托盘「当前任务」子菜单展示：ID/进度/阶段文案）
+	Tasks []RunningTaskInfo
 	// 当前 CPU 资源分配比例（%），默认 50
 	CPUPercent int
 
@@ -73,6 +75,26 @@ func (u *TrayUI) SetStatus(online, enabled bool, running, completed, failed int)
 	if changed && u.Controller != nil {
 		u.Controller.SetOnline(online && enabled)
 	}
+	if changed && u.updateMenu != nil {
+		u.updateMenu()
+	}
+}
+
+// SetTasks 更新运行中任务快照并刷新菜单（托盘「当前任务」子菜单展示具体工作内容：
+// 任务 ID、进度百分比、当前阶段文案）。仅在内容有变化时刷新，避免 5s 轮询空转。
+func (u *TrayUI) SetTasks(tasks []RunningTaskInfo) {
+	changed := len(u.Tasks) != len(tasks)
+	if !changed {
+		for i := range tasks {
+			if u.Tasks[i].TaskID != tasks[i].TaskID ||
+				int(u.Tasks[i].Percent) != int(tasks[i].Percent) ||
+				u.Tasks[i].Detail != tasks[i].Detail {
+				changed = true
+				break
+			}
+		}
+	}
+	u.Tasks = tasks
 	if changed && u.updateMenu != nil {
 		u.updateMenu()
 	}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1458,6 +1459,42 @@ func (w *Worker) CancelTask(taskID string) bool {
 // GetCurrentTaskCount 获取当前任务数
 func (w *Worker) GetCurrentTaskCount() int {
 	return int(atomic.LoadInt32(&w.currentTasks))
+}
+
+// RunningTaskInfo 运行中任务的托盘展示快照：任务 ID、进度百分比、最近阶段文案、已运行时长。
+type RunningTaskInfo struct {
+	TaskID  string
+	Percent float64
+	Detail  string
+	Elapsed time.Duration
+}
+
+// GetRunningTaskInfos 返回本节点运行中任务的展示快照（托盘「当前任务」子菜单用）。
+// 进度与阶段文案取自 emitProgress/STAGE 的内存缓存（progressNow/progressDetailLast），
+// 与卡死检测同源，无额外网络开销。按任务 ID 排序保证菜单展示稳定。
+func (w *Worker) GetRunningTaskInfos() []RunningTaskInfo {
+	out := make([]RunningTaskInfo, 0, w.GetCurrentTaskCount())
+	w.runningTasks.Range(func(_, value any) bool {
+		rt, ok := value.(*RunningTask)
+		if !ok || rt.Task == nil {
+			return true
+		}
+		info := RunningTaskInfo{TaskID: rt.Task.TaskID, Elapsed: time.Since(rt.StartTime)}
+		if p, ok := w.progressNow.Load(rt.Task.TaskID); ok {
+			if f, isF := p.(float64); isF {
+				info.Percent = f
+			}
+		}
+		if d, ok := w.progressDetailLast.Load(rt.Task.TaskID); ok {
+			if s, isS := d.(string); isS {
+				info.Detail = s
+			}
+		}
+		out = append(out, info)
+		return true
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].TaskID < out[j].TaskID })
+	return out
 }
 
 // getHostname 获取主机名
