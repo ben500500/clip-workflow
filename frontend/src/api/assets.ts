@@ -1475,6 +1475,45 @@ export interface AssetImageNote {
   notes: string[];
 }
 
+/**
+ * 角色卡库的一行（11-25 批 W：图片不再当素材入库）。
+ * `preview_url` 是当场签的直链（1 小时过期），挑卡器/抽屉直接当缩略图用。
+ */
+export interface AssetCard {
+  id: string;
+  code: string;
+  name: string;
+  file_name: string | null;
+  file_key: string | null;
+  file_size: number | null;
+  resolution: string | null;
+  aspect: {
+    width: number | null;
+    height: number | null;
+    ratio: string | null;
+    orientation: 'portrait' | 'landscape' | 'square' | null;
+  };
+  note: string | null;
+  owner_id: string | null;
+  preview_url: string | null;
+  created_at: string;
+}
+
+export interface AssetCardsResponse {
+  items: AssetCard[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+/** POST /assets/cards —— 上传角色卡（11-25 批 W 起唯一的图片入库口） */
+export interface AssetCardsUploadResponse {
+  items: AssetCard[];
+  failed: AssetUploadFailure[];
+  image_notes: AssetImageNote[];
+  message: string;
+}
+
 /** POST /assets/upload/batch 与 POST /assets/upload/retry 同形 */
 export interface AssetUploadResponse {
   /** 一个都没成功且批次是本次新建 → 回滚不留孤儿行，此时为 null */
@@ -1485,8 +1524,6 @@ export interface AssetUploadResponse {
   /** 失败文件名清单，供一键走 /assets/upload/retry 补投 */
   failed_files: string[];
   budget: AssetImportBudget | null;
-  /** 批 G：要留意的图片逐张列（没提醒时是空数组，不是 null） */
-  image_notes: AssetImageNote[];
   message: string;
 }
 
@@ -2955,6 +2992,22 @@ export const assetApi = {
       },
     }) as Promise<AssetUploadResponse>;
   },
+
+  /** 角色卡库（11-25 批 W：图片不再当素材入库，这里成了唯一的图片入口） */
+  listCards: (params?: { q?: string; page?: number; page_size?: number }) =>
+    client.get('/assets/cards', { params }) as Promise<AssetCardsResponse>,
+  uploadCards: (files: File[]) => {
+    const form = new FormData();
+    files.forEach((f) => form.append('files', f));
+    return client.post('/assets/cards', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: UPLOAD_TIMEOUT,
+    }) as Promise<AssetCardsUploadResponse>;
+  },
+  updateCard: (id: string, data: { name?: string; note?: string }) =>
+    client.patch(`/assets/cards/${id}`, data) as Promise<AssetCard>,
+  deleteCard: (id: string) =>
+    client.delete(`/assets/cards/${id}`) as Promise<{ ok: boolean; code: string }>,
 
   // 成稿配对导入（11-09）：原片 + 人工稿 + 钩子文案 + 豆包提示词一次进四个槽位，0 模型费。
   // ⚠️ `files` 只投清单引用到的那些文件：后端按 basename 一一对应，两边任一侧重名都会

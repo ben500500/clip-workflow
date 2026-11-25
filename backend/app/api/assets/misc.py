@@ -130,6 +130,7 @@ from app.models.asset import (
     STAGE_STATES,
     STAGE_SUCCESS,
     AssetBatch,
+    AssetCard,
     AssetCategory,
     AssetElementGuess,
     AssetFrame,
@@ -2921,48 +2922,48 @@ async def _upload_into_batch(
     # 改成走 `_tier_or_400`：没配就取默认档，配了个非白名单档位则**当场 400 说清楚**，
     # 不拿脏档位去算钱（与链接导入 `:495` 同一个口径）。
     tier = _tier_or_400(batch.prompt_max_duration)
-    # 图片上限独立于视频（`upload_max_bytes()` 是视频那套），先按 MB 折成字节
-    image_max_bytes = max(1, int(settings.ASSET_IMAGE_MAX_SIZE_MB)) * 1024 * 1024
     sem = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
     tmp_dir = os.path.join(tempfile.gettempdir(), f"asset_upload_{uuid.uuid4().hex}")
     os.makedirs(tmp_dir, exist_ok=True)
     try:
+        # 11-25 批 W：导入口只收视频。图片不再当素材入库（11-25 用户口径「这个图片不要入库」），
+        # 拖进来的图不做任何 I/O，直接给一条**指路**条目——唯一的图片入口是「角色卡」库
+        # （POST /assets/cards：投产弹窗挑卡处、完整模式顶栏「角色卡」抽屉都走它）。
+        video_files: List[UploadFile] = []
+        redirected: List[dict] = []
+        for f in files:
+            if svc.is_image_file_name(f.filename):
+                redirected.append({
+                    "file_name": (f.filename or "").strip() or "未命名图片",
+                    "error": "图片不入素材库（11-25 起）：它会被当角色卡收进「角色卡」库"
+                             "——去投产弹窗的挑卡处，或完整模式顶栏的「角色卡」抽屉上传",
+                })
+            else:
+                video_files.append(f)
         results = await asyncio.gather(*[
-            (
-                _ingest_one_image_file(
-                    f, tmp_dir=tmp_dir, batch_code=batch.code,
-                    max_bytes=image_max_bytes, sem=sem,
-                )
-                # 按扩展名分流**只在这里用一次**：入库之后所有环节看 media_kind 这一列
-                if svc.is_image_file_name(f.filename)
-                else _ingest_one_video_file(
-                    f, tmp_dir=tmp_dir, batch_code=batch.code, max_bytes=max_bytes, sem=sem
-                )
+            _ingest_one_video_file(
+                f, tmp_dir=tmp_dir, batch_code=batch.code, max_bytes=max_bytes, sem=sem
             )
-            for f in files
+            for f in video_files
         ])
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     created: List[AssetItem] = []
-    failed: List[dict] = []
-    image_notes: List[dict] = []
+    failed: List[dict] = redirected.copy()
     for res in results:
         if not res["ok"]:
             failed.append({"file_name": res["file_name"], "error": res["error"]})
             continue
-        is_image = res.get("media_kind") == MEDIA_IMAGE
         asset = AssetItem(
             code=gen_asset_code(),
             batch_id=batch.id,
             source_kind=SOURCE_FILE,
-            # 11-05 批 G：链接口只产 video，文件口两种都有。这一列是后面四环闸门的**唯一判据**
-            media_kind=MEDIA_IMAGE if is_image else MEDIA_VIDEO,
             file_name=res["file_name"][:255],
             file_key=res["file_key"],
             bucket=settings.MINIO_BUCKET_RAW,
             file_size=res["size"],
-            duration=res.get("duration"),      # A4-4：上传时就回写，列表「时长」列不再空转（图没有时长）
+            duration=res.get("duration"),      # A4-4：上传时就回写，列表「时长」列不再空转
             title=res["file_name"],
             project_id=project_uuid,
             # 11-04 拍板①：文件导入同样吃"整批默认原型"（留空＝未分类，日后逐条点）
@@ -2970,36 +2971,14 @@ async def _upload_into_batch(
             stage_import=STAGE_SUCCESS,
             created_by=current_user.id,
         )
-        # 画幅：视频和图片一律入库时就量（11-09 起横屏原片要在界面标出来，
-        # 而 resolution 只有这一刻免费拿得到——链接素材是下载后回写，文件素材此前只给图写，
-        # 视频行一直空着，列表与投产口只能显示「画幅未知」。
+        # 画幅：视频入库时就量（11-09 起横屏原片要在界面标出来，而 resolution 只有这一刻
+        # 免费拿得到——链接素材是下载后回写，此前视频行一直空着，列表只能显示「画幅未知」。
         asset.resolution = (
             f"{res['width']}x{res['height']}" if res.get("width") and res.get("height") else None
         )
-        if is_image:
-            # 图片四阶段一律 skipped（拍板③：图是**生产输入**，不参与反推/文案/投产/拼接）。
-            # 不显式写 skipped 的话它们会停在 pending —— 于是既在「待反推」计数里碍事，
-            # 又会被 `_batch_queue_assets` 的 `stage in (pending, skipped)` 捞进反推队列＝白扣钱。
-            asset.stage_prompt = STAGE_SKIPPED
-            asset.stage_summary = STAGE_SKIPPED
-            asset.stage_produce = STAGE_SKIPPED
-            asset.stage_compose = STAGE_SKIPPED
-            # 抽帧对图没有意义（原图本身就是封面），直接把 file_key 当封面
-            asset.cover_image_key = res["file_key"]
-        # 派生态必须带 media_kind：不带的话图会一路落到 `waiting_prompt`（"待反推"），
-        # 列表里每张角色卡都变成"卡着没人管"，而正确动作恰恰是**别提交**（批 G 立这一支的原因）
-        asset.status = svc.derive_status(
-            {"import": STAGE_SUCCESS}, media_kind=asset.media_kind
-        )
+        asset.status = svc.derive_status({"import": STAGE_SUCCESS})
         db.add(asset)
         created.append(asset)
-        if is_image and res.get("notes"):
-            image_notes.append({
-                "file_name": res["file_name"],
-                "resolution": asset.resolution,
-                "ratio": (res.get("aspect") or {}).get("ratio"),
-                "notes": res["notes"],
-            })
 
     if not created:
         # 一个都没成功：本次新建的批次回滚不留孤儿行；往已有批次追加（batch_id / retry）
@@ -3013,7 +2992,6 @@ async def _upload_into_batch(
             "failed": failed,
             "failed_files": [x["file_name"] for x in failed],
             "budget": None,
-            "image_notes": [],
             "message": (
                 f"上传失败 {len(failed)} 个，没有成功入库的文件"
                 + ("（批次未创建，修正后可直接重投）" if batch_is_new
@@ -3027,8 +3005,7 @@ async def _upload_into_batch(
     # asset_ids，抽帧台账带着它去 `uuid.UUID("None")` 当场炸（11-05 加这一行时就踩在
     # flush 前面，批 F 的抽帧用例直接红了）。
     await db.flush()
-    image_count = sum(1 for a in created if a.media_kind == MEDIA_IMAGE)
-    video_ids = [str(a.id) for a in created if a.media_kind == MEDIA_VIDEO]
+    video_ids = [str(a.id) for a in created]
     # 图不计费（拍板③）：`count` 里混进图片，预估会把"永远不需要反推"的张数也算成钱，
     # 一线看到的"超单批预算"是假警报，而假警报喊多了人就真不看闸门了。
     billable_videos = await _batch_video_count(db, batch.id)
@@ -3047,8 +3024,6 @@ async def _upload_into_batch(
             "failed": len(failed),
             "tier": tier,
             "item_count": batch.item_count,
-            # 批 G：留痕分媒体类型，对账时能说清"这批的钱是按几条视频估的"
-            "images": image_count,
             "billable_videos": billable_videos,
             "concurrency": _UPLOAD_CONCURRENCY,
             "cost_estimate": batch.cost_estimate,
@@ -3071,7 +3046,7 @@ async def _upload_into_batch(
         if video_ids
         else {
             "queued": False,
-            "note": "这批只进图片，不抽帧（原图就是封面）",
+            "note": "这次没有成功入库的视频，没排抽帧（图片从 11-25 起走「角色卡」库，不抽帧）",
         }
     )
 
@@ -3083,17 +3058,13 @@ async def _upload_into_batch(
         "failed_files": [x["file_name"] for x in failed],
         "budget": budget,
         "frames": frames,
-        # 尺寸提醒原样回传（超限**不拒收**，但必须让人看见）：前端在上传结果里逐张列
-        "image_notes": image_notes,
         "message": (
             f"上传入库 {len(created)} 个"
-            + (f"（其中图片 {image_count} 张：只作生产输入，不反推、不出文案、不计费）"
-               if image_count else "")
+            + (f"，另有 {len(redirected)} 张图片按新口径要去「角色卡」库（明细在 failed 里，带指路）"
+               if redirected else "")
             + (f"，失败 {len(failed)} 个（带 batch_id 走 /assets/upload/retry 只补投这几个）" if failed else "")
             + (f"；{'抽帧已排后台，卡片稍后出图' if frames['queued'] else '卡片图这次没排上'}"
                if video_ids else "")
-            + (f"；有 {len(image_notes)} 张图尺寸/画幅要留意，明细在 image_notes"
-               if image_notes else "")
             + (
                 f"；这批 {billable_videos} 条视频若全按 {tier}s 档反推预估 {budget['cost_estimate']} 元，"
                 f"超单批上限 {budget['cap']} 元，反推时需管理员放批或拆批"
@@ -3105,7 +3076,7 @@ async def _upload_into_batch(
 
 @router.post("/assets/upload/batch", status_code=201)
 async def upload_files_batch(
-    files: List[UploadFile] = File(..., description="视频或图片文件（可多个，按扩展名自动分流）"),
+    files: List[UploadFile] = File(..., description="视频文件（可多个）；图片不入素材库，走「角色卡」库（POST /assets/cards）"),
     name: Optional[str] = Form(None, description="批次名"),
     project_id: Optional[str] = Form(None, description="归属项目（可选）"),
     max_duration: Optional[int] = Form(None, description="本批反推计时上限档位（秒）"),
@@ -3114,12 +3085,11 @@ async def upload_files_batch(
     current_user: User = Depends(require_roles(*_PROD_ROLES)),
     db: AsyncSession = Depends(get_db),
 ):
-    """视频/图片文件批量上传 → 落自有 MinIO（raw-footage 的 asset/ 前缀）。
+    """视频文件批量上传 → 落自有 MinIO（raw-footage 的 asset/ 前缀）。
 
-    11-05 批 G：同一口收图片（拍板③——图片是**真收进素材库的生产输入**，不是附件）。
-    按扩展名自动分流：`.jpg/.jpeg/.png/.webp` 走 `_ingest_one_image_file`（独立白名单与
-    尺寸上限），其余仍走视频那条。图片入库即 `media_kind=image`、四阶段 `skipped`、
-    不计费、不抽帧（原图就是封面）、`status=image_ready`。
+    11-25 批 W：**图片不再进素材库**（11-25 用户口径「这个图片不要入库」）——拖进来的
+    图不落库，failed[] 里给一条带指路的条目（「角色卡」库收图片，POST /assets/cards）。
+    图片独立上传口带逐张尺寸提醒（超限不拒收但必须让人看见），与素材导入彻底分开。
 
     为什么自有桶而不是智令 temp 桶：doc/125 的 S3 临时对象 6 小时后自删，
     素材库要的是「资产」不是「中转」；反推时再把对象取回走 doc/125 上传（见 analyze）。
@@ -3220,6 +3190,251 @@ async def retry_upload_files(
         db, batch, files, project_uuid=None, current_user=current_user,
         action="asset.upload_retry", batch_is_new=False, category_uuid=category_uuid,
     )
+
+# ──────────────────────────────────────────────
+# 角色卡库（11-25 批 W：图片不再当素材入库，11-25 用户口径「这个图片不要入库」）
+# ──────────────────────────────────────────────
+
+class CardUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, description="卡名（显示用，不传＝不改）")
+    note: Optional[str] = Field(None, description="备注（≤500 字，传空串＝清空）")
+
+
+_CARD_URL_TTL_SECONDS = 3600
+
+
+def _card_name_from_file(file_name: Optional[str]) -> str:
+    stem = (file_name or "").strip()
+    if "." in stem:
+        stem = stem.rsplit(".", 1)[0]
+    return stem[:255] or "角色卡"
+
+
+def _serialize_card(a: AssetCard, *, preview_url: Optional[str] = None) -> dict:
+    fields = _card_ratio_fields(a.resolution)
+    return {
+        "id": str(a.id),
+        "code": a.code,
+        "name": a.name,
+        "file_name": a.file_name,
+        "file_key": a.file_key,   # 与 /assets items 序列化同一暴露面（payload 里本来就带）
+        "file_size": a.file_size,
+        "resolution": a.resolution,
+        "aspect": {
+            "width": fields["width"], "height": fields["height"],
+            "ratio": fields["ratio"], "orientation": fields["orientation"],
+        },
+        "note": a.note,
+        "owner_id": str(a.owner_id) if a.owner_id else None,
+        "preview_url": preview_url,
+        "created_at": utc_iso(a.created_at),
+    }
+
+
+async def _get_card_or_404(db: AsyncSession, card_id: str) -> AssetCard:
+    try:
+        cid = _as_uuid(card_id, "card_id")
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="角色卡不存在（id 不对）")
+    row = (await db.execute(select(AssetCard).where(AssetCard.id == cid))).scalars().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="角色卡不存在（可能已被删除）")
+    return row
+
+
+def _assert_card_owner(a: AssetCard, current_user: User) -> None:
+    """改/删只认卡主或 admin——卡是投产生产输入，别人动你的卡＝偷换你的画中人。"""
+    is_admin = current_user.role == UserRole.admin.value
+    if a.owner_id and str(a.owner_id) == str(current_user.id):
+        return
+    if a.owner_id is None:
+        return  # 迁移带来的无主卡＝公共历史，谁都能管（与无主过审行同口径）
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="这张卡不是你传的：改/删只认卡主或管理员")
+
+
+@router.get("/assets/cards")
+async def list_cards(
+    q: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 100,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """角色卡库列表（读全员可见）。preview_url 当场逐张签名（不带 attachment），
+    1 小时过期——挑卡器/抽屉直接用它当缩略图，不用再打一次帧接口。"""
+    page = max(1, page)
+    page_size = min(max(1, page_size), 300)
+    conds = []
+    kw = (q or "").strip()
+    if kw:
+        like = f"%{kw}%"
+        conds.append(or_(AssetCard.name.ilike(like), AssetCard.file_name.ilike(like), AssetCard.code.ilike(like)))
+    total = (
+        await db.execute(select(func.count()).select_from(AssetCard).where(*conds))
+    ).scalar_one()
+    rows = list(
+        (
+            await db.execute(
+                select(AssetCard)
+                .where(*conds)
+                .order_by(AssetCard.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).scalars().all()
+    )
+    items = []
+    for a in rows:
+        url = None
+        if a.file_key:
+            try:
+                url = await get_presigned_url(
+                    a.bucket or settings.MINIO_BUCKET_RAW, a.file_key,
+                    expires_seconds=_CARD_URL_TTL_SECONDS,
+                )
+            except Exception:  # noqa: BLE001 — 签名失败只影响看图，不影响选卡
+                url = None
+        items.append(_serialize_card(a, preview_url=url))
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.post("/assets/cards", status_code=201)
+async def upload_cards(
+    files: List[UploadFile] = File(..., description="图片文件（.jpg/.jpeg/.png/.webp），可多张"),
+    current_user: User = Depends(require_roles(*_PROD_ROLES)),
+    db: AsyncSession = Depends(get_db),
+):
+    """上传角色卡（11-25 批 W 起**唯一**的图片入库口）。
+
+    复用 `_ingest_one_image_file`（独立白名单/上限/量尺寸/传桶），但落 `asset_cards`
+    而不是素材表：卡不占批次、不走五环、不计费、不抽帧。画幅提醒（横版卡会出横屏）
+    照旧逐张回 `image_notes`，传完当场说。
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="请选择要上传的图片")
+    max_bytes = max(1, int(settings.ASSET_IMAGE_MAX_SIZE_MB)) * 1024 * 1024
+    sem = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
+    tmp_dir = os.path.join(tempfile.gettempdir(), f"card_upload_{uuid.uuid4().hex}")
+    os.makedirs(tmp_dir, exist_ok=True)
+    prefix = f"cards-{datetime.utcnow():%Y%m%d}"
+    try:
+        results = await asyncio.gather(*[
+            _ingest_one_image_file(
+                f, tmp_dir=tmp_dir, batch_code=prefix, max_bytes=max_bytes, sem=sem
+            )
+            for f in files
+        ])
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    created: List[AssetCard] = []
+    failed: List[dict] = []
+    image_notes: List[dict] = []
+    for res in results:
+        if not res["ok"]:
+            failed.append({"file_name": res["file_name"], "error": res["error"]})
+            continue
+        card = AssetCard(
+            code=gen_asset_code(),
+            owner_id=current_user.id,
+            name=_card_name_from_file(res["file_name"]),
+            file_name=res["file_name"][:255],
+            file_key=res["file_key"],
+            bucket=settings.MINIO_BUCKET_RAW,
+            file_size=res["size"],
+            resolution=(
+                f"{res['width']}x{res['height']}" if res.get("width") and res.get("height") else None
+            ),
+        )
+        db.add(card)
+        created.append(card)
+        if res.get("notes"):
+            image_notes.append({
+                "file_name": res["file_name"],
+                "resolution": card.resolution,
+                "ratio": (res.get("aspect") or {}).get("ratio"),
+                "notes": res["notes"],
+            })
+    if created:
+        # ⚠️ flush 后 id 才赋值（uuid4 是 INSERT 时给），序列化/审计都要用真 id
+        await db.flush()
+        await _write_audit(
+            db,
+            action="asset.card.upload",
+            operator=current_user,
+            target_type="asset_card",
+            target_id=None,
+            after={"created": len(created), "failed": len(failed),
+                   "codes": [c.code for c in created]},
+        )
+        await db.commit()
+    return {
+        "items": [_serialize_card(c) for c in created],
+        "failed": failed,
+        "image_notes": image_notes,
+        "message": (
+            f"已入角色卡库 {len(created)} 张"
+            + (f"，失败 {len(failed)} 张" if failed else "")
+            + (f"；{len(image_notes)} 张尺寸/画幅要留意（明细在 image_notes）" if image_notes else "")
+        ),
+    }
+
+
+@router.patch("/assets/cards/{card_id}")
+async def update_card(
+    card_id: str,
+    data: CardUpdateRequest,
+    current_user: User = Depends(require_roles(*_PROD_ROLES)),
+    db: AsyncSession = Depends(get_db),
+):
+    """改卡名/备注（只认卡主或 admin）。名字只影响显示，投板 payload 里带的是 key。"""
+    a = await _get_card_or_404(db, card_id)
+    _assert_card_owner(a, current_user)
+    before = {"name": a.name, "note": a.note}
+    if data.name is not None:
+        nm = data.name.strip()[:255]
+        if not nm:
+            raise HTTPException(status_code=400, detail="卡名不能是空的")
+        a.name = nm
+    if data.note is not None:
+        a.note = data.note.strip()[:500] or None
+    await _write_audit(
+        db, action="asset.card.update", operator=current_user,
+        target_type="asset_card", target_id=a.id, before=before,
+        after={"name": a.name, "note": a.note},
+    )
+    await db.commit()
+    return _serialize_card(a)
+
+
+@router.delete("/assets/cards/{card_id}")
+async def delete_card(
+    card_id: str,
+    current_user: User = Depends(require_roles(*_PROD_ROLES)),
+    db: AsyncSession = Depends(get_db),
+):
+    """删卡（只认卡主或 admin）。**还有生产单挂着就拒删**——删了它，那些单的投板
+    payload 会静默变成"没有画中人"，烧的是真号池；想换卡先去生产单上换。"""
+    a = await _get_card_or_404(db, card_id)
+    _assert_card_owner(a, current_user)
+    # card_asset_ids 是 JSON 数组，量级是"生产单总数"，删卡是偶发操作——拉一列在
+    # Python 里数比上 JSONB 运算符省事且跨方言一致（测试库是 sqlite）
+    arrs = (await db.execute(select(AssetProduction.card_asset_ids))).scalars().all()
+    held = sum(1 for arr in arrs if arr and str(a.id) in [str(x) for x in arr])
+    if held:
+        raise HTTPException(
+            status_code=400,
+            detail=f"这张卡还挂着 {held} 张生产单，删了它们投出去就是没卡的片。等单出完或先换卡",
+        )
+    await _write_audit(
+        db, action="asset.card.delete", operator=current_user,
+        target_type="asset_card", target_id=a.id,
+        before={"code": a.code, "name": a.name, "file_key": a.file_key},
+    )
+    await db.delete(a)
+    await db.commit()
+    return {"ok": True, "code": a.code}
 
 
 # ──────────────────────────────────────────────
@@ -7464,15 +7679,14 @@ def _card_ratio_fields(resolution: Optional[str]) -> Dict[str, Any]:
 
 async def _resolve_card_assets(
     db: AsyncSession, raw_ids: Optional[List[str]]
-) -> List[AssetItem]:
-    """挑卡入参 → 素材行，**顺序原样保留**（同 id 重复出现只留第一次）。
+) -> List[AssetCard]:
+    """挑卡入参 → 角色卡行（`asset_cards`，11-25 批 W 起图片不再是素材），**顺序原样保留**
+    （同 id 重复出现只留第一次）。
 
-    三类脏输入当场 400 白话拒收，绝不允许静默变成"少一张卡"——少一张卡的任务
+    两类脏输入当场 400 白话拒收，绝不允许静默变成"少一张卡"——少一张卡的任务
     照样投得出去，烧的是号池额度，而且没人知道：
-      · id 不存在（含被删的素材）；
-      · 那条不是图片：视频当角色卡＝投一张会动的图，板侧 picDatas 只收图片，
-        失败报起来像坏文件，事后从生产单上看不出挂错了东西；
-      · 图片没落进桶（`file_key` 为空＝链接形态或上传失败行）。
+      · id 不存在（含被删的卡）；
+      · 卡没落进桶（`file_key` 为空＝上传失败行）。
     """
     wanted: List[str] = []
     for raw in raw_ids or []:
@@ -7484,32 +7698,24 @@ async def _resolve_card_assets(
     rows = list(
         (
             await db.execute(
-                select(AssetItem).where(AssetItem.id.in_([uuid.UUID(x) for x in wanted]))
+                select(AssetCard).where(AssetCard.id.in_([uuid.UUID(x) for x in wanted]))
             )
         ).scalars().all()
     )
     by_id = {str(r.id): r for r in rows}
-    cards: List[AssetItem] = []
+    cards: List[AssetCard] = []
     missing: List[str] = []
     for aid in wanted:
         a = by_id.get(aid)
         if a is None:
             missing.append(aid[:8])
             continue
-        if (getattr(a, "media_kind", None) or MEDIA_VIDEO) != MEDIA_IMAGE:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"{a.code}（{a.file_name or '未命名'}）是视频，不能当角色卡：picDatas 只收图片。"
-                    "要当卡用的话先把定妆照当图片传进素材库（导入口支持 .jpg/.jpeg/.png/.webp）"
-                ),
-            )
         if not a.file_key:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"{a.code}（{a.file_name or '未命名'}）桶里没有文件（上传没成功或本来就是链接形态），"
-                    "挑它当卡＝投一张读不到的图，先重新入库再投产"
+                    f"{a.code}（{a.name or '未命名'}）桶里没有文件（上传没成功），"
+                    "挑它当卡＝投一张读不到的图，删掉重传一张"
                 ),
             )
         cards.append(a)
@@ -7517,8 +7723,8 @@ async def _resolve_card_assets(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"这些角色卡在素材库里找不到（id 前 8 位：{'、'.join(missing)}）："
-                "多半是那条素材已被删除。刷新挑图列表重选，别拿旧弹窗里的快照投产"
+                f"这些角色卡在卡库里找不到（id 前 8 位：{'、'.join(missing)}）："
+                "多半是那张卡已被删除。刷新挑卡列表重选，别拿旧弹窗里的快照投产"
             ),
         )
     return cards
@@ -7588,7 +7794,7 @@ async def _card_sources_for(
         for x in (p.card_asset_ids or []):
             if str(x or "").strip():
                 ids.add(str(x).strip())
-    by_id: Dict[str, AssetItem] = {}
+    by_id: Dict[str, AssetCard] = {}
     if ids:
         uuids = []
         for x in ids:
@@ -7598,7 +7804,7 @@ async def _card_sources_for(
                 continue  # 脏值留到下面按"取不到"点名，这里别炸整批导出
         if uuids:
             found = (
-                await db.execute(select(AssetItem).where(AssetItem.id.in_(uuids)))
+                await db.execute(select(AssetCard).where(AssetCard.id.in_(uuids)))
             ).scalars().all()
             by_id = {str(a.id): a for a in found}
     out: Dict[str, List[Dict[str, Any]]] = {}
@@ -7614,19 +7820,19 @@ async def _card_sources_for(
             if a is None:
                 refs.append({
                     "asset_id": aid, "key": None, "bucket": None,
-                    "label": f"素材 {aid[:8]}（行已不在库里，卡取不到）",
+                    "label": f"角色卡 {aid[:8]}（已从卡库删除，卡取不到）",
                 })
                 continue
             if not a.file_key:
                 refs.append({
                     "asset_id": aid, "key": None, "bucket": None,
-                    "label": f"{a.code}（{a.file_name or '未命名'}）桶里没有文件",
+                    "label": f"{a.code}（{a.name or '未命名'}）桶里没有文件",
                 })
                 continue
             refs.append({
                 "asset_id": aid, "key": a.file_key,
                 "bucket": a.bucket or settings.MINIO_BUCKET_RAW,
-                "label": f"{a.code}（{a.file_name or '未命名'}）",
+                "label": f"{a.code}（{a.name or a.file_name or '未命名'}）",
                 "resolution": a.resolution,
                 **_card_ratio_fields(a.resolution),
             })

@@ -1867,7 +1867,6 @@ const AssetProductionPanel: React.FC<Props> = ({
                 active={dispatchOpen}
                 value={dispatchCardIds}
                 onChange={setDispatchCardIds}
-                batchId={batchFilter || batchId}
               />
               <Text type="secondary" style={{ fontSize: 12 }}>
                 选了会<b>覆盖</b>本批每张新单已带的卡；不选＝沿用各单自己的。
@@ -2513,7 +2512,6 @@ const AssetProductionPanel: React.FC<Props> = ({
         open={produceOpen}
         summaries={pickedSummaries}
         isAdmin={isAdmin}
-        batchId={batchFilter || batchId}
         onClose={() => setProduceOpen(false)}
         onDone={() => {
           setProduceOpen(false);

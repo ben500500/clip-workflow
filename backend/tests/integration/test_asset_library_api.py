@@ -131,6 +131,7 @@ with _EnvOverride(_TEST_ENV):
         RV_PASSED_EDITED,
         RV_REJECTED,
         AssetBatch,
+        AssetCard,
         AssetCategory,
         AssetFrame,
         AssetItem,
@@ -5455,7 +5456,11 @@ PNG_LANDSCAPE = _png_bytes(1280, 720)  # 16:9 横版（投出去会出横屏，�
 
 
 async def _upload_mixed(client, hm, files):
-    """一次文件入库（桶 mock、视频时长 mock 6s），返回响应体。"""
+    """一次视频入库（桶 mock、视频时长 mock 6s），返回响应体。
+
+    11-25 批 W 起 /upload/batch 只收视频：图片传进来不入库，逐张落在 `failed`
+    里指路「角色卡」库。要传卡走 `_upload_cards`。
+    """
     with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)), \
          patch("app.api.assets._ffprobe_duration", lambda p: 6.0):
         resp = await client.post("/api/assets/upload/batch", files=files, headers=hm)
@@ -5463,17 +5468,27 @@ async def _upload_mixed(client, hm, files):
     return resp.json()
 
 
-def test_upload_accepts_images_but_only_bills_videos():
-    """图片与视频同口入库：图 media_kind=image、四阶段 skipped、状态 image_ready，**预算只数视频**。
+async def _upload_cards(client, hm, files):
+    """传角色卡（POST /api/assets/cards，桶 mock），断言 201 后回响应体。
 
-    这条是批 G-1 的主干，钉住四件只有走接口才看得见的事：
-    1. 分流按扩展名，图片不碰视频那条白名单（否则采集侧也能收图 → 喂进 doc/120 白扣钱）；
-    2. `content_type` 按图片真实扩展名给（写死 image/jpeg 的话 .png 在桶里挂错标签）；
-    3. 尺寸入库就量并写进 `resolution`，横版只**提醒**不拒收；
-    4. 预估钱按"批内视频条数"算 —— 混进图片数就是把 3 个对象报成 3 条待反推。
+    卡口不做任何视频 I/O：量尺寸走 `_probe_image_size`（真 ffprobe，测什么是什么）。
     """
-    if not _HAS_FF:
-        pytest.skip("本机/CI 没装 ffprobe，量不出尺寸就没法断言 resolution")
+    with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)):
+        resp = await client.post("/api/assets/cards", files=files, headers=hm)
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_upload_accepts_images_but_only_bills_videos():
+    """11-25 批 W：/upload/batch 混传视频+图片 → **只有视频入库**，图片逐张指路「角色卡」库。
+
+    这条是批 W 的主干，钉住四件只有走接口才看得见的事：
+    1. 图片不再当素材行：`items` 只有视频，两张图各在 `failed` 里有一条以
+       「图片不入素材库（11-25 起）」开头的指路条目；
+    2. 旧响应里的 `image_notes` 键已删除（画幅提醒跟着卡走 cards 口）；
+    3. 预算/审计仍只数视频：混进图片数就是把 3 个对象报成 3 条待反推；
+    4. 图片文件不做任何 I/O：一个字节都不落盘、不传桶。
+    """
     _run(_bootstrap())
 
     async def _scenario():
@@ -5492,8 +5507,7 @@ def test_upload_accepts_images_but_only_bills_videos():
                 "/api/assets/upload/batch",
                 files=[
                     ("files", ("原片.mp4", VIDEO_BYTES, "video/mp4")),
-                    # 扩展名只喂"走哪条 ingest + content type"，ffprobe 认的是文件头，
-                    # 所以这里故意给 .jpg 挂 PNG 字节：证明两条解耦，不是把它当真 jpeg 解
+                    # 扩展名只喂"是不是图"这一件事：批 W 起图片逐条进 failed，扩展名不参与入库
                     ("files", ("三视图.jpg", PNG_LANDSCAPE, "image/jpeg")),
                     ("files", ("角色卡.png", PNG_PORTRAIT, "image/png")),
                 ],
@@ -5501,56 +5515,94 @@ def test_upload_accepts_images_but_only_bills_videos():
             )
         assert resp.status_code == 201, resp.text
         body = resp.json()
-        assert len(body["items"]) == 3, body
-
-        by_name = {i["file_name"]: i for i in body["items"]}
-        vid = by_name["原片.mp4"]
+        # ① 图片不入素材库：items 只有视频，两张图逐条进 failed 且话术指路
+        assert len(body["items"]) == 1, body
+        vid = body["items"][0]
         assert vid["media_kind"] == "video" and vid["duration"] == 6.0
-        assert vid["status"] == "waiting_prompt", "视频口径一个字没动（批 G 不许回归这条）"
+        assert vid["status"] == "waiting_prompt", "视频口径一个字没动"
+        assert vid["file_name"] == "原片.mp4"
 
-        card = by_name["角色卡.png"]
-        assert card["media_kind"] == "image"
-        assert card["duration"] is None, "图片没有时长这回事"
-        assert card["resolution"] == "720x1280", card
-        # 四阶段一律 skipped：pending 会被"整批排队"捞进反推队列
-        assert [card[f"stage_{k}"] for k in ("import", "prompt", "summary", "produce", "compose")] == \
-            ["success", "skipped", "skipped", "skipped", "skipped"], card
-        assert card["status"] == "image_ready", card
-        assert card["cover_image_key"] == card["file_key"], "原图就是封面，不等抽帧"
+        assert len(body["failed"]) == 2, body["failed"]
+        by_name = {f["file_name"]: f["error"] for f in body["failed"]}
+        assert set(by_name) == {"三视图.jpg", "角色卡.png"}, by_name
+        for name, err in by_name.items():
+            assert err.startswith("图片不入素材库（11-25 起）"), (name, err)
+            assert "角色卡" in err, (name, err)
 
-        wide = by_name["三视图.jpg"]
-        assert wide["media_kind"] == "image" and wide["resolution"] == "1280x720"
+        # ② 旧键已删：批 W 起 upload/batch 响应里没有 image_notes
+        assert "image_notes" not in body, sorted(body)
 
-        # ① content type 跟着扩展名走，且字节真的落盘
-        #    （并发 3 上传，`sent` 的**到达顺序**不保证 → 只能比集合，不能比列表）
-        assert sorted(ct for _k, ct, _b in sent) == sorted(
-            ["video/mp4", "image/jpeg", "image/png"]
-        ), sent
-        assert max(len(b) for _k, _c, b in sent) == len(PNG_PORTRAIT)
+        # ③ 图片零 I/O：落桶的只有视频那一个对象（图片偷偷做了 I/O 就不止一条）
+        assert len(sent) == 1 and sent[0][1] == "video/mp4", sent
 
-        # ② 预算只数视频：3 个对象 → 按 1 条估
+        # ④ 预算只数视频：3 个对象 → 按 1 条估
         unit = 0.00054 * 180 + 0.001
         assert body["budget"]["cost_estimate"] == pytest.approx(unit, abs=1e-4), body["budget"]
         assert body["budget"]["gate"] == "ok"
 
-        # ③ 横版那张给提醒，竖版那张干净（提醒不等于拒收）
-        notes = {n["file_name"]: n["notes"] for n in body["image_notes"]}
-        assert "三视图.jpg" in notes, body["image_notes"]
-        assert any("横版" in n and "横屏" in n for n in notes["三视图.jpg"]), notes
-        assert "角色卡.png" not in notes, notes
-        assert "画幅" in body["message"], body["message"]
-        assert "图片 2 张" in body["message"] and "不计费" in body["message"], body["message"]
+        # ⑤ 审计仍只记视频入库这一件事，图片没触发第二类审计
+        audits = await _rows(AuditLog, AuditLog.action == "asset.upload_files")
+        assert len(audits) == 1, [(a.action, a.after) for a in audits]
+        assert audits[0].after["created"] == 1 and audits[0].after["failed"] == 2, audits[0].after
 
-        rows = {r.file_name: r for r in await _rows(AssetItem)}
-        assert rows["角色卡.png"].media_kind == "image"
-        assert rows["角色卡.png"].cost_prompt == 0 and rows["角色卡.png"].cost_parse == 0
-        # 批次实扣按行汇总：图片没进过任何付费环节 → 重算出来仍然是 0
+        # ⑥ 库里只有视频这一行；批次件数只记视频
+        rows = await _rows(AssetItem)
+        assert [r.file_name for r in rows] == ["原片.mp4"], [r.file_name for r in rows]
         batch = (await _rows(AssetBatch))[0]
-        async with dbmod.async_session_factory() as s:
-            await assets_api._recompute_batch_actual_cost(s, {batch.id})
-            await s.commit()
-        assert (await _row_of(AssetBatch, batch.id)).cost_actual == 0
-        assert batch.item_count == 3, "件数记全部对象，钱记视频 —— 两件事分开"
+        assert batch.item_count == 1, "件数记入库的视频，图片从没进来过"
+
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_cards_endpoint_upload_measures_and_warns():
+    """cards 口是 11-25 批 W 起**唯一**的图片入库口：量尺寸、横版提醒、审计、素材表不见。
+
+    旧「图片当素材行」的用例搬到这里：同一张真 PNG（ffprobe 量得出宽高），
+    走 POST /api/assets/cards 后——items 两条都进 `asset_cards`、resolution 是
+    真量出来的值、横版那张当场给提醒、审计 action=asset.card.upload、
+    而**素材表（GET /api/assets）里查不到这些图**。
+    """
+    if not _HAS_FF:
+        pytest.skip("本机/CI 没装 ffprobe，量不出尺寸就没法断言 resolution")
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        body = await _upload_cards(client, hm, [
+            ("files", ("竖版卡.png", PNG_PORTRAIT, "image/png")),
+            ("files", ("横版卡.png", PNG_LANDSCAPE, "image/png")),
+        ])
+
+        # ① 两张都入库，resolution 是 ffprobe 真量出来的
+        assert len(body["items"]) == 2 and body["failed"] == [], body
+        by_name = {i["file_name"]: i for i in body["items"]}
+        assert by_name["竖版卡.png"]["resolution"] == "720x1280", by_name
+        assert by_name["横版卡.png"]["resolution"] == "1280x720", by_name
+
+        # ② 横版那张当场提醒；竖版那张干净
+        notes = {n["file_name"]: n for n in body["image_notes"]}
+        assert "横版卡.png" in notes, body["image_notes"]
+        assert notes["横版卡.png"]["resolution"] == "1280x720"
+        assert notes["横版卡.png"]["ratio"] == "16:9", notes
+        assert any("横版" in n and "横屏" in n for n in notes["横版卡.png"]["notes"]), notes
+        assert "竖版卡.png" not in notes, notes
+        assert "画幅" in body["message"], body["message"]
+
+        # ③ 审计落了 asset.card.upload 一条
+        audits = await _rows(AuditLog, AuditLog.action == "asset.card.upload")
+        assert len(audits) == 1, [(a.action, a.after) for a in audits]
+        assert audits[0].after["created"] == 2 and audits[0].after["failed"] == 0, audits[0].after
+
+        # ④ 素材表里没有这些图：GET /api/assets 查不到，库行数也是 0
+        listed = await client.get("/api/assets?page_size=100", headers=hm)
+        assert listed.status_code == 200, listed.text
+        names = [i["file_name"] for i in listed.json()["items"]]
+        assert "竖版卡.png" not in names and "横版卡.png" not in names, names
+        assert await _count(AssetItem) == 0, "图片不许再进素材表（11-25 批 W）"
+        assert await _count(AssetBatch) == 0, "卡不占批次"
 
         await client.aclose()
 
@@ -5558,10 +5610,10 @@ def test_upload_accepts_images_but_only_bills_videos():
 
 
 def test_image_only_batch_is_free_and_asks_for_no_frames_job():
-    """纯图片批次：预估 0 元、闸门绿灯，而且**根本不排**抽帧任务。
+    """纯图片上传（11-25 批 W）：**批次都不建**，逐条指路「角色卡」库，零 I/O 零台账。
 
-    排上去的代价是"让 ffmpeg 去解一张 jpg"—— 白占后台名额，还会让台账里出现
-    一批没人点过的抽帧（横幅默认不列抽帧，但 `include_frames=true` 一查就露）。
+    旧口径是"图片行入库但免费、不排抽帧"；批 W 之后图片压根不进素材库——
+    image-only 上传连批次行都回滚掉（不留 0 条素材的空批次），抽帧/反推自然无活可干。
     """
     _run(_bootstrap())
 
@@ -5569,13 +5621,17 @@ def test_image_only_batch_is_free_and_asks_for_no_frames_job():
         client, h = await _client_and_headers()
         hm = h["material"]
         body = await _upload_mixed(client, hm, [("files", ("角色卡.png", PNG_PORTRAIT, "image/png"))])
-        assert body["budget"]["cost_estimate"] == 0, body["budget"]
-        assert body["budget"]["gate"] == "ok"
-        assert body["frames"]["queued"] is False
-        assert "图片" in body["frames"]["note"], body["frames"]
-        assert "抽帧已排后台" not in body["message"], body["message"]
-        assert "只进图片" not in body["message"]
-        assert await _count(AssetJob) == 0, "纯图批次不该留下一行抽帧台账"
+        # 批次回滚：items 空、batch/batch_id 双 None，图片条目在 failed 里带指路
+        assert body["items"] == [], body
+        assert body["batch"] is None and body["batch_id"] is None, body
+        assert len(body["failed"]) == 1, body["failed"]
+        assert body["failed"][0]["file_name"] == "角色卡.png"
+        assert body["failed"][0]["error"].startswith("图片不入素材库（11-25 起）"), body["failed"]
+        assert "没有成功入库的文件" in body["message"], body["message"]
+        # 回滚是认真的：库里不留批次行，更不许留抽帧/反推台账
+        assert await _count(AssetBatch) == 0, "图片-only 上传不许留空批次"
+        assert await _count(AssetItem) == 0
+        assert await _count(AssetJob) == 0, "纯图上传不该留下一行抽帧台账"
         assert await _count(AssetFrame) == 0
         await client.aclose()
 
@@ -5583,11 +5639,10 @@ def test_image_only_batch_is_free_and_asks_for_no_frames_job():
 
 
 def test_images_never_enter_the_paid_queues():
-    """整批排队（反推／出文案）必须跳过图片 —— 这是本批唯一"接口不报错但会烧钱"的坑。
+    """整批排队（反推／出文案）必须跳过图片 —— 图片现在**连库都不进**，这条钉的是双保险。
 
-    `_batch_queue_assets` 的 eligible 含 **skipped**，而图片四个阶段就是 skipped：
-    少一条 media_kind 过滤，整批反推会把每张角色卡送去 doc/120，提交一次扣一次，
-    而且永远失败。这里用真实队列断言"取了几条、剩几条"。
+    11-25 批 W 起图片不再当素材行（上传口逐张指路「角色卡」库），所以批次里
+    天然只有视频；这里用真实队列断言"取了几条、剩几条"，再钉住图片没进素材表。
     """
     _run(_bootstrap())
 
@@ -5600,6 +5655,9 @@ def test_images_never_enter_the_paid_queues():
             ("files", ("角色卡B.png", PNG_PORTRAIT, "image/png")),
         ])
         bid = body["batch_id"]
+        # 图片逐条进了 failed、没进 items
+        assert [i["file_name"] for i in body["items"]] == ["原片.mp4"], body["items"]
+        assert {f["file_name"] for f in body["failed"]} == {"角色卡A.png", "角色卡B.png"}, body["failed"]
 
         # 批次累计口径（熔断用的那把尺）：3 个对象里只有 1 条是"将来要花钱的"
         batch_uuid = uuid.UUID(bid)
@@ -5643,9 +5701,10 @@ def test_images_never_enter_the_paid_queues():
         assert "没有待出文案" in gen.json()["detail"], gen.json()
         assert await _count(AssetSummary) == 0
 
-        rows = {r_.file_name: r_ for r_ in await _rows(AssetItem)}
-        assert rows["角色卡A.png"].stage_prompt == "skipped"
-        assert rows["角色卡A.png"].status == "image_ready"
+        # 素材表里只有视频这一行：图片压根没进来（更没有 image_ready 行可被队列捞走）
+        rows = await _rows(AssetItem)
+        assert [r_.file_name for r_ in rows] == ["原片.mp4"], [r_.file_name for r_ in rows]
+        assert await _count(AssetItem) == 1
         await client.aclose()
 
     _run(_scenario())
@@ -5654,9 +5713,10 @@ def test_images_never_enter_the_paid_queues():
 def test_image_pointed_at_every_paid_gate_is_refused_in_plain_words():
     """点名形态也要挡图（四个花钱/花钱风险的口各验一次），而且**不 500、不扣费、不留孤儿行**。
 
-    整批队列已经在上一条用例里过滤掉了；这里测的是"人在列表里手滑勾中一张角色卡"。
-    判据是**理由说得清**：`media_kind` 之后图片在库里是合法行，一线看不到任何异常，
-    如果只回一句"不支持"，他的下一动作是换个口再试一遍（每个口都提交一次＝扣四次）。
+    11-25 批 W 起图片从上传口进不了素材库了，但库里的**遗留图片行**（批 W 之前
+    入的那批）仍然合法存在——五个付费口对它的防御分支一个都不能拆。这里直插一行
+    遗留图片素材，逐个口点名试：判据是**理由说得清**，如果只回一句"不支持"，
+    他的下一动作是换个口再试一遍（每个口都提交一次＝扣四次）。
     """
     _run(_bootstrap())
 
@@ -5665,10 +5725,20 @@ def test_image_pointed_at_every_paid_gate_is_refused_in_plain_words():
         hm = h["material"]
         body = await _upload_mixed(client, hm, [
             ("files", ("原片.mp4", VIDEO_BYTES, "video/mp4")),
-            ("files", ("角色卡.png", PNG_PORTRAIT, "image/png")),
         ])
-        img_id = [i["id"] for i in body["items"] if i["media_kind"] == "image"][0]
-        vid_id = [i["id"] for i in body["items"] if i["media_kind"] == "video"][0]
+        vid_id = body["items"][0]["id"]
+
+        # 遗留图片素材行（批 W 前入库的形状）：直插，不走上传口（上传口已收不了图）
+        img_id = uuid.uuid4()
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetItem(
+                id=img_id, media_kind="image", source_kind="file",
+                file_name="角色卡.png", file_key="asset/2026/11/24/角色卡.png",
+                bucket=settings.MINIO_BUCKET_RAW, created_by=None,
+                status="image_ready", stage_import="success",
+            ))
+            await s.commit()
+        img_id = str(img_id)
 
         # ① 反推：200 + skipped（不是 400 —— 全被跳过是"没活干"，不是"你写错了"）
         created = []
@@ -5747,7 +5817,11 @@ def test_image_pointed_at_every_paid_gate_is_refused_in_plain_words():
 
 
 def test_media_kind_filter_and_link_assets_stay_video():
-    """列表按 `media_kind` 筛（前端挑卡靠它），拼错值当场 400；链接导入的行仍是 video。"""
+    """列表按 `media_kind` 筛（批 W 起库里只有视频，image 筛出空集也算口径正确）；拼错值当场 400。
+
+    图片（角色卡）改走卡库后，素材表里不会再有 image 行——但筛选口本身不能坏：
+    image 筛出**空列表**（不是 400、不是把整页原样吐回），链接导入的行仍是 video。
+    """
     _run(_bootstrap())
 
     async def _scenario():
@@ -5759,11 +5833,12 @@ def test_media_kind_filter_and_link_assets_stay_video():
             ("files", ("角色卡B.png", PNG_PORTRAIT, "image/png")),
         ])
         assert all("media_kind" in i for i in body["items"]), body["items"][0]
+        # 上传口只收了视频：两张图在 failed 里，items 全是 video
+        assert [i["file_name"] for i in body["items"]] == ["原片.mp4"], body["items"]
 
         only_img = await client.get("/api/assets?media_kind=image", headers=hm)
         assert only_img.status_code == 200, only_img.text
-        names = sorted(i["file_name"] for i in only_img.json()["items"])
-        assert names == ["角色卡A.png", "角色卡B.png"], names
+        assert only_img.json()["items"] == [], "图片不进素材表了，image 筛选该是空集"
 
         only_vid = await client.get("/api/assets?media_kind=video", headers=hm)
         assert [i["file_name"] for i in only_vid.json()["items"]] == ["原片.mp4"]
@@ -5779,10 +5854,9 @@ def test_media_kind_filter_and_link_assets_stay_video():
         assert imp.json()["items"][0]["media_kind"] == "video", imp.json()["items"][0]
 
         # 详情口同样带这一列（抽屉要按它决定放播放器还是放图）；注意详情把素材包在 `asset` 下
-        aid = only_img.json()["items"][0]["id"]
-        detail = await client.get(f"/api/assets/{aid}", headers=hm)
-        assert detail.json()["asset"]["media_kind"] == "image", sorted(detail.json())
-        assert detail.json()["asset"]["status"] == "image_ready"
+        vid_id = only_vid.json()["items"][0]["id"]
+        detail = await client.get(f"/api/assets/{vid_id}", headers=hm)
+        assert detail.json()["asset"]["media_kind"] == "video", sorted(detail.json())
         assert detail.json()["asset"]["summary_count"] == 0
         await client.aclose()
 
@@ -5891,7 +5965,7 @@ def test_cards_keep_the_picked_order_and_every_one_is_read():
     async def _scenario():
         client, h = await _client_and_headers()
         hm, ho = h["material"], h["operator"]
-        body = await _upload_mixed(client, hm, [
+        body = await _upload_cards(client, hm, [
             ("files", ("男主卡.png", PNG_PORTRAIT, "image/png")),
             ("files", ("女主卡.png", PNG_PORTRAIT, "image/png")),
         ])
@@ -5964,7 +6038,7 @@ def test_broken_card_is_named_and_the_others_still_deliver():
     async def _scenario():
         client, h = await _client_and_headers()
         hm, ho = h["material"], h["operator"]
-        body = await _upload_mixed(client, hm, [
+        body = await _upload_cards(client, hm, [
             ("files", ("好的卡.png", PNG_PORTRAIT, "image/png")),
             ("files", ("坏掉的卡.png", PNG_PORTRAIT, "image/png")),
         ])
@@ -5987,7 +6061,8 @@ def test_broken_card_is_named_and_the_others_still_deliver():
         pl = pay["payloads"][0]
         assert pl["payload"]["picDatas"] == [b64mod.b64encode(b"GOOD").decode()], pl["payload"]["picDatas"]
         text = "；".join(pl["warnings"])
-        assert "坏掉的卡.png" in text, pl["warnings"]
+        # 卡上带的是 name（去扩展名的卡名），导出点名用 label＝「code（卡名）」
+        assert "坏掉的卡" in text, pl["warnings"]
         assert "挂了 2 张卡、只取到 1 张" in text, pl["warnings"]
         assert [c["loaded"] for c in pl["cards"]] == [False, True], pl["cards"]
         assert pay["card_check"]["rows_with_card_issues"] == 1
@@ -6007,8 +6082,9 @@ def test_non_image_or_gone_card_is_refused_before_the_order_is_made():
     """挑卡脏输入当场 400（三种各一次），而且**一条单都不许落库**。
 
     "静默少一张卡"和"投出去才发现卡不对"都太贵：投产要调模型（实测一次 90~150s），
-    号池额度也在这一刻开始被占。所以判据是**先拒后做**，拒的理由还得让人知道下一步：
-    视频→换成图；找不到→刷新重挑；桶里没文件→重新入库。
+    号池额度也在这一刻开始被占。所以判据是**先拒后做**，拒的理由还得让人知道下一步。
+    11-25 批 W 后卡表里只有图片，所以"视频当卡"这个旧分支没有了——视频 id 在
+    `_resolve_card_assets` 眼里就是"卡库里找不到"，同一个 400 闸照挡。
     """
     _run(_bootstrap())
 
@@ -6017,31 +6093,32 @@ def test_non_image_or_gone_card_is_refused_before_the_order_is_made():
         hm, ho = h["material"], h["operator"]
         body = await _upload_mixed(client, hm, [
             ("files", ("原片.mp4", VIDEO_BYTES, "video/mp4")),
+        ])
+        vid = body["items"][0]
+        cards = await _upload_cards(client, hm, [
             ("files", ("角色卡.png", PNG_PORTRAIT, "image/png")),
         ])
-        vid = next(i for i in body["items"] if i["media_kind"] == "video")
-        img = next(i for i in body["items"] if i["media_kind"] == "image")
+        img = cards["items"][0]
         _asset_id, sid, _copy = await _approved_copy(client, h)
 
-        # ① 视频当卡
+        # ① 视频当卡：卡表里只有图片，视频 id 直接落"卡库里找不到"这个 400
         with patch("app.api.assets._call_autoclip", _fake_autoclip()) as clip:
             r1 = await client.post("/api/assets/produce",
                                    json={"summary_ids": [sid], "n": 1,
                                          "card_asset_ids": [vid["id"]]}, headers=ho)
         assert r1.status_code == 400, r1.text
-        assert "是视频，不能当角色卡" in r1.json()["detail"], r1.json()
-        assert "picDatas 只收图片" in r1.json()["detail"], r1.json()
+        assert "卡库里找不到" in r1.json()["detail"], r1.json()
         clip.assert_not_awaited()  # 参数没过就不该调模型（一调就是几十秒和一笔额度）
 
-        # ② 素材行不存在（多半已被删除）
+        # ② 卡不存在（多半已被删除）
         r2 = await client.post("/api/assets/produce", json={
             "summary_ids": [sid], "n": 1, "card_asset_ids": [str(uuid.uuid4())]}, headers=ho)
         assert r2.status_code == 400, r2.text
-        assert "找不到" in r2.json()["detail"] and "刷新" in r2.json()["detail"], r2.json()
+        assert "卡库里找不到" in r2.json()["detail"] and "刷新" in r2.json()["detail"], r2.json()
 
-        # ③ 图在库、桶里没文件（上传失败行 / 链接形态）
+        # ③ 卡在卡库、桶里没文件（上传失败行）
         async with dbmod.async_session_factory() as s:
-            row = await s.get(AssetItem, uuid.UUID(img["id"]))
+            row = await s.get(AssetCard, uuid.UUID(img["id"]))
             row.file_key = None
             await s.commit()
         r3 = await client.post("/api/assets/produce", json={
@@ -6067,7 +6144,7 @@ def test_card_aspect_is_said_at_produce_time_not_discovered_after():
     async def _scenario():
         client, h = await _client_and_headers()
         hm, ho = h["material"], h["operator"]
-        body = await _upload_mixed(client, hm, [
+        body = await _upload_cards(client, hm, [
             ("files", ("竖版卡.png", PNG_PORTRAIT, "image/png")),
             ("files", ("横版卡.png", PNG_LANDSCAPE, "image/png")),
         ])
@@ -6075,7 +6152,7 @@ def test_card_aspect_is_said_at_produce_time_not_discovered_after():
         wide = next(i for i in body["items"] if i["file_name"] == "横版卡.png")
         assert port["resolution"] == "720x1280" and wide["resolution"] == "1280x720"
         # 挑卡列表侧就带画幅判据（前端不许自己再拼一张比例表，口径只能有一套）
-        listed = await client.get("/api/assets?media_kind=image&page_size=20", headers=hm)
+        listed = await client.get("/api/assets/cards?page_size=20", headers=hm)
         asp = {i["file_name"]: i["aspect"] for i in listed.json()["items"]}
         assert (asp["竖版卡.png"]["ratio"], asp["竖版卡.png"]["orientation"]) == ("9:16", "portrait")
         assert asp["横版卡.png"]["orientation"] == "landscape", asp
@@ -6154,7 +6231,7 @@ def test_legacy_key_still_delivers_but_never_backfills_a_broken_array():
         pl = pay2["payloads"][0]
         assert pl["payload"]["picDatas"] == [], "数组非空就不回退：偷塞旧 key＝替人改了输入"
         dl2.assert_not_awaited()
-        assert "行已不在库里" in "；".join(pl["warnings"]), pl["warnings"]
+        assert "已从卡库删除" in "；".join(pl["warnings"]), pl["warnings"]
         assert pl["cards"][0]["asset_id"] and pl["cards"][0]["key"] is None, pl["cards"]
 
         # 反向对照：数组清空（真·旧单形状）时同一条 key 又该被读到
@@ -6189,6 +6266,176 @@ def test_resolution_string_is_parsed_defensively():
     # 探不到尺寸 → 三个字段全空，且**不许给一个猜测方向**
     empty = _card_ratio_fields("unknown")
     assert empty["ratio"] is None and empty["orientation"] is None, empty
+
+
+# ─────────  14b. 卡库 CRUD（11-25 批 W：asset_cards 独立成库）  ─────────
+
+
+def test_card_library_list_filter_and_item_fields():
+    """GET /api/assets/cards：全员可读、q 模糊过滤、item 字段齐全（含画幅判据）。
+
+    批 W 起挑卡器的数据源就是这个口（不再扫素材表）。这里钉住前端赖以工作的
+    全部字段：`code/name/file_name/file_size/resolution/aspect/note/owner_id/
+    preview_url/created_at`——少了任何一个，挑卡弹窗当场画不出来。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        await _upload_cards(client, hm, [
+            ("files", ("男主卡.png", PNG_PORTRAIT, "image/png")),
+            ("files", ("女主卡.png", PNG_LANDSCAPE, "image/png")),
+        ])
+
+        listed = await client.get("/api/assets/cards", headers=hm)
+        assert listed.status_code == 200, listed.text
+        body = listed.json()
+        assert body["total"] == 2 and len(body["items"]) == 2, body
+        assert body["page"] == 1 and body["page_size"] == 100, body
+
+        item = next(i for i in body["items"] if i["file_name"] == "男主卡.png")
+        for key in ("id", "code", "name", "file_name", "file_size", "resolution",
+                    "aspect", "note", "owner_id", "preview_url", "created_at"):
+            assert key in item, f"列表 item 缺字段 {key}：{sorted(item)}"
+        assert item["name"] == "男主卡", item
+        assert item["aspect"]["orientation"] == "portrait", item["aspect"]
+        assert item["aspect"]["ratio"] == "9:16", item["aspect"]
+        assert item["aspect"]["width"] == 720 and item["aspect"]["height"] == 1280, item["aspect"]
+        # preview_url 只钉结构不钉值（测试库 MinIO 未起：签名失败被吞成 None 也是合法形状）
+        assert item["preview_url"] is None or item["preview_url"].startswith("http"), item
+        wide = next(i for i in body["items"] if i["file_name"] == "女主卡.png")
+        assert wide["aspect"]["orientation"] == "landscape", wide["aspect"]
+
+        # q 模糊匹配 name / file_name / code 三条路各走一遍
+        by_name = await client.get("/api/assets/cards?q=男主", headers=hm)
+        assert [i["file_name"] for i in by_name.json()["items"]] == ["男主卡.png"], by_name.json()
+        by_code = await client.get(f"/api/assets/cards?q={item['code']}", headers=hm)
+        assert by_code.json()["total"] == 1 and \
+            by_code.json()["items"][0]["id"] == item["id"], by_code.json()
+        none = await client.get("/api/assets/cards?q=不存在的卡", headers=hm)
+        assert none.json()["total"] == 0 and none.json()["items"] == [], none.json()
+
+        # 分页参数真的生效（不是回显完就把整页吐回来）
+        paged = await client.get("/api/assets/cards?page=2&page_size=1", headers=hm)
+        assert paged.json()["total"] == 2 and len(paged.json()["items"]) == 1, paged.json()
+        assert paged.json()["page"] == 2 and paged.json()["page_size"] == 1, paged.json()
+
+        # 读全员：operator/admin 都能看（挑卡在投产弹窗里，投的人是 operator）
+        for key in ("operator", "admin"):
+            r = await client.get("/api/assets/cards", headers=h[key])
+            assert r.status_code == 200 and r.json()["total"] == 2, (key, r.text)
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_card_rename_owner_other_and_admin():
+    """PATCH /api/assets/cards/{id}：卡主改得动；他人 403；admin 兜底 200；空卡名 400。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        body = await _upload_cards(client, hm, [("files", ("男主卡.png", PNG_PORTRAIT, "image/png"))])
+        cid = body["items"][0]["id"]
+
+        # ① 他人先拒：话术要让人知道是权限不是卡丢了
+        r_other = await client.patch(f"/api/assets/cards/{cid}",
+                                     json={"name": "被偷换的卡"}, headers=ho)
+        assert r_other.status_code == 403, r_other.text
+        assert "这张卡不是你传的" in r_other.json()["detail"], r_other.json()
+
+        # ② 卡主改名/备注，库里的行真的跟着变
+        r_own = await client.patch(f"/api/assets/cards/{cid}",
+                                   json={"name": "男主·正面", "note": "横版别投"}, headers=hm)
+        assert r_own.status_code == 200, r_own.text
+        assert r_own.json()["name"] == "男主·正面" and r_own.json()["note"] == "横版别投", r_own.json()
+        row = await _row_of(AssetCard, uuid.UUID(cid))
+        assert row.name == "男主·正面" and row.note == "横版别投", (row.name, row.note)
+        # 改名留审计
+        assert await _rows(AuditLog, AuditLog.action == "asset.card.update"), "改名必须留审计"
+
+        # ③ 空卡名当场 400（全空白卡名在挑卡列表里没法认）
+        r_blank = await client.patch(f"/api/assets/cards/{cid}", json={"name": "   "}, headers=hm)
+        assert r_blank.status_code == 400, r_blank.text
+        assert "卡名" in r_blank.json()["detail"], r_blank.json()
+
+        # ④ admin 兜底：不是卡主也能改（与素材写口同一条「admin 全能」口径）
+        r_admin = await client.patch(f"/api/assets/cards/{cid}",
+                                     json={"note": "管理员标注"}, headers=ha)
+        assert r_admin.status_code == 200, r_admin.text
+        assert r_admin.json()["note"] == "管理员标注", r_admin.json()
+
+        # ⑤ 不存在的卡 404，别误报成 403/400
+        r_gone = await client.patch(f"/api/assets/cards/{uuid.uuid4()}",
+                                    json={"name": "x"}, headers=ha)
+        assert r_gone.status_code == 404, r_gone.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_card_delete_refs_and_permissions():
+    """DELETE /api/assets/cards/{id}：没单挂着删得动；挂着生产单 400；他人 403；无主卡谁都能删。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+
+        # ① 他人拒删（话术同改名那条）
+        body = await _upload_cards(client, hm, [("files", ("男主卡.png", PNG_PORTRAIT, "image/png"))])
+        cid = body["items"][0]["id"]
+        r_other = await client.delete(f"/api/assets/cards/{cid}", headers=ho)
+        assert r_other.status_code == 403, r_other.text
+        assert "这张卡不是你传的" in r_other.json()["detail"], r_other.json()
+
+        # ② 卡主删得动：行没了、审计留了 asset.card.delete
+        r_del = await client.delete(f"/api/assets/cards/{cid}", headers=hm)
+        assert r_del.status_code == 200, r_del.text
+        assert r_del.json()["ok"] is True and r_del.json()["code"] == body["items"][0]["code"], r_del.json()
+        assert await _row_of(AssetCard, uuid.UUID(cid)) is None
+        assert await _rows(AuditLog, AuditLog.action == "asset.card.delete"), "删卡必须留审计"
+
+        # ③ 挂着生产单的卡拒删：删了它那些单投出去就是没卡的片
+        body2 = await _upload_cards(client, hm, [("files", ("女主卡.png", PNG_PORTRAIT, "image/png"))])
+        cid2 = body2["items"][0]["id"]
+        _asset_id, _sid, listed = await _order_ready_production(
+            client, h, n=1, hook_codes=["14B01"])
+        async with dbmod.async_session_factory() as s:
+            prod = await s.get(AssetProduction, uuid.UUID(listed[0]["id"]))
+            prod.card_asset_ids = [cid2]
+            await s.commit()
+        r_held = await client.delete(f"/api/assets/cards/{cid2}", headers=hm)
+        assert r_held.status_code == 400, r_held.text
+        assert "还挂着 1 张生产单" in r_held.json()["detail"], r_held.json()
+        assert await _row_of(AssetCard, uuid.UUID(cid2)) is not None, "拒删就该还在"
+        # 单上的引用摘掉之后同一个口就删得动了
+        async with dbmod.async_session_factory() as s:
+            prod = await s.get(AssetProduction, uuid.UUID(listed[0]["id"]))
+            prod.card_asset_ids = []
+            await s.commit()
+        r_free = await client.delete(f"/api/assets/cards/{cid2}", headers=hm)
+        assert r_free.status_code == 200, r_free.text
+
+        # ④ admin 兜底可删他人的卡
+        body3 = await _upload_cards(client, hm, [("files", ("配角卡.png", PNG_PORTRAIT, "image/png"))])
+        r_admin = await client.delete(f"/api/assets/cards/{body3['items'][0]['id']}", headers=ha)
+        assert r_admin.status_code == 200, r_admin.text
+
+        # ⑤ 无主卡（迁移带来的公共历史）谁都能管：operator 删得动
+        orphan_id = uuid.uuid4()
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetCard(id=orphan_id, name="历史卡", file_name="历史卡.png",
+                            file_key="asset/legacy/old.png", bucket=settings.MINIO_BUCKET_RAW,
+                            owner_id=None))
+            await s.commit()
+        r_orphan = await client.delete(f"/api/assets/cards/{orphan_id}", headers=ho)
+        assert r_orphan.status_code == 200, r_orphan.text
+        await client.aclose()
+
+    _run(_scenario())
 
 
 
@@ -8812,13 +9059,13 @@ def test_dispatch_card_override_pins_rows_and_rejects_dirty_ids():
         asset_id, _sid, listed = await _order_ready_production(client, h, n=2, hook_codes=["7C0N1", "7C0N2"])
         ids = [p["id"] for p in listed]
 
-        # 直接种一张合法的图片素材行当角色卡（_resolve_card_assets 三条硬校验：存在/是图/在桶里）
+        # 直接种一张合法的角色卡（11-25 批 W 起卡在 `asset_cards`，不在素材表）
         card_id = uuid.uuid4()
         async with dbmod.async_session_factory() as s:
-            s.add(AssetItem(
-                id=card_id, media_kind="image", source_kind="file",
-                file_name="女主三视图.png", file_key="asset/cards/santi.png",
-                bucket=settings.MINIO_BUCKET_RAW, created_by=None,
+            s.add(AssetCard(
+                id=card_id, name="女主三视图", file_name="女主三视图.png",
+                file_key="asset/cards/santi.png", bucket=settings.MINIO_BUCKET_RAW,
+                owner_id=None,
             ))
             await s.commit()
 
@@ -11643,16 +11890,21 @@ def test_dispatch_auto_concat_refuses_bad_params_before_burning_the_pool():
         pid = listed[0]["id"]
         good = await _q_video_asset(client, hm, "能拼的片段.mp4")
         link_asset, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
-        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)):
-            img = (await client.post("/api/assets/upload/batch",
-                                     files=[("files", ("角色卡.png", PNG_PORTRAIT, "image/png"))],
-                                     headers=hm)).json()["items"][0]
-        assert img["media_kind"] == "image"
+        # 遗留图片素材行（11-25 批 W 起上传口收不了图，但库里的旧图行仍在，拼接口照样要挡）
+        img_id = uuid.uuid4()
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetItem(
+                id=img_id, media_kind="image", source_kind="file",
+                file_name="角色卡.png", file_key="asset/2026/11/24/角色卡.png",
+                bucket=settings.MINIO_BUCKET_RAW, created_by=None,
+            ))
+            await s.commit()
+        img_id = str(img_id)
 
         fb = _FakeBoard()
         with _board_off(fb):
             cases = [
-                ({"concat_asset_id": img["id"]}, 400, "是图片"),
+                ({"concat_asset_id": img_id}, 400, "是图片"),
                 ({"concat_asset_id": link_asset}, 400, "/assets/resolve"),
                 ({"concat_asset_id": str(uuid.uuid4())}, 404, "不存在"),
                 ({"concat_asset_id": good["id"], "concat_order": "middle"}, 400, "拼接顺序只能是"),
@@ -11791,10 +12043,16 @@ def test_auto_concat_idempotency_and_names_every_skip_reason():
         asset_id, sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7C0Q9"])
         pid = listed[0]["id"]
         material = await _q_video_asset(client, hm, "正文片段.mp4")
-        with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)):
-            img = (await client.post("/api/assets/upload/batch",
-                                     files=[("files", ("角色卡.png", PNG_PORTRAIT, "image/png"))],
-                                     headers=hm)).json()["items"][0]
+        # 遗留图片素材行（批 W 起上传口收不了图；自动拼对旧图行的"是图片"拦截照旧要钉）
+        img_id = uuid.uuid4()
+        async with dbmod.async_session_factory() as s:
+            s.add(AssetItem(
+                id=img_id, media_kind="image", source_kind="file",
+                file_name="角色卡.png", file_key="asset/2026/11/24/角色卡.png",
+                bucket=settings.MINIO_BUCKET_RAW, created_by=None,
+            ))
+            await s.commit()
+        img_id = str(img_id)
 
         # 手工造两支"已经回收落库的豆包成片"＋把拼装要求钉在生产单上（等价于投板成功之后）。
         # 第二支专门给后面三条"跳过"成因用：幂等预查排在最前，同一支只会回 already。
@@ -11855,7 +12113,7 @@ def test_auto_concat_idempotency_and_names_every_skip_reason():
             assert n3["failed"] == 1 and "没有落桶路径" in n3["results"][0]["error"], n3
 
             # ④ 拼接素材换成了图片（事后改行才会有的形状）→ 白话理由，与手工口同一句
-            n4 = await _auto(rec2, concat_id=img["id"])
+            n4 = await _auto(rec2, concat_id=img_id)
             assert n4["failed"] == 1 and "是图片" in n4["results"][0]["error"], n4
 
             # ⑤ 拼接素材整行没了（被删）→ 说"已不在库里"，别让人以为是 ffmpeg 坏了
@@ -13066,14 +13324,19 @@ async def _mx_inputs(client, h, *, hooks=2, materials=2, with_tail=False, codes=
         registry[trow.file_key] = MX_TAIL_BYTES
         tail_id = t["id"]
 
-    with patch("app.api.assets.upload_file_from_path", AsyncMock(return_value=True)):
-        img = (await client.post("/api/assets/upload/batch",
-                                 files=[("files", ("角标.png", PNG_PORTRAIT, "image/png"))],
-                                 headers=hm)).json()["items"][0]
-    assert img["media_kind"] == "image"
+    # 角标图：11-25 批 W 起叠角标与角色卡同读一张 asset_cards 表（旧预设 asset_id 随
+    # 搬迁原 id 直迁），这里直插一行卡当角标
+    badge_id = uuid.uuid4()
+    async with dbmod.async_session_factory() as s:
+        s.add(AssetCard(
+            id=badge_id, name="角标", file_name="角标.png",
+            file_key="asset/overlay/badge.png",
+            bucket=settings.MINIO_BUCKET_RAW, owner_id=None,
+        ))
+        await s.commit()
 
     return {"asset_id": _asset_id, "hook_ids": hook_ids, "matl_ids": matl_ids,
-            "tail_id": tail_id, "img_id": img["id"], "registry": registry,
+            "tail_id": tail_id, "img_id": str(badge_id), "registry": registry,
             "productions": listed, "hook_codes": ordered_codes}
 
 
@@ -13372,7 +13635,9 @@ def test_compose_matrix_refuses_every_bad_selection_before_touching_anything():
 
             # 正片侧：不存在的素材 / 图片 / 还没回源解析的链接
             await _bad({**base, "material_ids": [str(uuid.uuid4())]}, 404, "素材不存在")
-            await _bad({**base, "material_ids": [env["img_id"]]}, 400, "是图片，拼接只吃视频")
+            # env["img_id"] 批 W 起是卡表的 id——卡不是素材，拼接口按「素材不存在」拒（404）。
+            # 「是图片」那个 400 分支由自动拼接两条用例直插的遗留图行钉着，不在这里重复。
+            await _bad({**base, "material_ids": [env["img_id"]]}, 404, "素材不存在")
             await _bad({**base, "material_ids": [link["id"]]}, 400, "还没有可拼的文件")
             await _bad({**base, "material_ids": [link["id"]]}, 400, "/assets/resolve")
 
@@ -13401,8 +13666,9 @@ def test_compose_matrix_refuses_every_bad_selection_before_touching_anything():
                        400, "只能带一个")
             await _bad({**base, "overlay_params": {"badges": [{"position": "top-left"}]}},
                        400, "没挑图")
+            # 批 W：角标与卡同表，"不是图片"这个分支随表合一消失；素材 id 现在落在「不在卡库里」（仍 400）
             await _bad({**base, "overlay_params": _mx_overlay_params(env["matl_ids"][0])},
-                       400, "不是图片，当不了角标")
+                       400, "不在卡库里")
             await _bad({**base, "overlay_preset_id": str(uuid.uuid4())}, 404, "叠加预设不存在")
             mine = (await client.post(MX_PRESETS, json={"name": "8MX别人的私人预设",
                                                         "params": _mx_overlay_params(env["img_id"])},

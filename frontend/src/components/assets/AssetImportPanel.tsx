@@ -440,7 +440,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
 
   const submitFiles = async () => {
     if (!rawFiles.current.length) {
-      message.warning('选择要上传的视频或图片文件');
+      message.warning('选择要上传的视频文件');
       return;
     }
     // 2026-11-11 评审（运维席）：整包超过 nginx 上限时，用户看到的是 413 的白屏报错，
@@ -827,7 +827,7 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                    * （`prompt_service.UPLOAD_ALLOWED_EXTS` / `settings.ALLOWED_VIDEO_EXTENSIONS`）：
                    * 那两处一放图片，就能把 jpg 喂进 doc/120 视频反推，白扣一次钱。
                    */
-                  accept="video/*,.jpg,.jpeg,.png,.webp"
+                  accept="video/*"
                   fileList={fileList}
                   beforeUpload={(file) => {
                     rawFiles.current = [...rawFiles.current, file as unknown as File];
@@ -847,10 +847,10 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                   <p className="ant-upload-drag-icon">
                     <InboxOutlined />
                   </p>
-                  <p className="ant-upload-text">拖入或选择视频／图片文件（可多个）</p>
+                  <p className="ant-upload-text">拖入或选择视频文件（可多个）</p>
                   <p className="ant-upload-hint" style={{ fontSize: 12 }}>
                     视频直接落到我们自己的存储；单文件失败不影响整批，可一键补传。
-                    图片是<b>投产用的角色卡</b>（不反推、不计费），长边超了只提醒不拦。
+                    图片不再进素材库（11-25 起）：角色卡请到投产弹窗的挑卡处或顶栏「角色卡」抽屉里传。
                   </p>
                 </Upload.Dragger>
                 <Space>
@@ -1038,25 +1038,6 @@ const AssetImportPanel: React.FC<Props> = ({ canProduce, onSelectBatch, active =
                           一键补传这 {lastUpload.failed_files.length} 个（放回同一批次）
                         </Button>
                       </>
-                    )}
-                    {/* 批 G：图片尺寸/画幅超限**不拒收**，但必须逐张看见——
-                        角色卡的宽高比决定成片是竖屏还是横屏，看不见这条就会投出一批横屏片 */}
-                    {!!lastUpload.image_notes?.length && (
-                      <div>
-                        <Text type="warning" style={{ fontSize: 12 }}>
-                          {lastUpload.image_notes.length} 张图入库时量出要留意的尺寸/画幅：
-                        </Text>
-                        {lastUpload.image_notes.slice(0, 8).map((note, i) => (
-                          <div key={`${note.file_name}-${i}`} style={{ fontSize: 12, color: '#8c8c8c' }}>
-                            {note.file_name || '未命名'}
-                            {note.resolution ? `（${note.resolution}${note.ratio ? ` · ${note.ratio}` : ''}）` : ''}
-                            ：{note.notes.join('；')}
-                          </div>
-                        ))}
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                          照样收下了，不改也能用；想竖屏就换竖版卡重传一张。
-                        </Text>
-                      </div>
                     )}
                   </Space>
                 }

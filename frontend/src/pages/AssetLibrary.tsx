@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Badge, Button, Card, Drawer, Modal, Popover, Segmented, Space, Spin, Switch, Table, Tabs, Tag, Tooltip, Typography, message, notification } from 'antd';
-import { ApartmentOutlined, BellOutlined, QuestionCircleOutlined } from '@ant-design/icons';
+import { ApartmentOutlined, BellOutlined, PictureOutlined, QuestionCircleOutlined } from '@ant-design/icons';
+import AssetCardLibraryDrawer from '../components/assets/AssetCardLibraryDrawer';
 import { useAuth } from '../contexts/AuthContext';
 import client from '../api/client';
 import AssetListPanel from '../components/assets/AssetListPanel';
@@ -146,6 +147,8 @@ const AssetLibrary: React.FC = () => {
    * 面板里只做筛选和点原型，不再各挂一份抽屉——两处入口迟早变成一个新版本一个旧版本。
    */
   const [catOpen, setCatOpen] = useState(false);
+  // 11-25 批 W：角色卡库抽屉（图片不再当素材入库后的统一管理入口），顶栏一颗按钮
+  const [cardsOpen, setCardsOpen] = useState(false);
   // 2026-11-11 评审（管理员席 P0）：跨人投产/取号/审核的审计一直只写不读——
   // 管理员在界面上找不到入口。给 admin 一颗「审计」按钮＋抽屉表（动作发生地就在这页）。
   const [auditOpen, setAuditOpen] = useState(false);
@@ -564,6 +567,9 @@ const AssetLibrary: React.FC = () => {
           <Button size="small" icon={<ApartmentOutlined />} onClick={() => setCatOpen(true)}>
             钩子原型字典
           </Button>
+          <Button size="small" icon={<PictureOutlined />} onClick={() => setCardsOpen(true)}>
+            角色卡
+          </Button>
           {isAdmin && (
             <Tooltip title="跨人投产、取号、钉号、审核、交付包的留痕——谁在什么时候动了什么">
               <Button size="small" onClick={() => void openAuditDrawer()}>
@@ -726,6 +732,7 @@ const AssetLibrary: React.FC = () => {
       </Modal>
 
       <AssetCategoryDrawer open={catOpen} onClose={() => setCatOpen(false)} />
+      <AssetCardLibraryDrawer open={cardsOpen} onClose={() => setCardsOpen(false)} />
       <Drawer
         title="素材库审计流水（最近 200 条）"
         width={860}

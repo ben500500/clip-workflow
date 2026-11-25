@@ -1409,7 +1409,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, sco
         summaries={approvedSelected}
         onClose={() => setProduceOpen(false)}
         isAdmin={isAdmin}
-        batchId={batchId}
+
         onDone={() => {
           setProduceOpen(false);
           setSelected([]);

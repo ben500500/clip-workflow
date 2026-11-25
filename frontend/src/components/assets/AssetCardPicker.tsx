@@ -2,25 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Select, Space, Spin, Tag, Tooltip, Typography, Upload, message } from 'antd';
 import { InboxOutlined } from '@ant-design/icons';
 import { assetApi } from '../../api/assets';
-import type { AssetItem } from '../../api/assets';
+import type { AssetCard } from '../../api/assets';
 import { aspectShortText } from './AssetBits';
 
 const { Text } = Typography;
 
-/** 一次拉多少张：后端 page_size 封顶 200，角色卡是「一剧几张」的量级，200 足够覆盖在用剧 */
-const LOAD_SIZE = 200;
+/** 一次拉多少张：后端 page_size 封顶 300，角色卡是「一剧几张」的量级，300 足够覆盖在用剧 */
+const LOAD_SIZE = 300;
 
 interface Props {
   /** 已选卡 id，**数组顺序＝板上 picDatas 顺序**（第一张＝主形象） */
   value: string[];
   onChange: (ids: string[]) => void;
-  /** 弹窗开着才拉：库里的图随时有人在传，进页面缓存一次会让新卡看不见 */
+  /** 弹窗开着才拉：库里的卡随时有人在传，进页面缓存一次会让新卡看不见 */
   active: boolean;
-  /**
-   * 批 L：就地上传的卡挂到这个批次名下（=被投产素材所在批次，账面干净）。
-   * 不传（生产单页「全部」视图开单）就新建一个独立小批次，名字自动带「角色卡」。
-   */
-  batchId?: string;
 }
 
 /**
@@ -34,8 +29,8 @@ interface Props {
  * 画幅提醒为什么放在挑卡这一屏：**画幅由角色卡宽高比决定**（实测口径，
  * 提示词写 9:16 压不住一张横版三视图卡）。投产后再说「这支出横屏了」已经花过钱了。
  */
-const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) => {
-  const [cards, setCards] = useState<AssetItem[]>([]);
+const AssetCardPicker: React.FC<Props> = ({ value, onChange, active }) => {
+  const [cards, setCards] = useState<AssetCard[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -46,9 +41,6 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
   // 批 M（评审二·P2）：排队的上传张数。原来每段 .finally 都 setUploading(false)——
   // 第二张还在传时第一张完成就把 loading 灯提前熄了，看起来像传完其实没有。
   const pendingUploads = useRef(0);
-  // 2026-11-11 评审（前端席 P1）：就地传卡链内记住第一张新建的批次 id——
-  // 原来每张都各自建批（batch_id=undefined），拖 5 张卡裂 5 个批次，台账对账废掉
-  const createdBatchIdRef = useRef<string | undefined>(undefined);
   const valueRef = useRef(value);
   valueRef.current = value;
   const [reloadTick, setReloadTick] = useState(0);
@@ -59,26 +51,17 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
     setLoading(true);
     setLoadError(null);
     assetApi
-      .listAssets({ media_kind: 'image', page_size: LOAD_SIZE, sort: 'created_desc' })
+      .listCards({ page_size: LOAD_SIZE })
       .then((res) => {
         if (cancelled) return;
         setCards(res.items || []);
         setTotal(res.total || 0);
-        const ids = (res.items || []).map((a) => a.id);
-        if (!ids.length) {
-          setCovers({});
-          return null;
-        }
-        // 缩略图走封面直链（图片入库时 cover_image_key＝原图 key，不抽帧也是这张）
-        return assetApi
-          .framesForAssets(ids)
-          .then((f) => {
-            if (!cancelled) setCovers(f.cover_url || {});
-          })
-          .catch(() => {
-            // 直链拉不到只影响看图，不影响选卡：留白 + 名字照样能选
-            if (!cancelled) setCovers({});
-          });
+        // 缩略图直接用列表带回的当场签名（1 小时过期），不用再打一次帧接口
+        const map: Record<string, string | null> = {};
+        (res.items || []).forEach((a) => {
+          map[a.id] = a.preview_url || null;
+        });
+        setCovers(map);
       })
       .catch((e) => {
         if (!cancelled) setLoadError((e as Error).message || '角色卡列表拉不到');
@@ -92,7 +75,7 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
   }, [active, reloadTick]);
 
   const byId = useMemo(() => {
-    const m: Record<string, AssetItem> = {};
+    const m: Record<string, AssetCard> = {};
     cards.forEach((a) => {
       m[a.id] = a;
     });
@@ -104,17 +87,10 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
 
   const options = useMemo(
     () =>
-      cards.map((a) => {
-        const noFile = !a.file_key;
-        return {
-          value: a.id,
-          // 没文件的行后端会 400（「桶里没有文件…先重新入库再投产」），这里直接不给选
-          disabled: noFile,
-          label: `${a.code || a.id.slice(0, 8)} · ${a.file_name || '未命名'} · ${aspectShortText(a.aspect)}${
-            noFile ? ' · 桶里没文件，不能投' : ''
-          }`,
-        };
-      }),
+      cards.map((a) => ({
+        value: a.id,
+        label: `${a.code || a.id.slice(0, 8)} · ${a.name || a.file_name || '未命名'} · ${aspectShortText(a.aspect)}`,
+      })),
     [cards],
   );
 
@@ -136,35 +112,26 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
     onChange(next);
   };
 
-  const selected = value.map((id) => byId[id]).filter(Boolean) as AssetItem[];
+  const selected = value.map((id) => byId[id]).filter(Boolean) as AssetCard[];
   const orientations = Array.from(
     new Set(selected.map((a) => a.aspect?.orientation || 'unknown')),
   );
   const landscape = selected.filter((a) => a.aspect?.orientation === 'landscape');
   const unknownSize = selected.filter((a) => !a.aspect?.ratio);
 
-  /** 批 L：就地上传角色卡。逐张串行（没有 batch_id 时第一张要先建上批次，
-   *  并发第二张会裂成两个批次）；成功即入库＋自动排进已选卡末尾＋刷新列表。
-   *  2026-11-11 评审（前端席 P1）：链内记住第一张新建的 batch_id 传给后续。 */
+  /** 就地上传角色卡（批 W 起走 POST /assets/cards，不建批次）。逐张串行、
+   *  成功即入库＋自动排进已选卡末尾＋刷新列表；画幅提醒传完当场说。 */
   const uploadCard = (file: File) => {
     pendingUploads.current += 1;
     setUploading(true);
     chainRef.current = chainRef.current
-      .then(() => {
-        const bid = createdBatchIdRef.current ?? batchId ?? undefined;
-        return assetApi.uploadBatch({
-          files: [file],
-          batch_id: bid,
-          name: bid ? undefined : '角色卡（投产时就地传）',
-        });
-      })
+      .then(() => assetApi.uploadCards([file]))
       .then((res) => {
-        if (!createdBatchIdRef.current && res.batch_id) createdBatchIdRef.current = res.batch_id;
         const ok = res.items || [];
         if (ok.length) {
           onChange([...valueRef.current, ...ok.map((a) => a.id)]);
           setReloadTick((t) => t + 1);
-          message.success(`已入库并选上：${ok.map((a) => a.file_name || a.code).join('、')}`);
+          message.success(`已入卡库并选上：${ok.map((a) => a.name || a.file_name || a.code).join('、')}`);
           // 画幅提醒跟着走：横版卡会出横屏片（提示词写 9:16 压不住），必须传完当场说
           const warns = (res.image_notes || []).filter((n) => n.notes?.length);
           if (warns.length) {
@@ -219,7 +186,7 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
           {uploading ? '正在上传（传完自动选上）…' : '把人物三视图拖进来，或点击选择（jpg/png，可多张）'}
         </p>
         <p className="ant-upload-hint" style={{ fontSize: 12, marginBottom: 0 }}>
-          {batchId ? '传的卡挂在当前批次名下' : '当前没锁批次：传的卡会单独建一个小批次'}
+          传完进「角色卡」库，不占素材列表、不计费、不抽帧
         </p>
       </Upload.Dragger>
 
@@ -231,11 +198,11 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
         <Alert
           type="info"
           showIcon
-          message="素材库里还没有图片素材"
+          message="卡库还是空的"
           description={
             <Text type="secondary" style={{ fontSize: 12 }}>
               把定妆照/三视图 jpg·png 直接拖进上面那块区域（或点它选文件），传完自动选上。
-              图片只作生产输入，不参与读视频、出文案、拼接，也不计费。
+              卡只作生产输入（投产时挂给豆包），不进素材列表、不计费、不抽帧。
               不挂卡也能建单，只是成片人物形象由模型自己发挥。
             </Text>
           }
@@ -244,7 +211,7 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
         <Select
           mode="multiple"
           style={{ width: '100%' }}
-          placeholder="从素材库挑角色卡（可按编号/文件名搜）"
+          placeholder="从卡库挑角色卡（可按名称/编号搜）"
           value={value}
           onChange={onPick}
           options={options}
@@ -256,8 +223,8 @@ const AssetCardPicker: React.FC<Props> = ({ value, onChange, active, batchId }) 
 
       {total > cards.length && (
         <Text type="secondary" style={{ fontSize: 12 }}>
-          库里共 {total} 张图，这里只列最近 {cards.length} 张（按入库时间倒序）——
-          找不到说明那张太早，去素材列表按编号搜出来再看要不要重传。
+          卡库共 {total} 张，这里只列最近 {cards.length} 张（按入库时间倒序）——
+          找不到就到完整模式顶栏的「角色卡」抽屉里按名称搜。
         </Text>
       )}
 

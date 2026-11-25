@@ -92,15 +92,6 @@ export const AssetStatusTag: React.FC<{ status: AssetStatus }> = ({ status }) =>
 );
 
 /**
- * 批 G：这行素材是不是图片（角色卡）。
- * 只看 `media_kind` 这一列，**不许拿扩展名判**——后端把扩展名分流收在入库那一次，
- * 之后所有环节都读这一列；前端再按扩展名判一次就是第七处口径。
- */
-export const isImageAsset = (
-  a: { media_kind?: AssetMediaKind | null } | null | undefined,
-): boolean => a?.media_kind === 'image';
-
-/**
  * 画幅短标签（挑卡列表 / 素材行用；投产响应里的整句 hint 后端已经写好，直接用那条）。
  * `ratio/orientation` 一律取后端算好的值，这里**只做显示措辞**：
  * 「成片画幅由角色卡宽高比决定」是实测口径，前端另拼一张比例表日后必打架。
@@ -120,20 +111,8 @@ export const aspectShortText = (aspect?: AssetImageAspect | null): string => {
   }
 };
 
-/** 批 G：视频 / 图片（角色卡）标记，列表与详情共用 */
-export const MediaKindTag: React.FC<{ asset: AssetItem }> = ({ asset }) =>
-  isImageAsset(asset) ? (
-    <Tooltip
-      title={
-        `图片素材：只作生产输入（投产时当角色卡带上），不参与读视频、出文案、拼接，也不计费。` +
-        `画幅：${aspectShortText(asset.aspect)}——成片画幅跟卡走，横版的卡会出横屏。`
-      }
-    >
-      <Tag color="purple">角色卡</Tag>
-    </Tooltip>
-  ) : (
-    <Tag>视频</Tag>
-  );
+/** 素材类型标记。11-25 批 W 起库里只有视频（角色卡进了卡库），留一个常量标记位 */
+export const MediaKindTag: React.FC<{ asset: AssetItem }> = () => <Tag>视频</Tag>;
 
 /**
  * 11-09 用户拍板：横屏原片**全部收进来、界面上要标横屏**，而且「豆包生产的时候

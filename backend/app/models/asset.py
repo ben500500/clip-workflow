@@ -1006,3 +1006,32 @@ class AssetScriptFavorite(Base):
 
     def __repr__(self) -> str:
         return f"<AssetScriptFavorite(user_id={self.user_id}, script_id={self.script_id})>"
+
+class AssetCard(Base):
+    """角色卡库的一行（11-25 批 W：图片不再当素材入库，11-25 用户口径「这个图片不要入库」）。
+
+    与批 G 的差别：批 G 把上传的三视图真写成 `asset_items` 行（media_kind=image），
+    结果是完整模式 ② 素材与文案里混着一堆卡。拍板改成**独立一张表**：
+    - 卡不是素材：不进 asset_items、不占批次、不走五环、不计费、不抽帧；
+    - 卡要跨批复用：所以仍然是一行带 file_key 的库记录，挑卡器/交付侧照旧按 id 取；
+    - **id 迁移保持不变**：已挂卡的生产单（`asset_productions.card_asset_ids`）存的
+      就是旧素材行 id，搬迁时原 id 直迁过来，6 张存量单不用重挑卡。
+    """
+
+    __tablename__ = "asset_cards"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    code = Column(String(20), unique=True, nullable=False, index=True, default=gen_asset_code)
+    owner_id = Column(UUID(as_uuid=True), nullable=True, index=True)  # ＝原素材行 created_by（裸列无 FK，同口径）
+    name = Column(String(255), nullable=False)          # 显示名（默认＝原文件名去扩展名，可改）
+    file_name = Column(String(255), nullable=True)      # 上传时的原文件名（留档）
+    file_key = Column(String(500), nullable=True)       # MinIO key（图片本体；NULL＝历史/手工脏行，读侧闸门拦）
+    bucket = Column(String(50), nullable=True)          # 空＝默认素材桶（读侧回退）
+    file_size = Column(BigInteger, nullable=True)
+    resolution = Column(String(50), nullable=True)      # "1024x1024"，量不到就空（读侧不许猜画幅）
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<AssetCard(id={self.id}, code={self.code!r}, name={self.name!r})>"

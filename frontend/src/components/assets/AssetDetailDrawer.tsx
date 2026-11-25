@@ -8,7 +8,7 @@ import type { AssetDetailResponse, AssetOutput, AssetSourceDownloadResult } from
 import { parseServerTime } from '../../utils/format';
 import {
   AssetStatusTag, AuditStatusTag, LandscapeTag, MediaKindTag, ProductionStateTag, RiskTags, StageTags, MonoText,
-  aspectShortText, durationText, isImageAsset, yuan,
+  durationText, yuan,
 } from './AssetBits';
 import AssetComposeModal from './AssetComposeModal';
 import { withCrossPersonConfirm } from './crossPerson';
@@ -392,14 +392,13 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           <Button icon={<DownloadOutlined />} onClick={showSource} disabled={!asset}>
             原片
           </Button>
-          {canProduce && asset && !isImageAsset(asset) && (
+          {canProduce && asset && (
             <Tooltip title="两段直拼（再选一条素材／切片／本地文件，可选谁在前）：0 元，不调模型">
               <Button icon={<MergeCellsOutlined />} onClick={() => setComposeOpen(true)}>
                 拼接
               </Button>
             </Tooltip>
           )}
-          {/* 批 G：图片不给拼接入口（后端也会 400：ffmpeg 拿一张 jpg 当一段会在解码时炸） */}
           {asset?.stage_prompt === 'running' && (
             <Button icon={<ReloadOutlined />} loading={busy} onClick={refreshPrompt}>
               更新读取进度
@@ -428,79 +427,28 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
           <div style={{ marginBottom: 12 }}>
             {player ? (
               <>
-                {isImageAsset(asset) ? (
-                  /*
-                    批 G：图片素材走这一支。播放器对一张 jpg 是黑屏（`<video>` 解不了静态图），
-                    而"这张卡长什么样、是竖版还是横版"恰恰是开抽屉最想确认的事——
-                    原图直接摆出来，画幅角标写在下面。
-                  */
-                  <img
-                    key={player.url}
-                    src={player.url}
-                    alt={player.label || asset.code || '角色卡原图'}
-                    onError={() =>
-                      setPlayerErr(
-                        '这张原图没取到：直链可能过期或对象存储不可达。点右上角「原片」存盘看看，或重新入库。',
-                      )
-                    }
-                    style={{
-                      display: 'block',
-                      maxWidth: '100%',
-                      maxHeight: 360,
-                      margin: '0 auto',
-                      background: '#000',
-                      borderRadius: 6,
-                    }}
-                  />
-                ) : (
-                  <video
-                    key={player.url}
-                    controls
-                    preload="metadata"
-                    style={{ width: '100%', maxHeight: 360, background: '#000', borderRadius: 6 }}
-                    onError={() =>
-                      setPlayerErr(
-                        '这一段放不出来：直链可能已过期（时效链接约 6 小时），或浏览器不允许本页播外部地址。' +
-                          '要留存请点右上角「原片」存盘。',
-                      )
-                    }
-                    src={player.url}
-                  />
-                )}
+                <video
+                  key={player.url}
+                  controls
+                  preload="metadata"
+                  style={{ width: '100%', maxHeight: 360, background: '#000', borderRadius: 6 }}
+                  onError={() =>
+                    setPlayerErr(
+                      '这一段放不出来：直链可能已过期（时效链接约 6 小时），或浏览器不允许本页播外部地址。' +
+                        '要留存请点右上角「原片」存盘。',
+                    )
+                  }
+                  src={player.url}
+                />
                 <Space wrap size={4} style={{ marginTop: 6 }}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {isImageAsset(asset) ? '正在看原图：' : '正在预览：'}
-                    {player.label}
-                  </Text>
-                  {isImageAsset(asset) ? (
-                    <>
-                      <Tag color={asset.aspect?.orientation === 'landscape' ? 'red' : 'purple'}>
-                        {aspectShortText(asset.aspect)}
-                      </Tag>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        投产时它在「生成生产单」弹窗里被挑成角色卡
-                      </Text>
-                    </>
-                  ) : (
-                    <>
-                      <Tag>{durationText(player.duration)}</Tag>
-                      {player.resolution && <Tag>{player.resolution}</Tag>}
-                      {/* 11-09：横屏原片在预览这一屏也要认得出来（这条线后面要跟竖屏分开排） */}
-                      <LandscapeTag aspect={asset.aspect} />
-                      {player.platform && <Tag>{player.platform}</Tag>}
-                      {asset.source_kind === 'link' && <Tag color="orange">原站时效直链</Tag>}
-                    </>
-                  )}
+                  <Text type="secondary" style={{ fontSize: 12 }}>正在预览：{player.label}</Text>
+                  <Tag>{durationText(player.duration)}</Tag>
+                  {player.resolution && <Tag>{player.resolution}</Tag>}
+                  {/* 11-09：横屏原片在预览这一屏也要认得出来（这条线后面要跟竖屏分开排） */}
+                  <LandscapeTag aspect={asset.aspect} />
+                  {player.platform && <Tag>{player.platform}</Tag>}
+                  {asset.source_kind === 'link' && <Tag color="orange">原站时效直链</Tag>}
                 </Space>
-                {isImageAsset(asset) && asset.aspect?.orientation === 'landscape' && (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    style={{ marginTop: 6 }}
-                    message="这张是横版卡：画幅由角色卡宽高比决定，提示词写 9:16 也压不住，投出去会是横屏"
-                    description="要竖屏就换一张竖版定妆照（720×1280 一类）；确实要做横版则不用动，知道这条就行。"
-                  />
-                )}
                 {player.qc === 'failed' && (
                   <Alert
                     type="error"
@@ -570,15 +518,8 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
               <Tag>{asset.source_kind === 'link' ? '链接' : '文件'}</Tag>
               {asset.platform || '-'}
             </Descriptions.Item>
-            {/* 批 G：类型写在字段表里（不只列表那列）——抽屉是核对这张卡能不能用的地方，
-                画幅／尺寸／超限提醒都要在这儿看得见，不用回列表悬浮取 tooltip */}
             <Descriptions.Item label="类型">
               <MediaKindTag asset={asset} />
-              {isImageAsset(asset) && (
-                <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
-                  生产输入（角色卡）
-                </Text>
-              )}
             </Descriptions.Item>
             <Descriptions.Item label="钩子原型" span={2}>
               <Space wrap align="center">
@@ -609,27 +550,15 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
                 </div>
               )}
             </Descriptions.Item>
-            <Descriptions.Item label="时长">
-              {isImageAsset(asset) ? '—（图片没有时长）' : durationText(asset.duration)}
-            </Descriptions.Item>
+            <Descriptions.Item label="时长">{durationText(asset.duration)}</Descriptions.Item>
             <Descriptions.Item label="分辨率">
               {asset.resolution || '-'}
-              {isImageAsset(asset) ? (
-                <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
-                  {aspectShortText(asset.aspect)}
-                </Text>
-              ) : (
-                // 11-09：原片也量得出画幅了（文件上传当场量、链接素材下载后回写），
-                // 横屏的要在这里看得见——判据依旧只在后端一处，这里只念它算好的结论。
-                // 竖屏不另出文字：`aspectShortText` 那句「横版 → 出横屏」是**角色卡**的话术
-                // （成片画幅跟卡走），套在原片上会把因果说反，所以视频只挂横屏徽标。
-                <LandscapeTag aspect={asset.aspect} />
-              )}
+              {/* 11-09：原片也量得出画幅了（文件上传当场量、链接素材下载后回写），
+                  横屏的要在这里看得见——判据依旧只在后端一处，这里只念它算好的结论。 */}
+              <LandscapeTag aspect={asset.aspect} />
             </Descriptions.Item>
             <Descriptions.Item label="视频时长上限">
-              {isImageAsset(asset)
-                ? '不适用（图片不反推文案）'
-                : asset.prompt_max_duration
+              {asset.prompt_max_duration
                   ? `${asset.prompt_max_duration}s`
                   : '未定'}
             </Descriptions.Item>
@@ -638,18 +567,10 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
               {asset.file_size ? `${(asset.file_size / 1024 / 1024).toFixed(1)} MB` : '-'}
             </Descriptions.Item>
             <Descriptions.Item label="成本" span={2}>
-              {isImageAsset(asset) ? (
-                <Text type="secondary">
-                  0 元：图片不反推文案、不查时长，也不计入批次预估——它只在投产时当角色卡带上。
-                </Text>
-              ) : (
-                <>
-                  反推文案 {yuan(asset.cost_prompt)} ｜ 查时长 {yuan(asset.cost_parse)}
-                  <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
-                    （生产这一环的花费现在不记账、恒为 0，是留给后续版本的口子，别当预算看）
-                  </Text>
-                </>
-              )}
+              反推文案 {yuan(asset.cost_prompt)} ｜ 查时长 {yuan(asset.cost_parse)}
+              <Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+                （生产这一环的花费现在不记账、恒为 0，是留给后续版本的口子，别当预算看）
+              </Text>
             </Descriptions.Item>
             <Descriptions.Item label="导入时间">
               {parseServerTime(asset.created_at)?.format('YYYY-MM-DD HH:mm') || '-'}
@@ -681,20 +602,6 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
             )}
           </Descriptions>
 
-          {/*
-            批 G：图片走的是另一条路。反推文案稿／文案／生产单／拼接产物这四页对图片**永远为空**
-            （后端四个口都按 media_kind 明确拒绝图片入参），留着只会让人按提示去点「反推文案」
-            ——那是一次白扣钱的反推。所以这几页整块换成一句白话说明。
-          */}
-          {isImageAsset(asset) ? (
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginTop: 16 }}
-              message="这张图只当角色卡，不走反推文案 → 出文案 → 审核 → 生产单那四步"
-              description="在「生成生产单」弹窗里把卡按顺序挑进来（第 1 张是主形象）；成片挂在被投产的那条视频素材名下。"
-            />
-          ) : (
           <Tabs
             style={{ marginTop: 16 }}
             items={[
@@ -988,12 +895,9 @@ const AssetDetailDrawer: React.FC<Props> = ({ open, assetId, onClose, onChanged,
               },
             ]}
           />
-          )}
           <Divider style={{ margin: '12px 0' }} />
           <Text type="secondary" style={{ fontSize: 12 }}>
-            {isImageAsset(asset)
-              ? '图片链路：导入 → 入库 → 投产时被挑成角色卡（画幅由卡的宽高比决定）。'
-              : '链路：导入 → 反推文案稿 → 出钩子文案 → 审核 → 生产单 → 导出/投板 → 登记投板结果 → 拼接产物。'}
+            链路：导入 → 反推文案稿 → 出钩子文案 → 审核 → 生产单 → 导出/投板 → 登记投板结果 → 拼接产物。
           </Text>
           <AssetComposeModal
             open={composeOpen}

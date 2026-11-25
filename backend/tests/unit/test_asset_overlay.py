@@ -193,16 +193,14 @@ def test_resolve_badges_fails_the_cell_instead_of_skipping():
     vid, gone = str(_uuid.uuid4()), str(_uuid.uuid4())
 
     async def _scenario():
-        # ① 选了视频当角标
-        db = _db_with([_asset(vid, kind="video", file_key="asset/video/raw.mp4")])
-        assert "不是图片" in await _raises_400(
-            ov.resolve_badges(db, [{"asset_id": vid, "position": "left"}], "/tmp"))
-        # ② 桶里没有文件
+        # （批 W：角标与角色卡同表，「选了视频当角标」这个分支随表合一消失——
+        #   卡表里只有图片，选错 id 落到 ③ 的「不在卡库里」400）
+        # ① 桶里没有文件
         db = _db_with([_asset(vid, file_key=None)])
         assert "桶里没有文件" in await _raises_400(
             ov.resolve_badges(db, [{"asset_id": vid, "position": "left"}], "/tmp"))
-        # ③ 图已被删（查不到行）
-        assert "不在素材库里" in await _raises_400(
+        # ② 图已被删（查不到行）
+        assert "不在卡库里" in await _raises_400(
             ov.resolve_badges(_db_with([]), [{"asset_id": gone, "position": "left"}], "/tmp"))
         # ④ 下载说成功了但本地是空的 ⇒ 502（环境问题，不是人选错了）
         with patch("app.services.minio_service.download_to_file", AsyncMock(return_value=True)):

@@ -30,11 +30,6 @@ interface Props {
    * 标题超字…），由投板确认窗接着说。父层没接（老入口）就退化成一条消息条。
    */
   onProduced?: (ids: string[], notes: string[]) => void;
-  /**
-   * 批 L：就地上传角色卡挂的批次（=被投产素材所在批次）。可选——
-   * 生产单页「全部」视图开单时拿不到，就由上传口新建小批次。
-   */
-  batchId?: string;
 }
 
 /**
@@ -79,7 +74,7 @@ export function produceResultNotes(res: AssetProduceResponse): string[] {
  * 号池实测 ≈120 条/日，产能不做硬限（11-03 拍板），但建单当场就把「今天已经吃掉多少」摆出来。
  * 钩子编号只能从 hook_id.py 取号带进来，前端不生成、后端不编号。
  */
-const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, onClose, onDone, onProduced, batchId }) => {
+const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, onClose, onDone, onProduced }) => {
   const { user } = useAuth();
   const currentUserId = user?.id;
   /**
@@ -919,7 +914,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
             </Tooltip>
           </Space>
 
-          <AssetCardPicker active={open} value={cardIds} onChange={setCardIds} batchId={batchId} />
+          <AssetCardPicker active={open} value={cardIds} onChange={setCardIds} />
 
           <Checkbox checked={expand} onChange={(e) => setExpand(e.target.checked)}>
             让 AI 按标准模板把文案展开成能直接投的提示词

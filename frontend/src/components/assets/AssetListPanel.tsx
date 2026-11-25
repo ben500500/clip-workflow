@@ -13,12 +13,12 @@ import {
   ASSET_STAGE_LABELS, ASSET_STATUS_LABELS, AssetJobAck, DEFAULT_TIER, DURATION_TIERS, assetApi, isAssetJobAck,
 } from '../../api/assets';
 import type {
-  AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetMediaKind, AssetResolveResponse,
+  AssetItem, AssetAnalyzeResponse, AssetCostEstimateResponse, AssetResolveResponse,
   AssetSummary,
 } from '../../api/assets';
 import {
-  AssetStatusTag, LandscapeTag, MediaKindTag, StageTags,
-  aspectShortText, durationText, isImageAsset, yuan,
+  AssetStatusTag, LandscapeTag, StageTags,
+  durationText, yuan,
 } from './AssetBits';
 import {
   CategorySelect, CategoryTag, UNCLASSIFIED, invalidateAssetCategories, useAssetCategories,
@@ -179,7 +179,6 @@ const AssetListPanel: React.FC<Props> = ({
    * 批 G：按媒体类型筛。`image` 就是「只看角色卡」——投产前想核对库里有哪些卡、
    * 画幅对不对，靠这一筛，不用翻整页列表找扩展名。
    */
-  const [mediaKind, setMediaKind] = useState<AssetMediaKind | undefined>();
   const [stagePrompt, setStagePrompt] = useState<string | undefined>();
   const [dates, setDates] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
   const [batchFilter, setBatchFilter] = useState<string | undefined>(batchId);
@@ -247,7 +246,6 @@ const AssetListPanel: React.FC<Props> = ({
           keyword: keyword || undefined,
           status,
           source_kind: sourceKind,
-          media_kind: mediaKind,
           stage_prompt: stagePrompt,
           batch_id: batchFilter,
           category_id: categoryFilter,
@@ -265,13 +263,13 @@ const AssetListPanel: React.FC<Props> = ({
         setLoading(false);
       }
     },
-    [keyword, status, sourceKind, mediaKind, stagePrompt, batchFilter, categoryFilter, dates, scopeMine, page, pageSize],
+    [keyword, status, sourceKind, stagePrompt, batchFilter, categoryFilter, dates, scopeMine, page, pageSize],
   );
 
   useEffect(() => {
     fetchList(1, pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, sourceKind, mediaKind, stagePrompt, batchFilter, categoryFilter, dates, scopeMine]);
+  }, [status, sourceKind, stagePrompt, batchFilter, categoryFilter, dates, scopeMine]);
 
   // 后台任务刚收敛完（横幅确认终态后 +1）：阶段标签和状态是后端算的，只能重新拉一次
   useEffect(() => {
@@ -296,24 +294,16 @@ const AssetListPanel: React.FC<Props> = ({
    * 把图片混进 count 里报钱，确认单上的数字会比实际扣的多，对账时说不清。
    * 后端那道口（逐条点名拒图）是第二道闸，不能反过来代替这里的分流。
    */
-  const selectedVideoIds = useMemo(
-    () => selected.filter((s) => !isImageAsset(s)).map((s) => s.id),
-    [selected],
-  );
-  const selectedImageCount = useMemo(
-    () => selected.filter((s) => isImageAsset(s)).length,
-    [selected],
-  );
+  // 11-25 批 W：图片不再当素材入库，这张表里只有视频——「只对视频成立」的分流
+  // 不需要再写一遍过滤器（后端逐条闸门仍在，是第二道闸）
+  const selectedVideoIds = useMemo(() => selected.map((s) => s.id), [selected]);
   const selectedVideoCount = selectedVideoIds.length;
   /**
    * 共用挑选弹窗要的「范围」：id 拿去按 `asset_ids` 捞文案，code 用来点名哪几条
    * 排在外面（只有过审文案的素材才进得来）。图片不在这里——图没有文案。
    */
   const selectedVideoAssets = useMemo(
-    () =>
-      selected
-        .filter((s) => !isImageAsset(s))
-        .map((s) => ({ id: s.id, code: s.code })),
+    () => selected.map((s) => ({ id: s.id, code: s.code })),
     [selected],
   );
 
@@ -848,7 +838,7 @@ const AssetListPanel: React.FC<Props> = ({
           </Tag>
           {/* 批 J：链接素材的原片下载三态小标——下载是搭车动作，失败不拦流程，
               但得让人看得见、点得动重试，不能只藏在详情抽屉里 */}
-          {!isImageAsset(row) && v === 'link' && (
+          {v === 'link' && (
             row.download_status === 'running' ? (
               <Tag icon={<LoadingOutlined spin />} color="processing" style={{ fontSize: 11, marginInlineEnd: 0 }}>
                 原片下载中
@@ -873,29 +863,12 @@ const AssetListPanel: React.FC<Props> = ({
       ),
     },
     {
-      /**
-       * 批 G：类型列。图片在这张表里**永远停在「图片已入库」**——它不走五个环节，
-       * 所以把画幅直接写在列上（成片画幅跟卡走，横版卡要在投产前就被认出来）。
-       */
+      // 11-09 用户拍板：横屏原片全部收进来、界面上要标横屏（以前这一列对视频永远空着，
+      // 因为后端 aspect 只喂图片——现在两类都给了，判据仍只在后端一处）
       title: '类型',
       key: 'media_kind',
       width: 96,
-      render: (_, row) =>
-        isImageAsset(row) ? (
-          <Space direction="vertical" size={0}>
-            <MediaKindTag asset={row} />
-            <Text type={row.aspect?.orientation === 'landscape' ? 'danger' : 'secondary'} style={{ fontSize: 11 }}>
-              {aspectShortText(row.aspect)}
-            </Text>
-          </Space>
-        ) : (
-          // 11-09 用户拍板：横屏原片全部收进来、界面上要标横屏（以前这一列对视频永远空着，
-          // 因为后端 aspect 只喂图片——现在两类都给了，判据仍只在后端一处）
-          <Space size={2}>
-            <MediaKindTag asset={row} />
-            <LandscapeTag aspect={row.aspect} />
-          </Space>
-        ),
+      render: (_, row) => <LandscapeTag aspect={row.aspect} />,
     },
     {
       title: '原型',
@@ -908,11 +881,7 @@ const AssetListPanel: React.FC<Props> = ({
       dataIndex: 'duration',
       width: 76,
       render: (v: number | null, row) =>
-        isImageAsset(row) ? (
-          // 批 G：图片没有「时长」这回事，给个横杠而不是「未知」——
-          // 「未知」在这里的含义是"链接素材还没回源查"，会让人以为点查时长能查出来
-          <Text type="secondary">—</Text>
-        ) : v === null || v === undefined ? (
+        v === null || v === undefined ? (
           <Tooltip
             title={
               row.source_kind === 'link'
@@ -945,7 +914,7 @@ const AssetListPanel: React.FC<Props> = ({
         <Space size={2}>
           <StageTags asset={row} />
           {/* 11-05：反推失败的行就地给个 ⟳——不用把这条重新勾一遍再开批量弹窗 */}
-          {canProduce && !isImageAsset(row) && row.stage_prompt === 'failed' && (
+          {canProduce && row.stage_prompt === 'failed' && (
             <Tooltip title="这条反推文案失败了，点重试（按默认时长档扣费）">
               <Button
                 size="small"
@@ -1010,16 +979,9 @@ const AssetListPanel: React.FC<Props> = ({
           <Tooltip title="原片直链：上传的文件从我们自己的存储里取；链接素材没存原片，会提示你用来源链接自己打开">
             <Button size="small" icon={<DownloadOutlined />} onClick={() => showSource(row)} />
           </Tooltip>
-          {canProduce && !isImageAsset(row) && (
+          {canProduce && (
             <Tooltip title="两段直拼：再选一条素材／一个切片／本地文件，选谁在前（0 元，不选点不剪切）">
               <Button size="small" icon={<MergeCellsOutlined />} onClick={() => setComposeAsset(row)} />
-            </Tooltip>
-          )}
-          {/* 批 G：图片不给拼接入口——ffmpeg 拿一张 jpg 当一段会在解码时炸（后端也挡，
-              但入口摆在那儿就是让人去撞 400）。它的下一步在「投产」弹窗里被挑成角色卡。 */}
-          {canProduce && isImageAsset(row) && (
-            <Tooltip title="图片只作生产输入：投产时在「生成生产单」弹窗里挑它当角色卡。不参与反推文案、出文案、拼接。">
-              <Tag color="purple" style={{ marginLeft: 2 }}>当角色卡用</Tag>
             </Tooltip>
           )}
           {/* 11-06 删除：本人删自己的、admin 删任意；拦不拦得动由后端裁决（409 话术透传） */}
@@ -1103,17 +1065,6 @@ const AssetListPanel: React.FC<Props> = ({
             { value: 'file', label: '文件' },
           ]}
         />
-        <Select<AssetMediaKind>
-          placeholder="类型"
-          allowClear
-          style={{ width: 120 }}
-          value={mediaKind}
-          onChange={setMediaKind}
-          options={[
-            { value: 'video', label: '视频素材' },
-            { value: 'image', label: '图片（角色卡）' },
-          ]}
-        />
         <Select
           placeholder="反推文案环节"
           allowClear
@@ -1171,12 +1122,6 @@ const AssetListPanel: React.FC<Props> = ({
       {/* ② 批量动作行：勾选后要花的钱都在这一行，按钮永远在同一个位置不会跳 */}
       {canProduce ? (
         <Space wrap size={8} style={{ marginBottom: 12 }}>
-          {/* 批 G：图片混在勾选里时先把它摘出来说一句——下面几个按钮只对视频成立 */}
-          {!!selectedImageCount && (
-            <Tooltip title="图片（角色卡）不反推文案、不出文案、不查时长：提交进去也只会逐条回「这是图片」。这几个按钮只动勾到的视频。">
-              <Tag color="purple">另勾了 {selectedImageCount} 张图，不参与这几步</Tag>
-            </Tooltip>
-          )}
           {/* 2026-11-13 流畅性席 P0：analyzeLoading/resolveBusy 没接线——点击后 0.3-2s 死寂窗，
               按钮可再点＝双份反推任务双份扣费。loading＋busy 期间一并禁点。 */}
           <Button type="primary" icon={<FileTextOutlined />} loading={analyzeLoading} onClick={openAnalyze} disabled={!ids.length || analyzeLoading}>
@@ -1391,7 +1336,6 @@ const AssetListPanel: React.FC<Props> = ({
         open={produceOpen}
         summaries={pickedSummaries}
         isAdmin={isAdmin}
-        batchId={batchFilter || batchId}
         onClose={() => setProduceOpen(false)}
         onDone={() => {
           setProduceOpen(false);

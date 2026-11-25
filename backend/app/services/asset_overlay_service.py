@@ -44,7 +44,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.asset import MEDIA_IMAGE, AssetItem
+from app.models.asset import AssetCard
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +275,10 @@ def engine_available() -> Tuple[bool, Optional[str]]:
 async def resolve_badges(
     db: AsyncSession, badges: List[Dict[str, Any]], work_dir: str
 ) -> List[Dict[str, Any]]:
-    """把角标从「素材库图片行」翻成引擎要的「本地文件路径」。
+    """把角标从「角色卡库图片」翻成引擎要的「本地文件路径」。
+
+    （11-25 批 W：图片不再当素材入库，角标与角色卡同读一张 `asset_cards` 表——
+    旧预设里存的 asset_id 随搬迁**原 id 直迁**，已存的预设一条不用改。）
 
     逐张校验：必须是图片（视频当角标 ffmpeg 会当一路视频输入去解码，报一堆看不懂的错）、
     桶里必须有文件。**任何一张取不到就整格失败**——这里不学"跳过无效角标继续叠"
@@ -304,8 +307,8 @@ async def resolve_badges(
 
 async def resolve_badge_refs(
     db: AsyncSession, badges: List[Dict[str, Any]]
-) -> List[Tuple[Dict[str, Any], AssetItem]]:
-    """只查库、不碰桶：把每个角标的 `asset_id` 翻成**已校验过的素材行**。
+) -> List[Tuple[Dict[str, Any], AssetCard]]:
+    """只查库、不碰桶：把每个角标的 `asset_id` 翻成**已校验过的角色卡行**。
 
     为什么单独拆这一层（11-24 需求三 S3，缺口 4b「校验先于投出」）：
     「选了张视频当角标」是**入参错**，不是运行故障。原来只有渲染时才查得出来，于是
@@ -318,17 +321,15 @@ async def resolve_badge_refs(
         return []
     ids = [str(b.get("asset_id")) for b in badges]
     rows = (
-        await db.execute(select(AssetItem).where(AssetItem.id.in_(_uuid_list(ids))))
+        await db.execute(select(AssetCard).where(AssetCard.id.in_(_uuid_list(ids))))
     ).scalars().all()
     by_id = {str(r.id): r for r in rows}
 
-    pairs: List[Tuple[Dict[str, Any], AssetItem]] = []
+    pairs: List[Tuple[Dict[str, Any], AssetCard]] = []
     for idx, badge in enumerate(badges):
         asset = by_id.get(str(badge.get("asset_id")))
         if asset is None:
-            _bad(f"第{idx + 1}个角标对应的图片不在素材库里了（可能已被删除），请重新挑一张")
-        if asset.media_kind != MEDIA_IMAGE:
-            _bad(f"第{idx + 1}个角标「{asset.code}」不是图片，当不了角标")
+            _bad(f"第{idx + 1}个角标对应的图片不在卡库里了（可能已被删除），请重新挑一张")
         if not asset.file_key:
             _bad(f"第{idx + 1}个角标「{asset.code}」桶里没有文件，换一张")
         pairs.append((badge, asset))
