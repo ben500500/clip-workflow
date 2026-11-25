@@ -9326,6 +9326,111 @@ def test_output_groups_aggregate_by_asset_and_batch():
     _run(_scenario())
 
 
+def test_wall_delete_inflight_and_outputs():
+    """批 Y（11-25 用户口径「成片墙没有删除功能，比如超时生成的豆包素材无法删掉」）。
+
+    钉六件事：①在途（queued/running）可人工删单→cancelled，成因带操作人与投出时长；
+    ②删掉的单必须从在途占位里消失——**老查询第二臂 `board_tid is not None` 会把作废单
+    继续摆回墙上**，这是本批唯一真正的回归点；③终态不可删（success/failed/order_ready→409）；
+    ④权限闸与投板同圈人（material→403）、动作进审计；⑤成片删除逐形回报（invalid/
+    not_found/files_failed），MinIO 尽力语义＝删不掉文件照删行并如实报；⑥墙列表跟掉。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, hadm = h["material"], h["operator"], h["admin"]
+
+        asset_id, _ = await _make_ready_asset(client, hm, url=DOUYIN_3)
+        items, _ = await _gen_and_list(asset_id, hm, client)
+        sid = _approvable(items)["id"]
+        await client.post("/api/assets/summaries/review",
+                          json={"summary_ids": [sid], "action": "approve"}, headers=hadm)
+        with patch("app.api.assets._call_autoclip", _fake_autoclip()):
+            pr = await client.post("/api/assets/produce",
+                                   json={"summary_ids": [sid], "n": 1, "hook_codes": ["7CY01"]}, headers=hadm)
+            assert pr.status_code == 200, f"投产回包异常 {pr.status_code}: {pr.text[:300]}"
+        p = (await _rows(AssetProduction, AssetProduction.asset_id == uuid.UUID(asset_id)))[0]
+
+        # 置成「投出去 80 分钟没回片」的在途单
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetProduction, p.id)
+            row.status, row.board_tid, row.started_at = PR_QUEUED, "T-Y1", datetime.utcnow() - timedelta(minutes=80)
+            await s.commit()
+        assert (await client.get("/api/assets/outputs/inflight", headers=hadm)).json()["inflight_total"] == 1
+
+        # 权限闸＝投板同圈人；非法 id 400、不存在 404
+        assert (await client.post(f"/api/assets/productions/{p.id}/cancel", headers=hm)).status_code == 403
+        assert (await client.post("/api/assets/productions/not-a-uuid/cancel", headers=hadm)).status_code == 400
+        assert (await client.post(f"/api/assets/productions/{uuid.uuid4()}/cancel", headers=hadm)).status_code == 404
+
+        # ① 删单：queued→cancelled，error 说清谁删的、投出多久
+        c = await client.post(f"/api/assets/productions/{p.id}/cancel", headers=hadm)
+        assert c.status_code == 200, c.text
+        cb = c.json()
+        assert cb["status"] == PR_CANCELLED and "人工删单" in cb["error"] and ADMIN_USER in cb["error"]
+        assert "80" in cb["error"], f"删因要带投出时长，跟卡上「投出 80 分」对得上：{cb['error']}"
+        # ② 占位条跟掉（board_tid 还在——没排作废态的老查询会把它继续摆回墙上）
+        inf = (await client.get("/api/assets/outputs/inflight", headers=hadm)).json()
+        assert inf["inflight_total"] == 0 and str(p.id) not in {i["production_id"] for i in inf["items"]}, inf
+        # ③ 重复删/终态删：409 且话术指路
+        again = await client.post(f"/api/assets/productions/{p.id}/cancel", headers=hadm)
+        assert again.status_code == 409 and "成片走产物删除口" in again.text
+        # ④ 审计留痕
+        audits = await _rows(AuditLog, AuditLog.action == "asset.production.cancel")
+        assert [a.target_id for a in audits] == [str(p.id)]
+
+        # ⑤ 成片删除：三行，第 2 行模拟 MinIO 抖动（删不掉文件也照删行，如实回报）
+        oids = []
+        for i in range(3):
+            oid = uuid.uuid4()
+            oids.append(oid)
+            async with dbmod.async_session_factory() as s:
+                s.add(AssetOutput(
+                    id=oid, production_id=p.id, asset_id=uuid.UUID(asset_id),
+                    kind="doubao_raw", file_key=f"asset-out/y-del-{i}.mp4",
+                    bucket=settings.MINIO_BUCKET_SLICED, file_name=f"成片{i}.mp4",
+                ))
+                await s.commit()
+        calls = []
+
+        async def _fake_delete(bucket, key):
+            calls.append((bucket, key))
+            return "y-del-1" not in key
+
+        gone_id = str(oids[2])
+        ghost_id = str(uuid.uuid4())
+        with patch("app.api.assets.misc.delete_file", _fake_delete):
+            d = await client.post("/api/assets/outputs/delete", headers=hadm,
+                                  json={"ids": [str(oids[0]), str(oids[1]), "bad-id", ghost_id],
+                                        "reason": "超时重复片"})
+        assert d.status_code == 200, d.text
+        dr = d.json()
+        assert dr["deleted"] == 2 and sorted(dr["ids"]) == sorted([str(oids[0]), str(oids[1])])
+        assert dr["invalid"] == ["bad-id"] and dr["not_found"] == [ghost_id]
+        assert dr["files_failed"] == [str(oids[1])], f"文件删失败不拦删行，但要报出来：{dr}"
+        assert len(calls) == 2 and all(b == settings.MINIO_BUCKET_SLICED for b, _ in calls)
+        left = {str(x.id) for x in await _rows(AssetOutput)}
+        assert str(oids[0]) not in left and str(oids[1]) not in left and gone_id in left
+        # ⑥ 墙列表跟掉 + 预览口别给死链报错以外的惊喜
+        outs = (await client.get("/api/assets/outputs?owner=all", headers=hadm)).json()["items"]
+        assert {str(oids[0]), str(oids[1])}.isdisjoint({o["id"] for o in outs})
+        # 空名单 400、超上限 400、material 403、operator（同圈）能删
+        assert (await client.post("/api/assets/outputs/delete", headers=hadm, json={"ids": []})).status_code == 400
+        too_many = await client.post("/api/assets/outputs/delete", headers=hadm,
+                                     json={"ids": [str(uuid.uuid4()) for _ in range(201)]})
+        assert too_many.status_code == 400
+        assert (await client.post("/api/assets/outputs/delete", headers=hm, json={"ids": [gone_id]})).status_code == 403
+        d2 = await client.post("/api/assets/outputs/delete", headers=ho, json={"ids": [gone_id]})
+        assert d2.status_code == 200 and d2.json()["deleted"] == 1
+        d_audits = await _rows(AuditLog, AuditLog.action == "asset.outputs.delete")
+        assert len(d_audits) == 2
+        assert any((a.after or {}).get("reason") == "超时重复片" for a in d_audits), "删因必须进审计"
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_summary_generate_sets_condensed_title_as_asset_name():
     """2026-11-07 用户口径：出文案同步产浓缩标题，直接当素材名称（不用 AS 编号）。
 

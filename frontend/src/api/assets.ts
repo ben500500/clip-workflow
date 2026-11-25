@@ -3260,6 +3260,20 @@ export const assetApi = {
   listInflightOutputs: (params?: { batch_id?: string; owner?: 'me' | 'all'; limit?: number }) =>
     client.get('/assets/outputs/inflight', { params }) as Promise<AssetInflightResult>,
 
+  // 批 Y（11-25 用户口径「成片墙没有删除功能，比如超时生成的豆包素材无法删掉」）：
+  // 在途单人工删单——只吃 queued/running，删后进 cancelled：不再占在途、导出/回写/
+  // 交付全被既有闸挡掉（豆包之后真回片也挂不上来），账留审计。
+  cancelProduction: (productionId: string) =>
+    client.post(`/assets/productions/${productionId}/cancel`) as Promise<{
+      ok: boolean; id: string; status: string; error: string;
+    }>,
+
+  // 成片彻底删除：台账行＋MinIO 文件一起走（文件删不净只报数，不拦删行）。
+  deleteOutputs: (ids: string[], reason?: string) =>
+    client.post('/assets/outputs/delete', { ids, reason }) as Promise<{
+      deleted: number; ids: string[]; files_failed: string[]; invalid: string[]; not_found: string[];
+    }>,
+
   // 换皮扇出的实时预览（11-10 用户口径「选了元素但看不到正文被替换的地方」）：
   // 0 元、不落库、不占号；与开单同一个引擎，所以配对不齐/超上限的 400 话术也是一条
   previewPromptElementFanout: (body: {

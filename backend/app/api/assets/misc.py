@@ -12367,7 +12367,10 @@ async def list_inflight_outputs(
     cut = now - timedelta(hours=_WALL_FAILED_WINDOW_HOURS)
 
     gen_conds = scope + [
-        AssetProduction.status.notin_((PR_SUCCESS, PR_FAILED)),
+        # 批 Y（11-25 删单口上线后必须一起改）：作废三态不许留在在途里——在途第二臂
+        # `board_tid is not None` 本意是捞「状态没回写但板上确有其单」的行，人工删掉的
+        # 单也有 board_tid，不显式排掉它会继续挂在墙上装「还在出片」。
+        AssetProduction.status.notin_((PR_SUCCESS, PR_FAILED, PR_CANCELLED, PR_SUPERSEDED, PR_SKIPPED)),
         or_(
             AssetProduction.status.in_((PR_QUEUED, PR_RUNNING)),
             AssetProduction.board_tid.is_not(None),
@@ -12494,6 +12497,139 @@ async def list_inflight_outputs(
         "slow_after_minutes": int(round(_board_poll_max_minutes())),
         "items": [_row(p, "generating") for p in gen_rows]
         + [_row(p, "failed") for p in failed_rows],
+    }
+
+
+@router.post("/assets/productions/{production_id}/cancel")
+async def cancel_inflight_production(
+    production_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
+):
+    """在途单人工删单（批 Y，11-25 用户口径：「成片墙没有删除功能，超时生成的豆包素材
+    无法删掉」）。
+
+    只管 `queued/running`（已投板未回片）——这正是墙上超时也不动的灰卡。`success` 的
+    账是既成事实，要清的是片子，走产物删除口；`failed` 留失败条由板面/人工判读，
+    覆盖成 cancelled 会把「败了几张」的口径改脏；作废三态本身就不该再出现在墙上。
+
+    下游不用新加任何守卫（11-05 起 `cancelled` 的读口全部就位，只差这个写口）：
+    回收只认点名后的状态迁移表，作废态在 `_block` 里被拒（10380）→ 删掉的单就算
+    豆包后来真回片，回收那一步也只是把片子报丢，不会复活；导出/交付集同样禁作废态。
+    """
+    p = (
+        await db.execute(
+            select(AssetProduction).where(AssetProduction.id == _as_uuid(production_id, "production_id"))
+        )
+    ).scalar_one_or_none()
+    if p is None:
+        raise HTTPException(status_code=404, detail="这条生产单不存在")
+    if p.status not in (PR_QUEUED, PR_RUNNING):
+        raise HTTPException(
+            status_code=409,
+            detail=f"只有已投板未回片的单能从这里删（当前状态 {p.status}）；"
+                   "成片走产物删除口，失败单留在失败条里判读",
+        )
+    was = p.status
+    mins = None
+    if p.started_at:
+        mins = int((datetime.utcnow() - p.started_at).total_seconds() // 60)
+    p.status = PR_CANCELLED
+    p.error = (
+        f"成片墙人工删单（投出{'约 ' + str(mins) + ' 分钟' if mins is not None else ''}未回片）"
+        f"：操作人 {current_user.username}"
+    )[:500]
+    await _write_audit(
+        db,
+        action="asset.production.cancel",
+        operator=current_user,
+        target_type="asset_production",
+        target_id=p.id,
+        before={"status": was, "error": None},
+        after={"status": PR_CANCELLED, "error": p.error},
+    )
+    await db.commit()
+    return {"ok": True, "id": str(p.id), "status": p.status, "error": p.error}
+
+
+class OutputsDeleteRequest(BaseModel):
+    ids: List[str] = Field(..., description="要点名的产物 id（成片墙单卡删除或勾选批量）")
+    reason: Optional[str] = Field(None, description="删因（进审计：超时/坏片/重复…）")
+
+
+@router.post("/assets/outputs/delete")
+async def delete_outputs(
+    data: OutputsDeleteRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_db),
+    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
+):
+    """成片彻底删除（批 Y）：删 `asset_outputs` 行＋尽力删 MinIO 对象，一次审计。
+
+    权限闸跟投板/回收同一圈人（`_REVIEW_ROLES`）：墙本来就是这批人在清，成片是谁投的
+    在这层不重要——审计记的是**谁删的**。
+
+    刻意**不设引用拦截**（与 `delete_asset` 不同）：asset_outputs 是叶子表，没有别的表
+    外键指向它（`composed_from_output_id` 只是追溯列，无 FK）；生产单行的 success 台账
+    也不靠产物行存活——删掉这条片子，「这张单成过片」仍是事实。真要拦只会把「删一条
+    重复片」变成全墙删不动。
+
+    尽力语义照 `delete_asset` 的口径：桶对象删不掉只记日志、不拦 DB 删除——宁可桶里
+    多一个孤儿对象，别让 MinIO 抖动把删卡操作卡死。审计走 strict（删完必须查得到
+    谁删了哪些，写不进审计就整个拒绝，先审后删）。
+    """
+    ids = [str(x).strip() for x in (data.ids or []) if str(x).strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="ids 不能为空")
+    if len(ids) > 200:
+        raise HTTPException(status_code=400, detail="一次最多删 200 条，多了分批")
+    uuids, invalid = [], []
+    for raw in ids:
+        try:
+            uuids.append(_as_uuid(raw, "id"))
+        except HTTPException:
+            invalid.append(raw)
+    rows = (await db.execute(select(AssetOutput).where(AssetOutput.id.in_(uuids)))).scalars().all() if uuids else []
+    found = {str(r.id): r for r in rows}
+    deleted, files_failed = [], []
+    snapshots = []
+    for r in rows:
+        snap = {
+            "id": str(r.id), "kind": r.kind, "file_name": r.file_name,
+            "file_key": r.file_key, "bucket": r.bucket, "file_size": r.file_size,
+            "production_id": str(r.production_id) if r.production_id else None,
+        }
+        snapshots.append(snap)
+        if r.file_key and r.bucket:
+            if not await delete_file(r.bucket, r.file_key):
+                files_failed.append(str(r.id))
+        await db.delete(r)
+        deleted.append(str(r.id))
+    not_found = [x for x in ids if x not in found and x not in invalid]
+    await _write_audit(
+        db,
+        action="asset.outputs.delete",
+        operator=current_user,
+        target_type="asset_output",
+        target_id=None,
+        before={"count": len(deleted), "items": snapshots},
+        after={
+            "deleted": deleted,
+            "reason": (data.reason or "")[:200],
+            "files_failed": files_failed,
+            "invalid": invalid[:10],
+            "not_found": not_found[:10],
+        },
+        strict=True,
+    )
+    await db.commit()
+    return {
+        "deleted": len(deleted),
+        "ids": deleted,
+        "files_failed": files_failed,
+        "invalid": invalid,
+        "not_found": not_found,
     }
 
 
