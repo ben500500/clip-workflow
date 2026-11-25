@@ -57,6 +57,15 @@ func (t *MacOSTray) iconBytes() []byte {
 // goroutine 中启动，不受影响。
 func (t *MacOSTray) Start(ui *TrayUI) {
 	t.ui = ui
+	// 状态刷新钩子必须显式接上：SetStatus/SetTasks/SetCPUPercent 的「变更即刷新」
+	// 全靠 ui.updateMenu 这个回调。此前它从未赋值（恒 nil），菜单只在在线态翻转时
+	// 经 SetOnline 才刷新一次——「当前任务」子菜单因此永远停在初始「空闲」
+	// （2026-11-25 用户实测：本地在切任务、菜单却显示空闲）。
+	ui.updateMenu = func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		t.refresh()
+	}
 	systray.Run(func() {
 		t.onReady()
 	}, func() {
