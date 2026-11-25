@@ -219,10 +219,13 @@ async def batch_download(
     if not data.output_ids:
         raise HTTPException(status_code=400, detail="No output IDs provided")
 
-    if len(data.output_ids) > 100:
+    # 上限 100→2000（2026-11-25 用户需求）：整集成品常有 100+ 条，前端已改为
+    # fetch+blob 受控单飞下载（不再受浏览器多下载队列限制），逐条生成 presigned
+    # URL 开销极低，旧上限会把"一键下载全部"整集场景直接拒掉。
+    if len(data.output_ids) > 2000:
         raise HTTPException(
             status_code=400,
-            detail="Cannot batch download more than 100 files at once",
+            detail="单次批量下载最多 2000 个文件",
         )
 
     # 逐个生成 presigned 直链，跳过无效/无文件的输出（含越权项）
