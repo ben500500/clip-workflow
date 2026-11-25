@@ -742,6 +742,12 @@ async def _write_audit(
 _CROSS_MARKER = "替他人批次花钱"
 # A′：归属跨人（投别人过审的候选）的固定点名短语，前端 withCrossOwnerConfirm 靠它识别
 _CROSS_OWNER_MARKER = "替他人过审候选投产"
+# 批 U（2026-11-25）：极简屏「投豆包」被取号拦住时，502 话术带这个固定短语＋缺口数
+# （形如 `【需要手工贴号:2】`）。
+# 前端 SimpleLibrary 靠它识别「这是号没凑齐、不是别的事」，并照缺口数摆出「我自己贴号」
+# 输入框——旧写法只 toast 一句原文，一线在本地（没装配号命令）就是死路：既不知道能贴号，
+# 也不知道要贴几个。与 _CROSS_OWNER_MARKER 同一套做法（话术里埋标记，不让前端猜错误文案）。
+_HOOK_TAKE_MARKER = "【需要手工贴号"
 
 
 async def _user_names(db: AsyncSession, uids: set) -> Dict[str, str]:
@@ -15656,28 +15662,6 @@ async def _find_twin_draft(db: AsyncSession, owner_id: Any, body_hash: str, *, b
     return (await db.execute(select(AssetScript).where(and_(*conds)).limit(1))).scalar_one_or_none()
 
 
-async def _take_hook_codes_audited(db: AsyncSession, operator: User, count: int) -> Tuple[List[str], List[str], Optional[str]]:
-    """取号＋留痕（与 `POST /assets/hook-codes/take` 同一条纪律）：取号是「一发即烧」的
-    外部动作，成没成都要有一条 `asset.hook_code.take` 审计——号在共享台账烧掉了，
-    系统里却查无此号，是没法对账的。"""
-    codes, overflow, err = await _take_hook_codes(count)
-    await _write_audit(
-        db,
-        action="asset.hook_code.take",
-        operator=operator,
-        target_type="asset_production",
-        target_id=None,
-        after={
-            "count": int(count),
-            "codes": list(codes[:20]),
-            "overflow_discarded": list(overflow[:20]),
-            "error": (err or "")[:200],
-            "via": "script_produce",
-        },
-    )
-    return codes, overflow, err
-
-
 @router.post("/assets/scripts", status_code=201)
 async def create_script(
     data: ScriptCreateRequest,
@@ -16225,24 +16209,91 @@ async def produce_from_scripts(
             ),
         )
 
-    # 取号：一脚本一号（一发即烧）。手工粘了号就用手工的，没粘就后端代取。
+    # ── 取号：一钩一号、一发即烧，所以**先吃文案名下已预取的号，缺几个补几个** ──
+    # 2026-11-25 用户本机一枪连撞两个真问题（旧写法是无条件 `_take_hook_codes(len(picked))`）：
+    #   ① 导入/出文案那三个入口早就把号预取在 `asset_summaries.hook_code` 上了
+    #      （`_auto_park_hook_codes`，见 8-13），极简开单不看预取位、整批新取一遍
+    #      ＝同一篇稿烧两次号；
+    #   ② 只取到一半时把号丢回审计就 502，那几个号在共享台账已烧、系统侧谁也不认，
+    #      重发再取一批＝白废。
+    # 现在走「挂到预取位上再逐条读回来」：部分成功也不丢，下一枪复用（`create_productions`
+    # 顶槽即清空），话术里点名差几个、已挂的号去哪了、怎么补。
+    carriers = [carrier_of[str(s.id)] for s in picked]
     codes: List[str] = []
+    gaps = [c for c in carriers if not str(c.hook_code or "").strip()]
     if data.hook_codes:
-        codes = [c.strip().upper() for c in data.hook_codes if (c or "").strip()]
-        if len(codes) != len(picked):
+        # 自动取号被拦下时前端摆出的「我自己贴号」退路：**只补还空着的那些槽**。
+        # 为什么不是"整批按顺序贴"：预取位上已经挂到号的几条（上一枪烧过的）再让人贴一遍，
+        # 等于把新号挂到已经有主的稿上、旧号继续空占——一钩一号就破了。
+        pasted = [str(c or "").strip().upper() for c in data.hook_codes if str(c or "").strip()]
+        if len(pasted) != len(gaps):
             raise HTTPException(
                 status_code=400,
-                detail=f"手工填的钩子编号数量不对：{len(picked)} 个脚本要 {len(picked)} 个号，收到 {len(codes)} 个",
+                detail=(
+                    f"贴的钩子编号数量不对：这 {len(picked)} 条里还缺 {len(gaps)} 个号，"
+                    f"收到 {len(pasted)} 个（每行一个，按勾选顺序贴到缺号的那几条上；"
+                    "已经预取到号的几条不用再贴）"
+                ),
             )
+        if len(set(pasted)) != len(pasted):
+            raise HTTPException(status_code=400, detail="手工贴的编号里有重号：一钩一号，一条脚本只能占一个")
+        for carrier, code in zip(gaps, pasted):
+            carrier.hook_code = code
+        await db.flush()
+        codes = [str(c.hook_code).strip().upper() for c in carriers]
     else:
-        codes, _overflow, err = await _take_hook_codes_audited(db, current_user, len(picked))
-        if len(codes) < len(picked):
+        park = await _auto_park_hook_codes(db, carriers, operator=current_user, source="script_produce")
+        await db.flush()
+        short = [c for c in carriers if not str(c.hook_code or "").strip()]
+        if short:
+            got = len(carriers) - len(short)
+            cmd_unset = not (getattr(settings, "ASSET_HOOK_ID_CMD", "") or "").strip()
+            if not got:
+                # `_auto_park_hook_codes` 的纪律是「只在真钉上号时写审计」（8-13），但极简这一枪
+                # 是整批开单被拦下，一个号都没落地——留一条失败留痕，否则台账查无此役
+                # （旧路径靠 `_take_hook_codes_audited` 必写一条 take 审计，别把这条纪律丢了）。
+                await _write_audit(
+                    db,
+                    action="asset.hook_code.take",
+                    operator=current_user,
+                    target_type="asset_hook_code",
+                    target_id=None,
+                    after={
+                        "count": len(carriers),
+                        "codes": [],
+                        "error": str(park.get("reason") or "")[:200],
+                        "via": "script_produce",
+                    },
+                )
+            # 已经钉上的号**留在文案预取位**（回滚等于再白烧一次），下一枪直接复用
             await db.commit()
+            # 「怎么补」这句话必须对准**真实卡点**：命令没配 / 预取旋钮被关 / 取号脚本自己坏了，
+            # 三种情况下「重试有没有用」是相反的答案（用户口径：不能给一个模糊的「稍后重试」）。
+            reason = str(park.get("reason") or "")
+            if "自动预取未开启" in reason:
+                how = ("这台服务把自动预取关掉了（ASSET_AUTO_PARK_HOOK_CODES=false），重试没有用："
+                       "要么管理员把旋钮打开，要么在这屏点「我自己贴号」，")
+            elif cmd_unset:
+                how = ("这台服务的 .env 里没装配号命令（ASSET_HOOK_ID_CMD 是空的），所以重试没有用："
+                       "要么管理员把取号命令配好并重启服务，要么在这屏点「我自己贴号」，")
+            else:
+                how = "取号那边修好后直接重发这一批（已挂上的号会复用、不重取）；不想等就在这屏点「我自己贴号」，"
             raise HTTPException(
                 status_code=502,
-                detail=f"钩子编号没取够（要 {len(picked)} 个、得 {len(codes)} 个）：{err or '脚本没给原因'}"
-                       + "——这批没有建单，稍后重试；已取到的号已记在共享台账里",
+                detail=(
+                    f"{_HOOK_TAKE_MARKER}:{len(short)}】"
+                    + f"这 {len(picked)} 条没建单：钩子编号差 {len(short)} 个"
+                    f"（{reason or '取号脚本没给原因'}）。"
+                    + (
+                        f"已取到的 {got} 个号挂在对应文案的预取位上，重发这一批会直接复用、不重复烧号。"
+                        if got else "共享台账上一个号也没烧。"
+                    )
+                    + how
+                    + "把服务器上跑 hook_id.py 取到的号贴进来（每行一个，只贴还缺号的那几条，"
+                    "已经挂上号的不用再贴）。"
+                ),
             )
+        codes = [str(c.hook_code).strip().upper() for c in carriers]
 
     bodies = {str(s.carrier_summary_id): s.body for s in picked}
     produce_res = await create_productions(
@@ -16295,17 +16346,30 @@ async def produce_from_scripts(
 
     # 建完直接投板：后台任务，受理即回。逐批人工确认＝屏 2 那一下「投豆包」按钮本身
     #（与五环 11-12 钱面下架后的口径一致：按钮就是那一下人工确认）。
-    dispatch_ack = await dispatch_productions(
-        DispatchRequest(
-            ids=production_ids,
-            confirm=True,
-            async_mode=True,
-            cross_person_confirm=data.cross_person_confirm,
-        ),
-        current_user,
-        db,
-        current_user,
-    )
+    #
+    # 但**投板被拒不能把整枪打成 400**（2026-11-25 本机实测抓出来的真 bug）：
+    # 单在 `create_productions` 里已经落库了，这一句再抛「自动投板还没启用」，界面就显示
+    # 「投豆包没成功」——可单确实建出来了。人一看没成就再点一次，第二次又建一单（重号检查
+    # 拦不住：上一枪的号已经挂在上一张单上了）。所以降级成响应里的 dispatch 结果：
+    # 建单算成功，投板没投上照实说，并把「接下来怎么办」讲清楚。
+    try:
+        dispatch_ack = await dispatch_productions(
+            DispatchRequest(
+                ids=production_ids,
+                confirm=True,
+                async_mode=True,
+                cross_person_confirm=data.cross_person_confirm,
+            ),
+            current_user,
+            db,
+            current_user,
+        )
+    except HTTPException as exc:   # noqa: PERF203 — 只此一处，降级面就是「这一枪没投上板」
+        dispatch_ack = {
+            "queued": False,
+            "job_id": None,
+            "error": str(exc.detail)[:400],
+        }
     await _write_audit(
         db,
         action="asset.script.produce",
@@ -16322,6 +16386,7 @@ async def produce_from_scripts(
     )
     await db.commit()
     failed = [x for x in results if not x["ok"]]
+    unqueued = dispatch_ack.get("queued") is False
     return {
         "production_ids": production_ids,
         "results": results,
@@ -16329,6 +16394,13 @@ async def produce_from_scripts(
         "message": (
             f"已投出 {len(production_ids)} 个脚本（每个出 {board_total} 版）——豆包出片约 25 分钟，成片回到成片墙"
             + (f"；{len(failed)} 个没投成（看逐条原因）" if failed else "")
+            # 投板被降级时必须在这句话里说出来，否则界面只报「已投出」，人等到明天也等不到片
+            + (
+                f"；但这一枪没投上板：{(dispatch_ack.get('error') or '投板口拒绝')[:120]}"
+                "——单子已建好（状态待投），配好后台板凭据后到「生产与投板」那屏点「投去 AI 出片」补投，"
+                "或导出 payload 人工投板再回写"
+                if unqueued else ""
+            )
         ),
     }
 

@@ -39,6 +39,27 @@ const STAGE_COLOR: Record<string, string> = {
   success: 'green', failed: 'red', running: 'processing', pending: 'processing', skipped: 'default',
 };
 
+/**
+ * 后端取号被拦下时 502 话术里钉的标记（`misc.py` 的 `_HOOK_TAKE_MARKER`），冒号后是**缺口数**。
+ * 与「替他人过审候选投产」同一套做法：话术里埋机器认得的串，不让前端猜中文错误文案。
+ */
+const HOOK_TAKE_MARK = /【需要手工贴号:(\d+)】/;
+
+/**
+ * 后端 502 原文里「怎么补」那半句（要么配命令／要么贴号）在弹窗里是重复的——
+ * 人已经站在贴号框里了。框只留「差几个、烧没烧」这两件事实，出路这一屏自己讲。
+ */
+const hookWhyOnly = (msg: string): string => {
+  const cut = msg.search(/要么|取号那边修好后|这台服务把自动预取/);
+  // 砍在「要么…」前面，末尾会剩一个「：」——那是引出出路句的冒号，出路句已经不要了，跟着去掉
+  return (cut > 0 ? msg.slice(0, cut) : msg).trim().replace(/[：:]\s*$/, '');
+};
+
+/** 贴号框的文本 → 编号数组：空格／换行／逗号顿号都算分隔，统一大写（后端也统一大写） */
+const hookParseCodes = (raw: string): string[] => (
+  raw.split(/[\s,，、;；]+/).map((c) => c.trim().toUpperCase()).filter(Boolean)
+);
+
 interface Props {
   /** 导入／反推／建稿（_PROD_ROLES） */
   canImport: boolean;
@@ -472,6 +493,45 @@ const SimpleLibrary: React.FC<Props> = ({
   const unapproved = selected.filter((s) => !isApproved(s));
   const needReview = unapproved.length > 0;
 
+  // 批 U（11-25）：自动取号被拦下时的「我自己贴号」退路。
+  // 后端 502 话术开头钉着 `【需要手工贴号:N】`（misc.py 的 _HOOK_TAKE_MARKER），N＝还缺几个号。
+  // 为什么要前端接这个标记：本机/没装配号命令的环境里，光 toast 一句原文，一线既不知道
+  // 「原来能手贴」，也不知道要贴几个——上一次用户就是被这句「稍后重试」堵死的。
+  const [hookPaste, setHookPaste] = useState<{ rows: AssetScript[]; need: number; why: string } | null>(null);
+  const [hookText, setHookText] = useState('');
+
+  /** 真发一枪。`hookCodes`＝人工贴的号（只在自动取号没凑齐那一批用） */
+  const runProduce = async (rows: AssetScript[], hookCodes: string[] | null) => {
+    const res = await withCrossOwnerConfirm((c) => assetApi.produceFromScripts({
+      script_ids: rows.map((s) => s.id),
+      board_total: boardTotal,
+      card_asset_ids: cardIds.length ? cardIds : null,
+      cross_person_confirm: c,
+      ...(hookCodes && hookCodes.length ? { hook_codes: hookCodes } : {}),
+    }));
+    if (!res) return false; // 取消了「替他人过审候选投产」的确认
+    reportVerdict(res.results, res.message, '条投出');
+    nudgeAssetJobBanner();
+    setSelectedIds([]);
+    // 投完直接把人带到 ③：这步之后能看的只有等片，别让他在 ② 空等（11-24 分步页签）
+    if (res.results.some((r) => r.ok)) setTab('outputs');
+    return true;
+  };
+
+  /** 失败话术里带缺口标记 → 摆贴号框；没带 → 原样报错。返回 true＝已交给人工贴号 */
+  const offerHookPaste = (err: unknown, rows: AssetScript[]): boolean => {
+    const msg = (err as Error).message || '';
+    const hit = HOOK_TAKE_MARK.exec(msg);
+    if (!hit) return false;
+    setHookPaste({
+      rows,
+      need: Math.max(1, Number(hit[1]) || 1),
+      why: hookWhyOnly(msg.replace(hit[0], '')),
+    });
+    setHookText('');
+    return true;
+  };
+
   const doProduce = async () => {
     if (!selected.length) return;
     if (unapproved.length && !canReview) {
@@ -480,6 +540,7 @@ const SimpleLibrary: React.FC<Props> = ({
       return;
     }
     setBusy('produce');
+    let target: AssetScript[] = [];
     try {
       let approvedNow = selected.filter(isApproved);
       if (unapproved.length) {
@@ -487,20 +548,10 @@ const SimpleLibrary: React.FC<Props> = ({
         approvedNow = [...approvedNow, ...unapproved.filter((s) => okIds.includes(s.id))];
         if (!approvedNow.length) return; // 一条都没过：原因已经在弹窗里点名了
       }
-      const res = await withCrossOwnerConfirm((c) => assetApi.produceFromScripts({
-        script_ids: approvedNow.map((s) => s.id),
-        board_total: boardTotal,
-        card_asset_ids: cardIds.length ? cardIds : null,
-        cross_person_confirm: c,
-      }));
-      if (!res) return; // 取消了「替他人过审候选投产」的确认
-      reportVerdict(res.results, res.message, '条投出');
-      nudgeAssetJobBanner();
-      setSelectedIds([]);
-      // 投完直接把人带到 ③：这步之后能看的只有等片，别让他在 ② 空等（11-24 分步页签）
-      if (res.results.some((r) => r.ok)) setTab('outputs');
+      target = approvedNow;
+      await runProduce(approvedNow, null);
     } catch (e) {
-      message.error((e as Error).message || '投豆包没成功', 8);
+      if (!offerHookPaste(e, target)) message.error((e as Error).message || '投豆包没成功', 8);
     } finally {
       setBusy('');
       await refreshAll();
@@ -514,6 +565,31 @@ const SimpleLibrary: React.FC<Props> = ({
       : needReview
         ? `轻量过审并投豆包（${selected.length}）`
         : `投豆包（${selected.length}）`;
+
+  // 贴号框点「贴上并重发」：本地校验只挡明显填错（数量／重号），库里撞号仍由后端点名。
+  // 重发这一枪仍可能报「还差 N 个」（比如管理员只给了一半），所以失败时照原路把缺口数刷新。
+  const submitHookPaste = async () => {
+    if (!hookPaste) return;
+    const codes = hookParseCodes(hookText);
+    if (codes.length !== hookPaste.need) {
+      message.error(`还差 ${hookPaste.need} 个号，现在贴了 ${codes.length} 个（每行一个）`, 6);
+      return;
+    }
+    if (new Set(codes).size !== codes.length) {
+      message.error('贴的号里有重复：一钩一号，一条脚本只能占一个', 6);
+      return;
+    }
+    setBusy('produce');
+    try {
+      const done = await runProduce(hookPaste.rows, codes);
+      if (done) setHookPaste(null);
+    } catch (e) {
+      if (!offerHookPaste(e, hookPaste.rows)) message.error((e as Error).message || '贴号重发没成', 8);
+    } finally {
+      setBusy('');
+      await refreshAll();
+    }
+  };
 
   // ── 预览（11-24 用户：「素材也没有预览」）──
   // 一张共享播放器＋按素材 id 批量取首帧：脚本行的图＝它出处那条钩子视频的首帧。
@@ -1069,6 +1145,42 @@ const SimpleLibrary: React.FC<Props> = ({
           { key: 'outputs', label: '③ 看成片', children: paneOutputs },
         ]}
       />
+
+      {/* 批 U（11-25）：号没凑齐时的退路。本机/没装配号命令的环境，这一框就是唯一走得通的一条 */}
+      <Modal
+        open={!!hookPaste}
+        title={`补钩子编号（还差 ${hookPaste?.need ?? 0} 个）`}
+        width={560}
+        okText="贴上并重发"
+        cancelText="先不投了"
+        confirmLoading={busy === 'produce'}
+        maskClosable={false}
+        onOk={() => void submitHookPaste()}
+        onCancel={() => setHookPaste(null)}
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="这批没有建单：钩子编号没凑齐"
+            description={hookPaste?.why || ''}
+          />
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            编号要在服务器上跑 <Text code>hook_id.py</Text> 取，一个号只能用一次。
+            每行贴一个，共贴 {hookPaste?.need ?? 0} 个——已经自动挂上号的脚本会跳过，
+            不会把烧过的号再取一遍。
+          </Text>
+          <Input.TextArea
+            rows={Math.min(6, Math.max(2, hookPaste?.need ?? 2))}
+            value={hookText}
+            onChange={(e) => setHookText(e.target.value)}
+            placeholder={'8PZK1\n8PZK2'}
+          />
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            已贴 {hookParseCodes(hookText).length} / {hookPaste?.need ?? 0} 个
+          </Text>
+        </Space>
+      </Modal>
 
       {/* 一个共享播放器：列表几十上百行，每行挂一个 Modal 组件树白烧渲染 */}
       <VideoPreviewModal

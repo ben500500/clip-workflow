@@ -12699,9 +12699,16 @@ def test_script_produce_dispatches_to_board_without_model_expansion():
             logs = [a for a in await _rows(AuditLog, AuditLog.action == "asset.script.produce")]
             assert len(logs) == 1 and logs[0].after["production_ids"] == body["production_ids"]
             assert logs[0].after["hook_codes"] == ["7Z501"]
-            take_logs = [a for a in await _rows(AuditLog, AuditLog.action == "asset.hook_code.take")
-                         if (a.after or {}).get("via") == "script_produce"]
-            assert len(take_logs) == 1 and take_logs[0].after["codes"] == ["7Z501"]
+            # 留痕口径 11-25 起与导入/出文案那三个入口对齐：极简开单走的是「预取位」，
+            # 一次烧号 = 一条 `hook_code.park`（里面带 codes 与 source），不再另写一条
+            # `hook_code.take`——那会跟生产单落单时清槽的动作对不上。取号**整体失败**才写
+            # take 失败留痕（见 test_script_produce_reuses_parked_hook_codes 的 ①）。
+            park_logs = [a for a in await _rows(AuditLog, AuditLog.action == "asset.hook_code.park")
+                         if (a.after or {}).get("source") == "auto_park:script_produce"]
+            assert len(park_logs) == 1
+            assert [c["hook_code"] for c in park_logs[0].after["summaries"]] == ["7Z501"]
+            assert [a for a in await _rows(AuditLog, AuditLog.action == "asset.hook_code.take")
+                    if (a.after or {}).get("via") == "script_produce"] == []
 
         # ⑤ 素材专员没有投产职能 → 403；⑥ 不存在的脚本 → 400
         assert (await client.post(
@@ -14055,6 +14062,184 @@ def test_ui_preferences_merge_per_key_and_validate_scope_switch():
         # 各人管各人：素材专员的偏好不受运营专员影响
         assert (await client.get("/api/assets/ui/preferences", headers=hm)).json()["ui_config"][
             "asset_scope_mine"] is False
+        await client.aclose()
+
+    _run(_scenario())
+def test_script_produce_reuses_parked_hook_codes():
+    """极简开单：先吃文案名下已预取的号，缺几个补几个，取到一半也不白烧。
+
+    2026-11-25 用户本机点「投豆包」一枪撞出两个真问题（旧写法是无条件
+    `_take_hook_codes(len(picked))`）：① 导入/出文案那三个入口早把号预取在
+    `asset_summaries.hook_code` 上了（批 O 的 `_auto_park_hook_codes`），极简开单
+    不看预取位、整批新取一遍＝同一篇稿烧两次号；② 只取到一半就把号丢进审计然后 502，
+    那几个号在共享台账已经烧掉、系统侧谁也不认，重发再取一批＝白废。
+    钉四件事：
+    ① 没装配号命令：502 话术带【需要手工贴号】标记（前端靠它当场摆出贴号框）＋讲清
+      「一个号也没烧／重试没有用／两条出路」，不落生产单，但留一条失败取号审计；
+    ② 只回一半：已取到的号**留在**对应文案的预取位（不回滚），重发只补差的那 1 个——
+      `calls == [2, 1]` 就是「不白烧」的硬判据，第二枪两张单都建成、号顶上即清空；
+    ③ 预取位本来就满：整批一次取号都不调（这才是「不重复烧号」的正向证据）；
+    ④ 手工贴号退路：数量不符／重号各自 400，贴对了直接建单且不再自动取号。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ha = h["admin"]
+        from app.models.asset import AssetScript
+
+        async def _approved(name: str, tail: str) -> Tuple[str, str]:
+            """走到「已定稿＋已过审」，返回 (脚本 id, 载体文案 id)。"""
+            s = await _mk_script(client, ha, name=name, body=_SCRIPT_BODY + tail)
+            assert (await _finalize(client, ha, s["id"])).status_code == 200
+            ap = await client.post(
+                f"{_SCRIPT_URL}/approve", json={"script_ids": [s["id"]]}, headers=ha)
+            assert ap.status_code == 200 and ap.json()["results"][0]["ok"] is True, ap.text
+            carrier = (await _row_of(AssetScript, s["id"])).carrier_summary_id
+            return s["id"], str(carrier)
+
+        async def _parked(cid: str) -> str:
+            row = await _row_of(AssetSummary, uuid.UUID(cid))
+            return str(row.hook_code or "")
+
+        async def _set_parked(cid: str, code: str) -> None:
+            """模拟导入/出文案那一路已经预取好的号（批 O 落库后的样子）。"""
+            async with dbmod.async_session_factory() as sess:
+                row = await sess.get(AssetSummary, uuid.UUID(cid))
+                row.hook_code = code
+                await sess.commit()
+
+        fb = _FakeBoard()
+
+        # ── ① 这台服务没装配号命令：0 个号＝台账上一次都没烧，重试也救不回来 ──
+        s1, c1 = await _approved("本机试产", "镜头4：她转身离开。")
+        fake0, calls0 = _take_stub([], err="未配置自动取号命令（ASSET_HOOK_ID_CMD）")
+        with patch.object(settings, "ASSET_HOOK_ID_CMD", ""), \
+                patch("app.api.assets._take_hook_codes", fake0):
+            r0 = await client.post(f"{_SCRIPT_URL}/produce",
+                                   json={"script_ids": [s1], "board_total": 1}, headers=ha)
+        assert r0.status_code == 502, r0.text
+        assert calls0 == [1], calls0
+        d0 = r0.json()["detail"]
+        assert "【需要手工贴号:1】" in d0, f"前端靠这个标记（带缺口数）摆贴号框：{d0}"
+        assert "没装配号命令" in d0 and "重试没有用" in d0, d0
+        assert "我自己贴号" in d0, f"得给一条走得通的出路：{d0}"
+        assert "已记在共享台账" not in d0, f"一个号都没取到，不许说烧了号：{d0}"
+        assert "一个号也没烧" in d0, d0
+        assert await _count(AssetProduction) == 0, "取号没成不许落生产单"
+        assert await _parked(c1) == "", "没取到号，预取位也不该被写脏"
+        # 旧路径靠 `_take_hook_codes_audited` 必留一条取号审计，改走预取位后这条纪律不能丢
+        takes0 = [a for a in await _rows(AuditLog, AuditLog.action == "asset.hook_code.take")
+                  if (a.after or {}).get("via") == "script_produce"]
+        assert len(takes0) == 1, [a.after for a in takes0]
+        assert takes0[0].after["codes"] == [] and "ASSET_HOOK_ID_CMD" in takes0[0].after["error"]
+
+        # ── ② 命令配好了、脚本只回一半：号留在预取位等下一枪，重发只补差额 ──
+        s2, c2 = await _approved("甲稿", "镜头4：甲稿收尾。")
+        s3, c3 = await _approved("乙稿", "镜头4：乙稿收尾。")
+        queue = [["8PZK1"], ["8PZK2"]]
+        calls2: List[int] = []
+
+        async def fake_partial(count):
+            calls2.append(int(count))
+            batch = queue.pop(0) if queue else []
+            return batch[: int(count)], [], "取号脚本第 2 枪超过 30 秒没回话"
+
+        with patch.object(settings, "ASSET_HOOK_ID_CMD", "python3 /srv/hook_id.py"), \
+                patch("app.api.assets._take_hook_codes", fake_partial), _board_off(fb):
+            r1 = await client.post(f"{_SCRIPT_URL}/produce",
+                                   json={"script_ids": [s2, s3], "board_total": 1}, headers=ha)
+            assert r1.status_code == 502, r1.text
+            d1 = r1.json()["detail"]
+            assert "差 1 个" in d1, d1
+            assert "挂在对应文案的预取位上" in d1 and "不重复烧号" in d1, d1
+            assert "【需要手工贴号:1】" in d1, f"缺口数＝下一枪要贴几个：{d1}"
+            assert "重试没有用" not in d1, f"命令是配好的，这一支不该套未配置的话：{d1}"
+            assert await _count(AssetProduction) == 0, "缺号那一次同样不落单"
+            assert queue == [["8PZK2"]], "这一枪只调了一次取号（不自己重试到烧完）"
+            # 号不回滚＝这一枪烧掉的号还挂在文案名下等着，下一枪直接复用
+            assert await _parked(c2) == "8PZK1", await _parked(c2)
+            assert await _parked(c3) == ""
+            assert calls2 == [2], f"取号没成不该自己重试到烧完：{calls2}"
+
+            r2 = await client.post(f"{_SCRIPT_URL}/produce",
+                                   json={"script_ids": [s2, s3], "board_total": 1}, headers=ha)
+            assert r2.status_code == 200, r2.text
+        assert calls2 == [2, 1], f"重发只补缺口才算不白烧：{calls2}"
+        body = r2.json()
+        assert sorted(x["hook_code"] for x in body["results"]) == ["8PZK1", "8PZK2"], body["results"]
+        assert await _count(AssetProduction) == 2
+        # 顶上即清空：号进了生产单，预取位不再占着（与批 N/O 同一套消费口径）
+        assert await _parked(c2) == "" and await _parked(c3) == ""
+        # 后台投板任务不在本用例射程内：`_board_off` 一退出凭据就还原成空，
+        # 协程走到投板口当场自拒（批 H 有用例专门管它），这里只核建单与号。
+
+        # ── ③ 预取位本来就满：整批一次取号都不调 ──
+        s4, c4 = await _approved("丙稿", "镜头4：丙稿收尾。")
+        await _set_parked(c4, "8PZK3")
+        calls3: List[int] = []
+
+        async def fake_never(count):
+            calls3.append(int(count))
+            return ["9XXXX"], [], None
+
+        with patch.object(settings, "ASSET_HOOK_ID_CMD", "python3 /srv/hook_id.py"), \
+                patch("app.api.assets._take_hook_codes", fake_never):
+            r3 = await client.post(f"{_SCRIPT_URL}/produce",
+                                   json={"script_ids": [s4], "board_total": 1}, headers=ha)
+            assert r3.status_code == 200, r3.text
+        assert calls3 == [], f"预取位有号就不该再烧一批：{calls3}"
+        assert r3.json()["results"][0]["hook_code"] == "8PZK3"
+        # 11-25 本机实测抓出来的真 bug：这台没配后台板凭据，投板口当场 400——旧写法会把
+        # 「单已建好」这一枪整个打成 400，界面显示「投豆包没成功」，人再点一次＝重复建单。
+        # 现在投板被拒只降级成响应里的 dispatch 结果，并把「单没投上板」写进那句话。
+        b3 = r3.json()
+        assert b3["dispatch"]["queued"] is False and "自动投板还没启用" in b3["dispatch"]["error"], b3["dispatch"]
+        assert "没投上板" in b3["message"] and "补投" in b3["message"], b3["message"]
+        assert await _count(AssetProduction) == 3
+
+        # ── ④ 手工贴号退路：**只补缺口**——预取位上已有的号不让人再贴一遍 ──
+        s5, c5 = await _approved("丁稿", "镜头4：丁稿收尾。")
+        s6, c6 = await _approved("戊稿", "镜头4：戊稿收尾。")
+        calls4: List[int] = []
+
+        async def fake_never2(count):
+            calls4.append(int(count))
+            return [], [], "手工贴号那一枪不该调自动取号"
+
+        fb4 = _FakeBoard()
+        with patch.object(settings, "ASSET_HOOK_ID_CMD", "python3 /srv/hook_id.py"), \
+                patch("app.api.assets._take_hook_codes", fake_never2), _board_off(fb4):
+            bad_n = await client.post(f"{_SCRIPT_URL}/produce", json={
+                "script_ids": [s5, s6], "board_total": 1, "hook_codes": ["8PZK4"]}, headers=ha)
+            assert bad_n.status_code == 400 and "还缺 2 个号，收到 1 个" in bad_n.json()["detail"], bad_n.text
+            bad_dup = await client.post(f"{_SCRIPT_URL}/produce", json={
+                "script_ids": [s5, s6], "board_total": 1,
+                "hook_codes": ["8pzk4", "8PZK4"]}, headers=ha)
+            assert bad_dup.status_code == 400 and "重号" in bad_dup.json()["detail"], bad_dup.text
+            # 丁稿那条已经有预取号 → 只贴戊稿缺的那 1 个，小写也认（后端统一大写）
+            await _set_parked(c5, "8PZK6")
+            ok = await client.post(f"{_SCRIPT_URL}/produce", json={
+                "script_ids": [s5, s6], "board_total": 1, "hook_codes": ["8pzk7"]}, headers=ha)
+            assert ok.status_code == 200, ok.text
+            assert calls4 == [], "手工贴号那一枪不许再自动取号"
+            b4 = ok.json()
+            assert sorted(x["hook_code"] for x in b4["results"]) == ["8PZK6", "8PZK7"], b4["results"]
+            # 配好凭据那一支（`_board_off` 里给了假凭据）：受理即回 job，投板照常排队。
+            # ⚠️ 必须**在 with 块里**等完——出块后 settings 还原成「凭据为空」，
+            # 后台协程走到投板口会自己拒掉（job 变 failed），那时测的就不是这条路了。
+            assert b4["dispatch"]["queued"] is True and b4["dispatch"]["job_id"], b4["dispatch"]
+            assert "没投上板" not in b4["message"], b4["message"]
+            job4 = await _wait_job(client, ha, b4["dispatch"]["job_id"])
+            assert job4["status"] == "succeeded", job4
+            # 两张单（丁稿＋戊稿）＝板上两条任务，每条 total=1（一个脚本出几版走 total，不是拆单）
+            assert len(fb4.creates) == 2 and all(int(c["total"]) == 1 for c in fb4.creates), fb4.creates
+
+        # 留痕：自动挂号走 park（两条），①② 那两枪都没落成单 → take 审计只有失败那一次
+        parks = [a for a in await _rows(AuditLog, AuditLog.action == "asset.hook_code.park")
+                 if (a.after or {}).get("source") == "auto_park:script_produce"]
+        assert len(parks) == 2, [a.after for a in parks]
+        assert await _count(AssetProduction) == 5
         await client.aclose()
 
     _run(_scenario())
