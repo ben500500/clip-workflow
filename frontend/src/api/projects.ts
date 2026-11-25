@@ -18,6 +18,13 @@ export const projectApi = {
   create: (data: ProjectFormValues) =>
     client.post('/projects', data) as Promise<Project>,
 
+  // 项目是否有切片任务在跑（实时轮询）：项目页状态徽标展示「运行中 ×N」
+  getSliceRunning: (id: string) =>
+    client.get(`/projects/${id}/slice-running`) as Promise<{
+      running: number;
+      tasks: { id: string; episode_title: string | null; status: string; progress: number }[];
+    }>,
+
   update: (id: string, data: Partial<ProjectFormValues>) =>
     client.put(`/projects/${id}`, data) as Promise<Project>,
 

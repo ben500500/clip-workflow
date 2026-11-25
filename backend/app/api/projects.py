@@ -474,6 +474,56 @@ async def delete_project(
 # ---------- Episode Routes ----------
 
 
+@router.get("/projects/{project_id}/slice-running")
+async def get_project_slice_running(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """项目是否有切片任务在跑（实时）——项目页状态徽标轮询用。
+
+    返回运行中/排队中的切片任务数与明细（最多 20 条），前端据此展示
+    「运行中 ×N」实时状态，替代手工维护的项目状态。
+    """
+    try:
+        uid = uuid.UUID(project_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid project ID format")
+
+    project = (
+        await db.execute(select(Project).where(Project.id == uid))
+    ).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    # 数据隔离（沿用本文件内统一口径）
+    if not _check_project_access(project, current_user):
+        raise HTTPException(status_code=403, detail="无权访问该项目")
+
+    rows = (
+        await db.execute(
+            select(SliceTask, Episode.title)
+            .join(Episode, Episode.id == SliceTask.episode_id)
+            .where(
+                Episode.project_id == uid,
+                SliceTask.status.in_(["running", "pending", "processing"]),
+            )
+            .order_by(SliceTask.created_at.desc())
+            .limit(20)
+        )
+    ).all()
+
+    tasks = [
+        {
+            "id": str(t.id),
+            "episode_title": ep_title,
+            "status": t.status,
+            "progress": round(float(t.progress or 0), 1),
+        }
+        for t, ep_title in rows
+    ]
+    return {"running": len(tasks), "tasks": tasks}
+
+
 @router.post("/projects/{project_id}/episodes", response_model=EpisodeResponse, status_code=201)
 async def create_episode(
     project_id: str,

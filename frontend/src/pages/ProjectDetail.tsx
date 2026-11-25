@@ -90,6 +90,9 @@ const ProjectDetail: React.FC = () => {
   const { presetOptions: DEDUPE_PRESET_OPTIONS } = useDedupePresets();
 
   const [project, setProject] = useState<Project | null>(null);
+  // 项目实时运行状态（2026-11-25 用户需求）：轮询项目下是否有切片任务在跑，
+  // 替代手工维护的项目状态展示
+  const [sliceRunning, setSliceRunning] = useState<{ running: number; tasks: { id: string; episode_title: string | null; status: string; progress: number }[] }>({ running: 0, tasks: [] });
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -225,6 +228,27 @@ const ProjectDetail: React.FC = () => {
     if (projectId) {
       fetchData();
     }
+  }, [projectId]);
+
+  // 实时轮询：项目下运行中/排队中的切片任务（8s 一轮，失败静默保留上次结果）
+  useEffect(() => {
+    if (!projectId) return;
+    let stopped = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const r = await projectApi.getSliceRunning(projectId);
+        if (!stopped) setSliceRunning(r);
+      } catch {
+        /* 轮询失败静默 */
+      }
+      if (!stopped) timer = window.setTimeout(tick, 8000);
+    };
+    tick();
+    return () => {
+      stopped = true;
+      if (timer) window.clearTimeout(timer);
+    };
   }, [projectId]);
 
   const handleUpload = async (file: File) => {
@@ -663,31 +687,35 @@ const ProjectDetail: React.FC = () => {
       title: '集数',
       dataIndex: 'episode_no',
       key: 'episode_no',
-      width: 80,
+      width: 68,
       render: (v: number | null) => (v ?? '-'),
     },
     {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
+      width: 300,
+      ellipsis: { showTitle: false },
       render: (title: string, record: Episode) => (
-        <Link to={`/episodes/${record.id}`}>
-          <VideoCameraOutlined style={{ marginRight: 6 }} />
-          {title || '(未命名)'}
-        </Link>
+        <Tooltip title={title || '(未命名)'} placement="topLeft">
+          <Link to={`/episodes/${record.id}`} style={{ display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>
+            <VideoCameraOutlined style={{ marginRight: 6 }} />
+            {title || '(未命名)'}
+          </Link>
+        </Tooltip>
       ),
     },
     {
       title: '时长',
       dataIndex: 'duration',
       key: 'duration',
-      width: 100,
+      width: 84,
       render: (d: number) => formatDuration(d),
     },
     {
       title: '规格',
       key: 'media_spec',
-      width: 130,
+      width: 108,
       render: (_: unknown, record: Episode) => (
         <Text style={{ fontSize: 12 }}>
           {record.resolution || '-'}
@@ -699,21 +727,21 @@ const ProjectDetail: React.FC = () => {
       title: '文件大小',
       dataIndex: 'file_size',
       key: 'file_size',
-      width: 110,
+      width: 92,
       render: (s: number) => formatFileSize(s),
     },
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 130,
+      width: 112,
       render: (s: string) => <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>,
     },
     {
       title: '音画',
       dataIndex: 'av_sync_warning',
       key: 'av_sync_warning',
-      width: 120,
+      width: 96,
       render: (_: unknown, record: Episode) =>
         record.av_sync_warning ? (
           <Tag color="warning">不同步{record.av_sync_diff ? ` (${record.av_sync_diff}s)` : ''}</Tag>
@@ -724,7 +752,7 @@ const ProjectDetail: React.FC = () => {
     {
       title: '原片降档',
       key: 'src_norm',
-      width: 150,
+      width: 126,
       render: (_: unknown, record: Episode) => {
         const st = srcNorm[record.id];
         const busy = st?.status === 'running';
@@ -741,7 +769,7 @@ const ProjectDetail: React.FC = () => {
             <Space size={2} align="center">
               <Select
                 size="small"
-                style={{ width: 92 }}
+                style={{ width: 80 }}
                 value={srcTier[record.id] || '720p'}
                 onChange={(v) => setSrcTier((p) => ({ ...p, [record.id]: v as string }))}
                 disabled={busy}
@@ -764,11 +792,11 @@ const ProjectDetail: React.FC = () => {
               </Button>
             </Space>
             {st?.status === 'running' && (
-              <Progress percent={st.progress ?? 5} size="small" status="active" style={{ width: 120, margin: 0 }} />
+              <Progress percent={st.progress ?? 5} size="small" status="active" style={{ width: 96, margin: 0 }} />
             )}
             {st?.message && st.status !== 'running' && (
               <Tooltip title={st.message}>
-                <Text type="secondary" style={{ fontSize: 11, display: 'block', maxWidth: 130 }} ellipsis>{st.message}</Text>
+                <Text type="secondary" style={{ fontSize: 11, display: 'block', maxWidth: 108 }} ellipsis>{st.message}</Text>
               </Tooltip>
             )}
           </Space>
@@ -779,13 +807,13 @@ const ProjectDetail: React.FC = () => {
       title: '上传时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 170,
+      width: 148,
       render: (d: string) => formatDateTime(d),
     },
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 178,
       render: (_: unknown, record: Episode) => (
         <Space size="small">
           <Button
@@ -835,7 +863,28 @@ const ProjectDetail: React.FC = () => {
           <Space>
             <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/projects')}>返回</Button>
             <Title level={4} style={{ margin: 0 }}>{project.name}</Title>
-            <Tag color={getStatusColor(project.status)}>{getStatusLabel(project.status)}</Tag>
+            {sliceRunning.running > 0 ? (
+              <Tooltip
+                title={
+                  <div>
+                    {sliceRunning.tasks.slice(0, 6).map((t) => (
+                      <div key={t.id}>
+                        {(t.episode_title || '未命名').slice(0, 24)} · {Math.round(t.progress)}%
+                        {t.status === 'pending' ? '（排队）' : ''}
+                      </div>
+                    ))}
+                    {sliceRunning.running > 6 ? <div>… 共 {sliceRunning.running} 个</div> : null}
+                  </div>
+                }
+              >
+                <Tag color="processing" style={{ marginInlineEnd: 0 }}>
+                  <Tag color="processing" style={{ marginInlineEnd: 4, paddingInline: 4 }}>●</Tag>
+                  运行中 ×{sliceRunning.running}
+                </Tag>
+              </Tooltip>
+            ) : (
+              <Tag color={getStatusColor(project.status)}>{getStatusLabel(project.status)}</Tag>
+            )}
           </Space>
         </Col>
       </Row>
@@ -931,7 +980,7 @@ const ProjectDetail: React.FC = () => {
                     dataSource={episodes}
                     pagination={false}
                     size="small"
-                    scroll={{ x: 920 }}
+                    scroll={{ x: 1180 }}
                     rowSelection={{
                       selectedRowKeys,
                       onChange: setSelectedRowKeys,
