@@ -8516,31 +8516,35 @@ async def create_productions(
         _carrier_ids = [
             _as_uuid(k, "script_texts 的键") for k in _d_keys
         ]
-        # 批 X：镜像脚本也会把 carrier_summary_id 指到**真候选**上，但 script_texts 这条
-        # 「审的＝投的」逐字比对只对**壳载体**（脚本送审造的）有意义——真候选不是壳，
-        # 它走五环投产时的展开稿本来就该从候选正文出。join is_shell 把镜像排除在外。
+        # 批 AC（11-25 用户「从完整模式导过来的文案无法进行豆包投产」）：这里的键**不再限壳**。
+        # 原来 join `is_shell=true` 把镜像稿挡在了直投路外——可极简②「投豆包」对每条勾选脚本
+        # 都发 script_texts，完整模式导入/出文案镜像出来的行（载体＝真候选，is_shell=false）
+        # 于是整批 400「不是脚本的生产载体」。批 X 的设计本来就是「镜像让候选在脚本库可投」，
+        # 这条过滤与它自相矛盾。安全锁一条不少：①键必须是**某脚本的生产载体**（普通候选仍拒，
+        # 防把 script_texts 当绕展开的后门）；②投递正文必须逐字＝**载体过审正文**
+        # （AssetSummary.text——审的必须就是投的；壳的正文自创建起就被定稿冻结纪律锁死，
+        # 与脚本 body 恒等；镜像稿若被审核台改后过，投的是改后版，旧镜像撞比对即拒）。
         _carrier_rows = (
             await db.execute(
-                select(AssetScript.carrier_summary_id, AssetScript.body)
+                select(AssetScript.carrier_summary_id, AssetSummary.text)
                 .join(AssetSummary, AssetSummary.id == AssetScript.carrier_summary_id)
                 .where(
                     AssetScript.carrier_summary_id.in_(_carrier_ids),
-                    AssetSummary.is_shell.is_(True),
                 )
             )
         ).all()
-        _carrier_body = {str(cid): (body or "") for cid, body in _carrier_rows if cid is not None}
+        _carrier_body = {str(cid): (text or "") for cid, text in _carrier_rows if cid is not None}
         for k in _d_keys:
             _want = (data.script_texts.get(k) or "").strip()
             if k not in _carrier_body:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"script_texts 的键 {k[:8]}… 不是脚本的生产载体（只能是极简模式送审过的脚本）",
+                    detail=f"script_texts 的键 {k[:8]}… 不是脚本的生产载体（只能是极简脚本库里的稿——送审过的或完整模式镜像进来的）",
                 )
             if _want != _carrier_body[k].strip():
                 raise HTTPException(
                     status_code=400,
-                    detail=f"脚本 {k[:8]}… 的投递正文与过审正文不一致（审的必须就是投的）——改过脚本请重新定稿并过审",
+                    detail=f"脚本 {k[:8]}… 的投递正文与过审正文不一致（审的必须就是投的）——改过稿请重新定稿过审；镜像稿以审核台最新过审正文为准",
                 )
             direct_texts[k] = _want
 
@@ -16981,7 +16985,11 @@ async def produce_from_scripts(
             )
         codes = [str(c.hook_code).strip().upper() for c in carriers]
 
-    bodies = {str(s.carrier_summary_id): s.body for s in picked}
+    # 批 AC（11-25 用户「从完整模式导过来的文案无法进行豆包投产」）：喂给建单口的
+    # 是载体的**过审正文**，不是脚本 body——壳载体两者恒等（定稿冻结纪律保证），
+    # 镜像稿的候选若被审核台「改后通过」，该投的是改后那一版（审的＝投的），
+    # 旧镜像正文不参与投递；create_productions 里还会逐字比对兜底。
+    bodies = {str(s.carrier_summary_id): (carrier_of[str(s.id)].text or "") for s in picked}
     produce_res = await create_productions(
         ProduceRequest(
             summary_ids=list(bodies.keys()),

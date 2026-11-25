@@ -12978,10 +12978,21 @@ def test_script_carrier_is_hidden_from_five_rings_and_cannot_bypass_recheck():
         assert expand_spy.call_count == 0, "被拒的那几次不许真的去调模型展开"
         assert (await _count(AssetProduction)) == 0, "被拒的那几次一张单都不许落库"
 
-        # 绕过尝试二：给一条**普通**过审文案塞 script_texts → 400（键必须是脚本载体）
+        # 绕过尝试二：给一条**不挂在任何脚本上的裸候选**塞 script_texts → 400（键必须是脚本载体）。
+        # 批 AC 起，凡进过脚本库的候选（送审壳 or 出文案/导入镜像）都是合法直投键——只要投的是
+        # 它的过审正文（绕过三钉逐字比对）。这里先把挂在这条候选上的脚本行全摘掉，
+        # 测的就是「没进过脚本库 → 不许把 script_texts 当绕展开的后门」这道闸本身。
         asset_id, _sid, listed = await _order_ready_production(client, h, n=1, hook_codes=["7Z902"])
         carrier_text = (await _rows(AssetSummary, AssetSummary.id == uuid.UUID(carrier_id)))[0].text
         normal_sid = str((await _row_of(AssetProduction, uuid.UUID(listed[0]["id"]))).summary_id)
+        async with dbmod.async_session_factory() as s:
+            from app.models.asset import AssetScript as _AS
+            orphans = (await s.execute(
+                select(_AS).where(_AS.carrier_summary_id == uuid.UUID(normal_sid))
+            )).scalars().all()
+            for o in orphans:
+                await s.delete(o)
+            await s.commit()
         not_carrier = await client.post(
             "/api/assets/produce",
             json={"summary_ids": [normal_sid], "n": 1, "script_texts": {normal_sid: carrier_text},
@@ -14907,6 +14918,95 @@ def test_mirror_becomes_producible_when_candidate_approved():
             _SCRIPT_URL, params={"owner": "all", "carrier_status": "approved"}, headers=ho)
         mirror = [x for x in lst.json()["items"] if x["source_kind"] == "mirror"]
         assert len(mirror) == 1 and mirror[0]["carrier"]["audit_status"] == "approved", mirror
+
+    _run(_scenario())
+
+
+def test_mirror_from_full_mode_produces_latest_approved_text():
+    """批 AC 门（11-25 用户「从完整模式导过来的文案无法进行豆包投产」）。
+
+    旧 bug：script_texts 校验 join `is_shell=true` 只认壳载体——完整模式导入镜像出来的
+    稿（载体=真候选，is_shell=false）在极简②整批 400「不是脚本的生产载体」。
+    这条钉三件事：① 镜像稿能投，投的是载体**过审正文**、不调模型展开；
+    ② 没过审时话术说「还没过审」而不是「不是载体」；
+    ③ 审核台「改后通过」换了正文 → 极简再投自动跟到最新过审稿（审的＝投的）。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho = h["material"], h["operator"]
+
+        seq = {"n": 0}
+
+        async def fake_take(n):
+            out = []
+            for _ in range(n):
+                seq["n"] += 1
+                out.append(f"7Z5{seq['n']:02d}")
+            return (out, [], None)
+
+        r = await client.post(
+            "/api/assets/summaries/import-copy",
+            json={"batch_name": "AC门禁", "texts": [_X_HOOK]},
+            headers=hm,
+        )
+        assert r.status_code == 200, r.text
+        sid = r.json()["items"][0]["summary_id"]
+
+        lst = await client.get(_SCRIPT_URL, params={"owner": "me"}, headers=hm)
+        mirror = [x for x in lst.json()["items"] if x["source_kind"] == "mirror"]
+        assert len(mirror) == 1, mirror
+        mid = mirror[0]["id"]
+
+        fb = _FakeBoard()
+        with _board_off(fb), patch("app.api.assets._take_hook_codes", fake_take), \
+                patch("app.api.assets._call_autoclip", _fake_autoclip()) as expand:
+            # ① 没过审的镜像稿：话术是「还没过审」，且没烧号——旧 bug 话术「不是脚本的生产载体」不再出现
+            early = await client.post(f"{_SCRIPT_URL}/produce", json={"script_ids": [mid]}, headers=ho)
+            assert early.status_code == 400 and "还没过审" in early.json()["detail"], early.text
+            assert "不是脚本的生产载体" not in early.json()["detail"]
+            assert seq["n"] == 0, "被拦的那一枪不许烧号"
+
+            # ② ③ 审核台过审（用户真路径）→ 镜像稿照投，正文=过审文案，不调展开
+            ap = await client.post(
+                "/api/assets/summaries/review",
+                json={"summary_ids": [sid], "action": "approve"}, headers=ho)
+            assert ap.json()["results"][0]["ok"] is True, ap.text
+
+            res = await client.post(
+                f"{_SCRIPT_URL}/produce",
+                json={"script_ids": [mid], "board_total": 1, "cross_person_confirm": True}, headers=ho)
+            assert res.status_code == 200, res.text
+            pid = res.json()["results"][0]["production_id"]
+            assert pid, res.text
+            prod = await _row_of(AssetProduction, uuid.UUID(pid))
+            assert prod.prompt_text == _X_HOOK and prod.prompt_snapshot == _X_HOOK, prod.prompt_text
+            assert expand.call_count == 0, "镜像稿走脚本直投路：不该调模型展开"
+            job = await _wait_job(client, ho, res.json()["dispatch"]["job_id"])
+            assert job["status"] == "succeeded", job
+
+            # ④ 改后通过换正文 → 再投跟到最新过审稿（旧镜像正文不参与投递）
+            rev = await client.post(
+                "/api/assets/summaries/review",
+                json={"summary_ids": [sid], "action": "reject", "reason": "AC门禁要改词"}, headers=ho)
+            assert rev.status_code == 200, rev.text
+            edit_text = _X_HOOK[:-1] + "新画面：他当场撕了合同。"
+            ed = await client.post(
+                "/api/assets/summaries/review",
+                json={"summary_ids": [sid], "action": "pass_edited", "new_text": edit_text}, headers=ho)
+            assert ed.json()["results"][0]["ok"] is True, ed.text
+
+            res2 = await client.post(
+                f"{_SCRIPT_URL}/produce",
+                json={"script_ids": [mid], "board_total": 1, "cross_person_confirm": True}, headers=ho)
+            assert res2.status_code == 200, res2.text
+            pid2 = res2.json()["results"][0]["production_id"]
+            prod2 = await _row_of(AssetProduction, uuid.UUID(pid2))
+            assert prod2.prompt_text == edit_text, prod2.prompt_text
+            assert prod2.prompt_text != _X_HOOK
+            job2 = await _wait_job(client, ho, res2.json()["dispatch"]["job_id"])
+            assert job2["status"] == "succeeded", job2
 
     _run(_scenario())
 
