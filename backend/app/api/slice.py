@@ -2054,7 +2054,9 @@ async def retry_slice_task(
 
     # 派发前防呆（同 run_slice）：重试用旧 cutlist+旧源，源若被换短同样会错位
     # 末参只进日志，传 task.episode_id（retry 口没有 run_slice 里那个 `eid` 局部变量，
-    # 11-25 现网用例抓到 NameError，见 test_slice_retry_passes_episode_id_to_validator）
+    # 钉住它的用例是 test_publish_dispatch_commit_race.py::
+    #   test_publish_to_worker_retry_entry_slice_task_visible_at_dispatch_time
+    # （11-25 全套跑出来那次红就是这里的 NameError：重试口没有 eid，只有 tid）
     await _validate_cutlist_fits_source(
         source_bucket, source_file_key, task.cutlist or "", task.episode_id
     )
