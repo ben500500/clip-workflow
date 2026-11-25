@@ -15995,7 +15995,10 @@ def _split_ids(raw: Optional[str], field: str) -> List[str]:
 
 _SCRIPT_NAME_MAX = 60
 _SCRIPT_BODY_MAX = 20000          # 对齐 prompt-elements/extract 的单篇上限
-_SCRIPT_BATCH_MAX = 50            # 送审/过审/投产单次点名的脚本数上限
+_SCRIPT_BATCH_MAX = 300           # 送审/过审单次点名的脚本数上限。批 AB（11-25 用户「批量审核通过去掉50条限制」）：
+                                  # 原来是 50——比脚本列表一页（200）还小，全选一把必被拒。抬到与审核台
+                                  # 批量审核同一口径（summaries/review ≤300）：留这个数不是卡量，
+                                  # 是防「一次点穿整个库」把几百次载体补建/风险重扫塞进同一个同步请求。
 _SCRIPT_CARRIER_SOURCE = SOURCE_LINK   # 文本壳的既有约定（贴文案导入同款：link 且无 url）
 
 
@@ -17275,6 +17278,64 @@ async def retire_script(
         )
         await db.commit()
     return {"ok": True, "id": str(row.id), "state": SCRIPT_RETIRED}
+
+
+@router.post("/assets/scripts/retire")
+async def retire_scripts_batch(
+    data: ScriptIdsRequest,
+    current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
+    db: AsyncSession = Depends(get_db),
+):
+    """批量下架脚本（软删）。批 AB-2（11-25 用户「素材库增加批量删除」）。
+
+    与单条 `DELETE /assets/scripts/{id}` 同一颗内核：只置 `state=retired`，**不硬删**
+    ——被生产单引用过的脚本硬删会把出处链断掉；幂等——已下架的算成，带 `already`。
+    口径跟 approve/submit 一个样：**HTTP 200 ＋ 逐条 ok/error**，别人的脚本逐条点名
+    （admin 可代删，审计里 `admin_edit` 留痕），界面必须把没成的条数念出来。
+    上限沿用 `_SCRIPT_BATCH_MAX`（300，与送审/过审/审核台同口径）。
+    """
+    if not data.script_ids:
+        raise HTTPException(status_code=400, detail="请点名要下架的脚本（script_ids 为空）")
+    if len(data.script_ids) > _SCRIPT_BATCH_MAX:
+        raise HTTPException(
+            status_code=400, detail=f"一次最多下架 {_SCRIPT_BATCH_MAX} 条（当前 {len(data.script_ids)}）——分批来"
+        )
+    found = await _load_scripts(db, data.script_ids)
+    results: List[dict] = []
+    retired = 0
+    for raw in dict.fromkeys(data.script_ids):
+        row = found.get(str(_as_uuid(raw, "script_id")))
+        if row is None:
+            results.append({"script_id": str(raw), "ok": False, "error": "这条脚本不在库里（可能已被删除）"})
+            continue
+        try:
+            admin_edit = _assert_script_owner(row, current_user)
+        except HTTPException as exc:
+            results.append({"script_id": str(row.id), "ok": False, "code": row.name, "error": exc.detail})
+            continue
+        if row.state == SCRIPT_RETIRED:
+            results.append({"script_id": str(row.id), "ok": True, "code": row.name, "already": True})
+            continue
+        before = {"state": row.state}
+        row.state = SCRIPT_RETIRED
+        retired += 1
+        await _write_audit(
+            db,
+            action="asset.script.retire",
+            operator=current_user,
+            target_type="asset_script",
+            target_id=str(row.id),
+            before=before,
+            after={"state": SCRIPT_RETIRED, "name": row.name, "admin_edit": admin_edit or None, "batch": True},
+        )
+        results.append({"script_id": str(row.id), "ok": True, "code": row.name})
+    await db.commit()
+    failed = sum(1 for r in results if not r["ok"])
+    return {
+        "results": results,
+        "message": f"批量下架：下架 {retired} 条"
+        + (f"，未成 {failed} 条（看逐条原因）" if failed else ""),
+    }
 
 
 @router.post("/assets/scripts/{script_id}/finalize")

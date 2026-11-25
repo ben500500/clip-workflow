@@ -13073,6 +13073,96 @@ def test_script_submit_approve_follows_review_role_and_self_review_knob():
     _run(_scenario())
 
 
+def test_script_batch_review_cap_is_review_pane_300_not_50():
+    """批 AB（11-25 用户「批量审核通过去掉50条限制」）：送审/轻量过审单次上限
+    从 50 抬到与审核台批量审核同口径的 300——一屏全选 51 条一把过不能再被入口
+    拒掉；301 条才提示分批（防一次点穿整个库把几百次载体补建塞进同一同步请求）。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        # 51 个不存在的 id：不再整口 400（旧上限 50 就是在这里拒的），
+        # 放进闸门后逐条 ok:false（不在库里），HTTP 200——口径与真脚本混批一致
+        ids51 = [str(uuid.uuid4()) for _ in range(51)]
+        ap = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": ids51}, headers=ho)
+        assert ap.status_code == 200, ap.text
+        assert len(ap.json()["results"]) == 51
+        assert all(not r["ok"] and "不在库里" in r["error"] for r in ap.json()["results"])
+        sub = await client.post(f"{_SCRIPT_URL}/submit", json={"script_ids": ids51}, headers=ho)
+        assert sub.status_code == 200 and len(sub.json()["results"]) == 51, sub.text
+        # 301 条仍然入口拒，且话术念的是新数
+        ids301 = [str(uuid.uuid4()) for _ in range(301)]
+        big = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": ids301}, headers=ho)
+        assert big.status_code == 400 and "300" in big.text, big.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_script_batch_retire_soft_deletes_own_and_names_others():
+    """批 AB-2（11-25 用户「素材库增加批量删除」）：批量下架＝软删，与逐行「下架」同一颗内核。
+
+    钉四件事：①自己的草稿/定稿混批都能删，列表按 retired 显式点名才回；
+    ②别人的删不动——逐条点名，**删成的不连带回滚**（HTTP 200＋逐条 ok，界面必须念未成数）；
+    ③幂等：已下架的再点还是 ok（带 already）；admin 可代删；
+    ④上限沿用 _SCRIPT_BATCH_MAX（300，与送审/过审同口径），空名单入口就拒。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+
+        mine1 = await _mk_script(client, hm, name="批量删我1")          # 草稿
+        # 正文必须与 mine1 不同：create 对同内容幂等，会返回同一行（撞车过一次才发现）
+        mine2 = await _mk_script(client, hm, name="批量删我2",          # 定稿
+                                 body=_SCRIPT_BODY + "镜头4：她把照片放回原处，关上门。")
+        assert (await _finalize(client, hm, mine2["id"])).status_code == 200
+        theirs = await _mk_script(client, ho, name="不是我写的")
+        assert len({mine1["id"], mine2["id"], theirs["id"]}) == 3, "三条必须各不相同行"
+
+        # 空名单＝入口拒（与 approve/submit 同一句话术风格）
+        empty = await client.post(f"{_SCRIPT_URL}/retire", json={"script_ids": []}, headers=hm)
+        assert empty.status_code == 400 and "点名" in empty.text, empty.text
+
+        # 混批：自己 2 ＋ 别人 1 ＋ 不存在的 id 1
+        r = await client.post(
+            f"{_SCRIPT_URL}/retire",
+            json={"script_ids": [mine1["id"], mine2["id"], theirs["id"], str(uuid.uuid4())]},
+            headers=hm,
+        )
+        assert r.status_code == 200, r.text
+        by = {x["script_id"]: x for x in r.json()["results"]}
+        assert by[mine1["id"]]["ok"] and by[mine2["id"]]["ok"], r.text
+        assert by[theirs["id"]]["ok"] is False and "不是你的" in by[theirs["id"]]["error"], r.text
+        assert "下架 2 条" in r.json()["message"] and "未成 2 条" in r.json()["message"], r.json()["message"]
+
+        # 删生效：默认列表不回，显式 state=retired 才回；别人的那条照旧在池子里
+        gone = await client.get(_SCRIPT_URL, params={"state": "retired"}, headers=hm)
+        gone_ids = {x["id"] for x in gone.json()["items"]}
+        assert {mine1["id"], mine2["id"]} <= gone_ids and theirs["id"] not in gone_ids, gone.json()
+        assert (await client.get(f"{_SCRIPT_URL}/{theirs['id']}", headers=ho)).json()["state"] != "retired"
+
+        # 幂等：已下架的再点还是 ok，带 already
+        again = await client.post(f"{_SCRIPT_URL}/retire", json={"script_ids": [mine1["id"]]}, headers=hm)
+        row = again.json()["results"][0]
+        assert again.status_code == 200 and row["ok"] and row.get("already"), again.text
+
+        # admin 可代删别人的（审计 batch/admin_edit 在后端口里写）
+        adm = await client.post(f"{_SCRIPT_URL}/retire", json={"script_ids": [theirs["id"]]}, headers=ha)
+        assert adm.status_code == 200 and adm.json()["results"][0]["ok"], adm.text
+
+        # 上限 301 入口拒，话术念的是新数
+        big = await client.post(
+            f"{_SCRIPT_URL}/retire", json={"script_ids": [str(uuid.uuid4()) for _ in range(301)]}, headers=ha
+        )
+        assert big.status_code == 400 and "300" in big.text, big.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
 def test_script_produce_dispatches_to_board_without_model_expansion():
     """屏 2「投豆包」：已过审的脚本 → 一脚本一单 → 直投板上。不调模型展开、成片照进
     成片墙（不是试产）；未过审不能投；用别人过审的脚本要先确认（且确认前不烧号）。"""

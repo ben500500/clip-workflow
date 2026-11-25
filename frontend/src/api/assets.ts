@@ -3485,6 +3485,16 @@ export const assetApi = {
     client.delete(`/assets/scripts/${scriptId}`) as Promise<{ ok: boolean; id: string; state: string }>,
 
   /**
+   * 批量下架（批 AB-2，11-25「素材库增加批量删除」）。与单条同内核：软删、幂等、
+   * 逐条 ok/error——别人的脚本删不动会在 results 里点名，HTTP 200 ≠ 全删完。
+   */
+  retireScripts: (scriptIds: string[]) =>
+    client.post('/assets/scripts/retire', { script_ids: scriptIds }) as Promise<{
+      results: AssetScriptVerdictItem[];
+      message: string;
+    }>,
+
+  /**
    * 收藏／取消收藏（11-24 素材隔离）。用户这条原话是「仅看自己……也可以在已有的
    * 脚本库里面勾选，然后收藏起来」——所以「我的」不只是"我写的"。
    * 收藏**只加一条关系**，不动 owner：别人的定稿照样改不动（只能派生），

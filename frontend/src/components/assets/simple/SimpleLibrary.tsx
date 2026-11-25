@@ -552,11 +552,44 @@ const SimpleLibrary: React.FC<Props> = ({
     }
   };
 
+  /**
+   * 批 AB-2（11-25 用户「素材库增加批量删除」）：批量删除＝批量下架，和逐行
+   * 「下架」同一颗内核（软删，投过的记录留着对账）。同 approve/submit 口径，
+   * 接口 HTTP 200 ≠ 全删完——别人的脚本删不动，逐条点名，别让人以为清干净了。
+   */
+  const deleteRows = (rows: AssetScript[]) => {
+    if (!rows.length) return;
+    Modal.confirm({
+      title: `删除选中的 ${rows.length} 条脚本？`,
+      content: '删除＝下架：不再出现在脚本库；投过的记录留着，对账查得到。别人写的脚本删不动，会逐条点名。',
+      okText: '删除', okType: 'danger', cancelText: '算了',
+      onOk: async () => {
+        setBusy('retire');
+        try {
+          const res = await assetApi.retireScripts(rows.map((r) => r.id));
+          reportVerdict(res.results, `已删除 ${res.results.filter((r) => r.ok).length} 条`, '条删除');
+          setSelectedIds([]);
+        } catch (e) {
+          message.error((e as Error).message || '批量删除没成');
+        } finally {
+          setBusy('');
+          await refreshAll();
+        }
+      },
+    });
+  };
+
   // ── 投豆包 ──
   const [cardIds, setCardIds] = useState<string[]>([]);
   const [boardTotal, setBoardTotal] = useState(1);
   const selected = useMemo(
     () => items.filter((s) => selectedIds.includes(s.id) && s.state === 'ready'),
+    [items, selectedIds],
+  );
+  // 批 AB-2（11-25「素材库增加批量删除」）：删除看的是「勾了哪些」（含草稿）；
+  // 投豆包链路照旧只认定稿（selected），两者共用同一套勾选。
+  const checkedRows = useMemo(
+    () => items.filter((s) => selectedIds.includes(s.id)),
     [items, selectedIds],
   );
   const unapproved = selected.filter((s) => !isApproved(s));
@@ -1166,8 +1199,9 @@ const SimpleLibrary: React.FC<Props> = ({
           scroll={{ y: 400 }}
           rowSelection={{
             selectedRowKeys: selectedIds,
-            // 只有「可投稿」的能勾：库稿要先定稿（审的＝投的那一版）
-            getCheckboxProps: (r) => ({ disabled: r.state !== 'ready' }),
+            // 批 AB-2（11-25「素材库增加批量删除」）：草稿也能勾——删除不限定稿状态；
+            // 投豆包链路照旧只吃定稿（selected 里过滤 state==='ready'），没定稿的勾了也进不去。
+            getCheckboxProps: (r) => ({ disabled: r.state === 'retired' }),
             onChange: (keys) => setSelectedIds(keys.map(String)),
           }}
         />
@@ -1176,9 +1210,17 @@ const SimpleLibrary: React.FC<Props> = ({
         <Button type="primary" disabled={!selected.length} onClick={() => setTab('produce')}>
           下一步：投豆包{selected.length ? `（已勾 ${selected.length}）` : ''}
         </Button>
+        <Button
+          danger
+          disabled={!checkedRows.length || busy !== ''}
+          loading={busy === 'retire'}
+          onClick={() => deleteRows(checkedRows)}
+        >
+          删除（{checkedRows.length}）
+        </Button>
         {!selected.length && (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            在上面的表格里勾选脚本（库稿要先定稿才能勾）。
+            在上面的表格里勾选脚本：投豆包只认已定稿的；删除不限定稿状态。
           </Text>
         )}
       </Space>
