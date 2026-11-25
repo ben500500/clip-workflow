@@ -8,6 +8,7 @@ import {
   Empty,
   Modal,
   Pagination,
+  Popconfirm,
   Segmented,
   Select,
   Space,
@@ -199,6 +200,36 @@ const OutputGrid: React.FC<{
         <Button size="small" disabled={!picked.size} onClick={() => setPicked(new Set())}>
           清空
         </Button>
+        {/* 批 Y（11-25「成片墙没有删除功能」）：勾选即能连台账带桶里的文件一起删。
+            不设引用拦截（后端同口径）：这里删的是片子本身，生产单的账不受影响。 */}
+        <Popconfirm
+          title={`删掉勾选的 ${pickedItems.length} 条成片？`}
+          description="台账行和桶里的视频文件一起删，删了找不回（误删只能靠数据库备份）。"
+          okText="彻底删除"
+          okButtonProps={{ danger: true }}
+          cancelText="先不删"
+          onConfirm={async () => {
+            const ids = pickedItems.map((o) => o.id);
+            if (!ids.length) return;
+            try {
+              const res = await assetApi.deleteOutputs(ids, '成片墙清理');
+              ids.forEach((id) => onBasketChange?.(id, false));
+              setPicked(new Set());
+              if (res.files_failed.length) {
+                message.warning(`已删 ${res.deleted} 条，其中 ${res.files_failed.length} 条桶文件没删净（台账已清，不拦）`);
+              } else {
+                message.success(`已删 ${res.deleted} 条，文件连台账一起清掉`);
+              }
+              fetchList(page);
+            } catch (e) {
+              message.error((e as Error).message || '删除失败');
+            }
+          }}
+        >
+          <Button size="small" danger disabled={!pickedItems.length}>
+            删除勾选的 {pickedItems.length} 条
+          </Button>
+        </Popconfirm>
         <Text type="secondary" style={{ fontSize: 12 }}>
           {loading ? '加载中…' : `共 ${total} 条`}
         </Text>
@@ -389,6 +420,27 @@ const OutputGrid: React.FC<{
               >
                 下载这条
               </Button>
+              <Popconfirm
+                title="删掉这条成片？"
+                description="台账行和桶里的视频文件一起删，删了找不回。"
+                okText="彻底删除"
+                okButtonProps={{ danger: true }}
+                cancelText="先不删"
+                onConfirm={async () => {
+                  const id = preview.output.id;
+                  try {
+                    const res = await assetApi.deleteOutputs([id], '成片墙单条清理');
+                    onBasketChange?.(id, false);
+                    setPreview(null);
+                    message.success(res.files_failed.length ? '台账已删，桶文件没删净（不拦）' : '已删，文件连台账一起清掉');
+                    fetchList(page);
+                  } catch (e) {
+                    message.error((e as Error).message || '删除失败');
+                  }
+                }}
+              >
+                <Button danger>删除这条</Button>
+              </Popconfirm>
               <Button onClick={() => setPreview(null)}>关闭</Button>
             </Space>
           )
@@ -620,6 +672,37 @@ const InflightStrip: React.FC<{
                             : '投板后台还没跑第一轮回读'}
                       </Text>
                     </div>
+                    {/* 批 Y（11-25「超时生成的豆包素材删不掉」）：超时死单的人工删单口。
+                        只把在途占位置 cancelled，不动桶里文件——片子还在豆包手里。
+                        后端只收 queued/running，改判待重写的单在这删会 409，按钮就不摆。 */}
+                    {(p.status === 'queued' || p.status === 'running') && (
+                      <div>
+                        <Popconfirm
+                          title="删掉这张在途单？"
+                          description={
+                            <div style={{ maxWidth: 260 }}>
+                              就算豆包之后真回片，也不会再挂到这张单——回收时会把它报丢。适合投错提示词、或确认这单已死的场景。
+                            </div>
+                          }
+                          okText="删掉这单"
+                          okButtonProps={{ danger: true }}
+                          cancelText="再等等"
+                          onConfirm={async () => {
+                            try {
+                              await assetApi.cancelProduction(p.production_id);
+                              message.success('已删单：这张占位卡从墙上消失');
+                              fetchInflight();
+                            } catch (e) {
+                              message.error((e as Error).message || '删单失败');
+                            }
+                          }}
+                        >
+                          <Button size="small" type="link" danger style={{ padding: 0, fontSize: 11 }}>
+                            删掉这单
+                          </Button>
+                        </Popconfirm>
+                      </div>
+                    )}
                   </div>
                 </div>
               );
