@@ -162,6 +162,8 @@ func runTray(ctx context.Context, config *Config, worker *Worker) {
 				ui.SetStatus(true, enabled, worker.GetCurrentTaskCount(),
 					int(atomic.LoadInt32(&worker.totalCompleted)),
 					int(atomic.LoadInt32(&worker.totalFailed)))
+				// 运行中任务的工作内容（ID/进度/阶段）同步到托盘「当前任务」子菜单
+				ui.SetTasks(worker.GetRunningTaskInfos())
 			}
 		}
 	}()
