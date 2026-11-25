@@ -22,7 +22,7 @@ import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
 import AssetCardPicker from './AssetCardPicker';
 import AssetConcatPicker from './AssetConcatPicker';
 import AssetPromptElementDrawer from './AssetPromptElementDrawer';
-import { HelpDot, HighlightedPrompt, MonoText, ProductionStateTag, aspectShortText } from './AssetBits';
+import { HelpDot, HighlightedPrompt, MonoText, ProductionStateTag, aspectShortText, boardStatusText } from './AssetBits';
 import { useOwnerView } from '../../hooks/useOwnerView';
 
 const { Text, Paragraph } = Typography;
@@ -65,20 +65,8 @@ const rate = (v: number | null | undefined) =>
  */
 let listReqSeq = 0;
 
-/** 批 L：板面行状态 → 人话（board.readback 的 status 词直接透传，多版单会拼成「waiting/running」串） */
-const BOARD_ROW_STATUS_TEXT: Record<string, string> = {
-  waiting: '排队中',
-  running: '出片中',
-  succ: '已出片',
-  fail: '板面失败',
-};
-const boardStatusText = (raw: string | null): string | null => {
-  if (!raw) return null;
-  return raw
-    .split('/')
-    .map((s) => BOARD_ROW_STATUS_TEXT[s.trim()] || s.trim())
-    .join('·');
-};
+/** 批 L：板面行状态 → 人话 —— 11-25 批 V 挪进 `AssetBits.boardStatusText`，
+ *  因为成片墙的「豆包正在生成中」占位卡要用同一套词（两处两个说法＝一线只能猜）。 */
 
 /**
  * 11-10 用户口径③「投出去的那条生产单显示完成，成片墙还是看不到…我投去了、生产出来了就给我看」：

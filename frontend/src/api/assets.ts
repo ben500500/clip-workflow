@@ -809,6 +809,57 @@ export interface AssetOutputsAwaiting {
   last_output_at: string | null;
 }
 
+/** 投出去、豆包还没回片的单子（`GET /api/assets/outputs/inflight`，批 V 需求②）。
+ *  墙上的灰占位卡用它：一线在「看成片」这一屏要能看出「这条已经在豆包那边跑」，
+ *  而不是把「还没出片」误读成「系统没记上」。数据全来自本库生产单行，0 后台请求、0 花费。 */
+export interface AssetInflightOutput {
+  production_id: string;
+  /** generating=还在跑（含超时未回）/ failed=板面或人工判了失败（只报不判，重投走生产单面板） */
+  bucket: 'generating' | 'failed';
+  /** queued=刚投上板 / running=板面已在出片 / failed=失败（也可能带人工回写的 tid） */
+  status: string;
+  hook_code: string | null;
+  asset_id: string;
+  asset_code: string | null;
+  asset_title: string | null;
+  batch_id: string | null;
+  batch_code: string | null;
+  owner_name: string | null;
+  board_tid: string | null;
+  /** 板面上的任务名＝推荐标题第 1 条，一线认这条最直观 */
+  board_name: string | null;
+  /** 同一条提示词要几版（板上 total） */
+  board_total: number;
+  board_date: string | null;
+  /** 板面行状态原词（waiting/running/succ/fail，多版会拼成「waiting/running」） */
+  board_last_status: string | null;
+  board_last_check_at: string | null;
+  attempts: number;
+  dispatched_at: string | null;
+  /** 投出去多少分钟了（后端按 UTC 算，避开浏览器时钟差） */
+  minutes_since_dispatch: number | null;
+  created_at: string | null;
+  /** 只有 bucket=failed 才给：失败成因原文 */
+  error: string | null;
+  failed_at: string | null;
+  minutes_since_failed: number | null;
+}
+
+export interface AssetInflightResult {
+  owner: string;
+  /** 在途张数（＝inflight_total，老字段名留着） */
+  total: number;
+  inflight_total: number;
+  /** 全部失败数（含窗口外的老账） */
+  failed_total: number;
+  /** 窗口外、只报数不摆卡的失败张数 */
+  failed_older: number;
+  failed_window_hours: number;
+  /** 超过这个分钟数还没回＝轮询窗口已过，卡上改口「比平时久，去看生产单」 */
+  slow_after_minutes: number;
+  items: AssetInflightOutput[];
+}
+
 /** 换皮扇出的实时预览（`POST /assets/prompt-elements/fanout-preview`，0 元不落库）。
  *  与开单同一个引擎（expand_matrix＋compose_variants），所以这里看到的换词结果
  *  就是开出去的单会带的那份（编号那一步的替换除外，投板前 ④ 还能改）。 */
@@ -3142,6 +3193,11 @@ export const assetApi = {
     client.get('/assets/outputs/groups', {
       params,
     }) as Promise<{ group_by: string; groups: AssetOutputGroup[]; awaiting?: AssetOutputsAwaiting }>,
+
+  // 批 V 需求②：投出去还没回片的单子（成片墙的灰占位卡用）。轻量口：单表查询＋两把小映射，
+  // 不 presign、不打企微后台，所以敢每 20 秒轮一次；在途清零后前端自动停轮。
+  listInflightOutputs: (params?: { batch_id?: string; owner?: 'me' | 'all'; limit?: number }) =>
+    client.get('/assets/outputs/inflight', { params }) as Promise<AssetInflightResult>,
 
   // 换皮扇出的实时预览（11-10 用户口径「选了元素但看不到正文被替换的地方」）：
   // 0 元、不落库、不占号；与开单同一个引擎，所以配对不齐/超上限的 400 话术也是一条

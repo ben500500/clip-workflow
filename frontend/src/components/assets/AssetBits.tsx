@@ -189,6 +189,27 @@ export const ProductionStateTag: React.FC<{ status: ProductionState }> = ({ stat
 );
 
 /**
+ * 板面行状态原词 → 人话（批 L 建在生产单面板里，批 V 提到 AssetBits 共用）。
+ * 为什么只能有一份：投板进度在**生产单面板**和**成片墙占位卡**两处出现，各写一套的话，
+ * 同一个 tid 在一处显示「出片中」、另一处显示「running」，一线就只能猜哪个是真的。
+ * 多版单（`board_total>1`）后端会拼成「waiting/running」这样的串，所以按 `/` 拆开逐词翻。
+ */
+export const BOARD_ROW_STATUS_TEXT: Record<string, string> = {
+  waiting: '排队中',
+  running: '出片中',
+  succ: '已出片',
+  fail: '板面失败',
+};
+
+export const boardStatusText = (raw: string | null): string | null => {
+  if (!raw) return null;
+  return raw
+    .split('/')
+    .map((s) => BOARD_ROW_STATUS_TEXT[s.trim()] || s.trim())
+    .join('·');
+};
+
+/**
  * 闸门结论一行话：blocked / need_approval / ok。
  * 余额查不到时后端**仍放行**并带 note，必须把这句摆出来——只回一个 null 会让人以为有钱。
  */

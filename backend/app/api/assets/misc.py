@@ -11717,7 +11717,12 @@ async def list_outputs(
         ).all()
         prod_names = {r[0]: r[1] for r in prod_rows}
         # A′：投产人显示名（片层灰字标注；拼接产物 production_id NULL＝公共，前端标注）
+        # 批 V 修的一处**静默错键**：`_user_names` 的键是「用户 id 字符串」，原先下面直接拿
+        # `o.production_id`（生产单 id）去查它——两个不同实体的 id 永不相等，所以成片卡上那句
+        # 「投：某人」在现网恒为 null、灰字从来没露过面（用例只断言了 `/productions` 口的
+        # owner_name，没盖住这个口）。补一层 生产单 → 用户 id 字符串 的映射。
         prod_owner_names = await _user_names(db, {r[2] for r in prod_rows if r[2]})
+        prod_owner = {r[0]: str(r[2]) for r in prod_rows if r[2]}
         # 首帧：每个产物最多 1 张 output_thumb（部分唯一索引保证）
         frame_rows = (
             await db.execute(
@@ -11760,7 +11765,9 @@ async def list_outputs(
                 # 批 K：卡片标注 + 缩略图（没帧 = null，前端画占位不报错）
                 "asset_code": codes.get(o.asset_id),
                 "hook_code": prod_names.get(o.production_id) if o.production_id else None,
-                "owner_name": prod_owner_names.get(o.production_id) if o.production_id else None,
+                "owner_name": prod_owner_names.get(prod_owner[o.production_id])
+                if o.production_id and o.production_id in prod_owner
+                else None,
                 "thumb_url": thumb_urls.get(o.id),
                 # 11-24 需求三：矩阵拼的成片带上「哪支钩子×哪条正片＋叠了什么」，
                 # 没这个快照的行是 null。
@@ -12046,6 +12053,184 @@ async def list_output_groups(
         "groups": groups,
         # 空态要说真话用的三个数（见 `_outputs_awaiting`）
         "awaiting": awaiting,
+    }
+
+
+# 成片墙占位条里「板面失败」这一堆的回看窗口（小时）。
+# 为什么不摆全量失败：失败行是**永久累积**的（重投/改判都留痕），墙顶放一条越滚越长的
+# 红卡列，两周后这屏就没人看了。这个条要答的是「我这批投出去的结果怎么样」，
+# 所以只摆当天的现场；更早的账走生产单面板的状态筛选，那里本来就能查。
+_WALL_FAILED_WINDOW_HOURS = 24
+
+
+@router.get("/assets/outputs/inflight")
+async def list_inflight_outputs(
+    owner: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    limit: int = 100,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """投出去还没回片的单子：给成片墙摆「豆包正在生成中」的灰占位卡（批 V 需求②）。
+
+    2026-11-25 用户口径：「投了豆包之后，在豆包返回之前，看成片的地方最好也能把这个任务
+    先显示出来，并标注一个状态（比如"豆包正在生成中"），要不然不知道目前是什么情况。」
+    以前墙只在**空态**里给一句「N 张已投板」——墙上只要有一条成片，那 N 张在途的单子
+    就一点痕迹都没有，一线分不清「豆包还没出片」和「系统压根没记上」。
+    同一轮用户还点了「把失败/超时也标出来」，所以这里给**两类**行（`bucket` 分岔）：
+    `generating`＝还在跑（超 `slow_after_minutes` 由前端改成「比平时久」措辞）、
+    `failed`＝板面判了失败／人工改判失败，且失败时间落在 `_WALL_FAILED_WINDOW_HOURS` 内。
+
+    四条口径上的讲究：
+    - **在途判据与 `_outputs_awaiting` 同一套**（非终态 且（已投板状态 或 已有人工回写的 tid）），
+      差别只在这里给逐条、那里给数。两处若各写一套，空态那句「20 张在途」和占位卡的
+      条数早晚会对不上，而那正是本口要消灭的困惑。
+    - **只查自己库**：`board_tid`/`board_name`/`board_last_status`/`board_last_check_at`/
+      `attempts`/`error` 都是批 L 轮询与人工回写落下的列，0 次后台请求、0 花费——
+      这个口会被墙每 20 秒轮一次，绝不能顺手去查企微后台。
+    - owner／批次筛选跟墙一致，否则「只看这批」会把别批的在途单摆进来；试产单不进交付墙，
+      占位也不摆（与 `/assets/outputs` 的 `include_trial` 默认口径对齐）。
+    - 失败只**报**不**判**：这一栏不改任何状态，重投仍走生产单面板（那里才有号池/审计口径）。
+    """
+    if owner not in (None, "", "me", "all"):
+        raise HTTPException(status_code=400, detail="owner 只支持 me（我的链路）或 all（全量），缺省=all")
+    scope = []
+    if owner == "me":
+        scope.append(AssetProduction.created_by == current_user.id)
+    if batch_id:
+        scope.append(AssetProduction.batch_id == _as_uuid(batch_id, "batch_id"))
+    cap = min(max(1, limit), 200)
+    now = datetime.utcnow()
+    cut = now - timedelta(hours=_WALL_FAILED_WINDOW_HOURS)
+
+    gen_conds = scope + [
+        AssetProduction.status.notin_((PR_SUCCESS, PR_FAILED)),
+        or_(
+            AssetProduction.status.in_((PR_QUEUED, PR_RUNNING)),
+            AssetProduction.board_tid.is_not(None),
+        ),
+        AssetProduction.is_trial.isnot(True),
+    ]
+    failed_conds = scope + [AssetProduction.status == PR_FAILED, AssetProduction.is_trial.isnot(True)]
+    last_seen = func.coalesce(AssetProduction.completed_at, AssetProduction.board_last_check_at)
+    failed_conds_win = failed_conds + [or_(last_seen >= cut, last_seen.is_(None))]
+
+    async def _count(conds) -> int:
+        return int(
+            (
+                await db.execute(
+                    select(func.count()).select_from(AssetProduction).where(and_(*conds))
+                )
+            ).scalar()
+            or 0
+        )
+
+    gen_total = await _count(gen_conds)
+    # 窗口内／窗口外分开数：卡只摆窗口内的，但"另有几张更早的失败"必须说得出数，
+    # 否则一线只会以为系统吞了单子。
+    failed_total = await _count(failed_conds)
+    failed_recent_total = await _count(failed_conds_win)
+    gen_rows = list(
+        (
+            await db.execute(
+                select(AssetProduction)
+                .where(and_(*gen_conds))
+                .order_by(AssetProduction.created_at.desc())
+                .limit(cap)
+            )
+        ).scalars()
+    )
+    failed_rows = list(
+        (
+            await db.execute(
+                select(AssetProduction)
+                .where(and_(*failed_conds_win))
+                .order_by(last_seen.desc(), AssetProduction.created_at.desc())
+                .limit(cap)
+            )
+        ).scalars()
+    )
+    rows = gen_rows + failed_rows
+
+    codes: Dict[uuid.UUID, str] = {}
+    titles: Dict[uuid.UUID, str] = {}
+    batch_codes: Dict[uuid.UUID, str] = {}
+    owner_names: Dict[str, str] = {}
+    if rows:
+        for r in (
+            await db.execute(
+                select(AssetItem.id, AssetItem.code, AssetItem.title).where(
+                    AssetItem.id.in_({p.asset_id for p in rows})
+                )
+            )
+        ).all():
+            codes[r[0]] = r[1]
+            titles[r[0]] = r[2] or ""
+        bid_set = {p.batch_id for p in rows if p.batch_id}
+        if bid_set:
+            for r in (
+                await db.execute(select(AssetBatch.id, AssetBatch.code).where(AssetBatch.id.in_(bid_set)))
+            ).all():
+                batch_codes[r[0]] = r[1]
+        owner_names = await _user_names(db, {p.created_by for p in rows if p.created_by})
+
+    def _elapsed(p: AssetProduction) -> Optional[int]:
+        """投出去多久了（分钟）：以 started_at 为准，没写过的老单退回建单时间。"""
+        base = p.started_at or p.created_at
+        if base is None:
+            return None
+        return max(0, int((now - base).total_seconds() // 60))
+
+    def _failed_minutes(p: AssetProduction) -> Optional[int]:
+        base = p.completed_at or p.board_last_check_at
+        if base is None:
+            return None
+        return max(0, int((now - base).total_seconds() // 60))
+
+    def _row(p: AssetProduction, bucket: str) -> dict:
+        return {
+            "production_id": str(p.id),
+            "bucket": bucket,
+            "status": p.status,
+            "hook_code": p.hook_code,
+            "asset_id": str(p.asset_id),
+            "asset_code": codes.get(p.asset_id),
+            "asset_title": titles.get(p.asset_id) or None,
+            "batch_id": str(p.batch_id) if p.batch_id else None,
+            "batch_code": batch_codes.get(p.batch_id) if p.batch_id else None,
+            # `_user_names` 的键是**字符串** uuid（不是 UUID 对象），别拿 ORM 的 UUID 直接查
+            "owner_name": owner_names.get(str(p.created_by)) if p.created_by else None,
+            "board_tid": p.board_tid,
+            "board_name": p.board_name,
+            "board_total": p.board_total or 1,
+            "board_date": utc_iso(p.board_date) if p.board_date else None,
+            "board_last_status": p.board_last_status,
+            "board_last_check_at": utc_iso(p.board_last_check_at) if p.board_last_check_at else None,
+            "attempts": p.attempts or 0,
+            "dispatched_at": utc_iso(p.started_at) if p.started_at else None,
+            "minutes_since_dispatch": _elapsed(p),
+            "created_at": utc_iso(p.created_at),
+            # 失败那类才用得上：成因原文（人工回写／板面判读都写这一列）＋离失败多久
+            "error": p.error if bucket == "failed" else None,
+            "failed_at": utc_iso(p.completed_at) if (bucket == "failed" and p.completed_at) else None,
+            "minutes_since_failed": _failed_minutes(p) if bucket == "failed" else None,
+        }
+
+    return {
+        "owner": owner or "all",
+        # 兼容一个字段名：老口径的 `total`＝在途张数（占位卡的第一堆）
+        "total": gen_total,
+        "inflight_total": gen_total,
+        "failed_total": failed_total,
+        "failed_window_hours": _WALL_FAILED_WINDOW_HOURS,
+        # 摆出来的失败卡之外，还有多少张更早的（不摆、只报数，指去生产单）
+        "failed_older": max(0, failed_total - failed_recent_total),
+        # 出片正常 25 分钟上下。慢的判断基准直接取**轮询窗口本身**（`ASSET_BOARD_POLL_MAX_MINUTES`，
+        # 默认 45 分）：过了这个点后台协程已经不再跟踪这张单，卡上的状态再也不会自己动了——
+        # 此时该说的不是「失败了」（只有板面/人工能判），而是「没人替你盯着了，去看生产单」。
+        "slow_after_minutes": int(round(_board_poll_max_minutes())),
+        "items": [_row(p, "generating") for p in gen_rows]
+        + [_row(p, "failed") for p in failed_rows],
     }
 
 

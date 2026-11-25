@@ -8997,6 +8997,83 @@ def test_output_groups_aggregate_by_asset_and_batch():
             f"/api/assets/outputs/groups?group_by=asset&batch_id={a1_item.batch_id}", headers=hm
         )).json()["awaiting"]
         assert aw["waiting_on_board"] == 1 and aw["order_ready_not_dispatched"] == 0, aw
+
+        # ⑥ 批 V 需求②（11-25 用户口径「投了豆包之后、豆包返回之前，看成片的地方要把这个
+        #    任务先显示出来并标个状态」＋「灰卡＋把失败/超时也标出来」）：占位条数据口。
+        #    在途判据必须与上面 `awaiting.waiting_on_board` **同一套**——空态说「1 张在途」、
+        #    占位卡摆 3 张，比不摆更让人困惑。
+        inf = await client.get("/api/assets/outputs/inflight", headers=hm)
+        assert inf.status_code == 200, inf.text
+        body = inf.json()
+        assert body["total"] == 1 == body["inflight_total"], f"只剩 running 那张在途：{body}"
+        assert len([i for i in body["items"] if i["bucket"] == "generating"]) == 1
+        row0 = [i for i in body["items"] if i["bucket"] == "generating"][0]
+        assert row0["production_id"] == str(p_a1.id) and row0["board_tid"] == "T-G1"
+        assert row0["status"] == PR_RUNNING and row0["hook_code"] == "7C0G1"
+        assert row0["asset_code"], "占位卡要认得出是哪条素材"
+        assert row0["board_total"] == 1 and row0["attempts"] == 0
+        assert (row0["minutes_since_dispatch"] or 0) >= 0
+        assert isinstance(body["slow_after_minutes"], int) and body["slow_after_minutes"] > 0, \
+            "慢的判断基准要跟轮询窗口同源，别前端硬编一个数"
+        # 终态成功那张（success＋有 tid）**不能**出现在占位里：片有没有，墙自己会说话
+        assert str(p_a2.id) not in {i["production_id"] for i in body["items"]}
+        # owner=me：单是 admin 投的，素材号看自己的＝0，admin 看＝1
+        assert (await client.get("/api/assets/outputs/inflight?owner=me", headers=hm)).json()["inflight_total"] == 0
+        assert (await client.get("/api/assets/outputs/inflight?owner=me", headers=hadm)).json()["inflight_total"] == 1
+        # 批次口径与空态同一套：切到 a2 那批＝0，切到 a1 那批＝1
+        n_a2 = (await client.get(
+            f"/api/assets/outputs/inflight?batch_id={a2_item.batch_id}", headers=hm)).json()["inflight_total"]
+        n_a1 = (await client.get(
+            f"/api/assets/outputs/inflight?batch_id={a1_item.batch_id}", headers=hm)).json()["inflight_total"]
+        assert (n_a2, n_a1) == (0, 1), f"在途占位不能串批：a2={n_a2} a1={n_a1}"
+        bad = await client.get("/api/assets/outputs/inflight?owner=mine", headers=hm)
+        assert bad.status_code == 400, "非法 owner 值要当场 400，别静默当 all"
+        # 试产单不进交付墙（`/assets/outputs` 默认也滤掉它的成片），占位照同一口径
+        async with dbmod.async_session_factory() as s:
+            t = await s.get(AssetProduction, p_a1.id)
+            t.is_trial = True
+            await s.commit()
+        assert (await client.get("/api/assets/outputs/inflight", headers=hm)).json()["inflight_total"] == 0, \
+            "试产片的占位不该混进交付墙"
+        async with dbmod.async_session_factory() as s:
+            t = await s.get(AssetProduction, p_a1.id)
+            t.is_trial = False
+            await s.commit()
+
+        # ⑥b 失败也要摆（用户选的正是「灰卡＋把失败/超时也标出来」）：p_a2 改判失败，
+        #     卡上必须带得成因（`error` 原文）与「多久前失败」；超出回看窗口的老失败
+        #     **只报数不摆卡**——失败行永久累积，墙顶放一条越滚越长的红列两周后没人看。
+        async with dbmod.async_session_factory() as s:
+            f = await s.get(AssetProduction, p_a2.id)
+            f.status, f.completed_at, f.error = PR_FAILED, datetime.utcnow(), "板面判失败：角色卡宽高比不对"
+            await s.commit()
+        body = (await client.get("/api/assets/outputs/inflight", headers=hm)).json()
+        assert body["failed_total"] == 1 and body["failed_older"] == 0, body
+        fk = [i for i in body["items"] if i["bucket"] == "failed"]
+        assert [i["production_id"] for i in fk] == [str(p_a2.id)]
+        assert fk[0]["error"] and "角色卡" in fk[0]["error"] and fk[0]["hook_code"] == "7C0G2"
+        assert (fk[0]["minutes_since_failed"] or 0) >= 0
+        assert fk[0]["bucket"] == "failed" and fk[0]["error"] is not None
+        # 生成中的那类永远不带 error（免得前端把两套话术混用）
+        assert [i for i in body["items"] if i["bucket"] == "generating"][0]["error"] is None
+        # 挪到窗口外（3 天前失败）→ 卡消失，但总数照样报得出，界面才敢说「另有 N 张更早的」
+        async with dbmod.async_session_factory() as s:
+            f = await s.get(AssetProduction, p_a2.id)
+            f.completed_at = datetime.utcnow() - timedelta(days=3)
+            await s.commit()
+        body = (await client.get("/api/assets/outputs/inflight", headers=hm)).json()
+        assert body["failed_total"] == 1 and body["failed_older"] == 1, body
+        assert not [i for i in body["items"] if i["bucket"] == "failed"], "窗口外不摆卡"
+
+        # ⑦ 批 V 顺手修的一处**静默错键**：片层灰字「投：某人」以前恒为 null——
+        #    代码拿 `o.production_id` 去查「用户 id → 显示名」的映射（两个不同实体的 id），
+        #    永不相等。用例此前只断言 `/productions` 口的 owner_name，没盖住这个口，
+        #    所以现网成片卡上从来没出现过投产人。这里钉住"有生产单就必须带出人名"。
+        outs = (await client.get("/api/assets/outputs?owner=all", headers=hm)).json()["items"]
+        with_prod = [o for o in outs if o["production_id"]]
+        assert with_prod, "本例的产物都挂在生产单上"
+        assert all(o["owner_name"] for o in with_prod), \
+            f"成片卡要标得出投产人：{[(o['file_key'], o['owner_name']) for o in with_prod]}"
         await client.aclose()
 
     _run(_scenario())

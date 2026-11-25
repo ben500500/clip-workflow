@@ -17,20 +17,24 @@ import {
   message,
 } from 'antd';
 import {
+  CloseCircleOutlined,
   DownOutlined,
   DownloadOutlined,
   PlayCircleOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
   RightOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
 import {
   assetApi,
   type AssetBatch,
+  type AssetInflightResult,
   type AssetOutput,
   type AssetOutputGroup,
   type AssetOutputsAwaiting,
 } from '../../api/assets';
+import { boardStatusText } from './AssetBits';
 
 const { Text } = Typography;
 
@@ -411,6 +415,339 @@ const OutputGrid: React.FC<{
 };
 
 /**
+ * 投出去、豆包还没回片的占位条（批 V 需求②，2026-11-25 用户口径）：
+ * 「投了豆包之后，在豆包返回之前，看成片的地方最好也能把这个任务先显示出来，
+ *  并标注一个状态（比如"豆包正在生成中"），要不然不知道目前是什么情况。」
+ *
+ * 为什么摆在**组清单上方**而不是塞进某组的网格里：
+ * - 占位不是产物，没有 `asset_outputs` 行。混进 `OutputGrid` 会把 `total`/翻页
+ *   的口径搞脏（分页是按产物数算的），也会让「勾选下载」点到一条不存在的片子。
+ * - 一线问的是「我今天投的到底在不在跑」，这是一个跨组的全局问题，天然属于墙顶。
+ * - 数据走 `/assets/outputs/inflight`（只查本库生产单行，不 presign、不打企微后台），
+ *   所以敢 20 秒自刷一轮；在途清零就停轮，不会空转。
+ *
+ * 三个刻意不与墙同步的地方：`kind`／`qc` 两个筛选**不作用于**占位（它们说的是
+ * 「成片怎么摆」，与「有没有在跑」无关，掺进来只会让人更看不懂）；`owner`／批次
+ * 则**必须**跟墙同一口径，否则「只看这批」会串批。
+ */
+const InflightStrip: React.FC<{
+  owner?: 'me' | 'all';
+  batchId?: string;
+  active?: boolean;
+  reloadToken?: number;
+  onGoToProduction?: () => void;
+}> = ({ owner, batchId, active = true, reloadToken, onGoToProduction }) => {
+  const [data, setData] = useState<AssetInflightResult | null>(null);
+  const [stale, setStale] = useState(false);
+
+  const fetchInflight = useCallback(async () => {
+    try {
+      const res = await assetApi.listInflightOutputs({ owner, batch_id: batchId });
+      setData(res);
+      setStale(false);
+    } catch {
+      // 占位条拿不到**不算错**：墙上的成片是真读到了。只把这条标成「没查到」，
+      // 别 toast——它在 20 秒轮里，失败刷屏比不显示更糟。
+      setStale(true);
+    }
+  }, [owner, batchId]);
+
+  useEffect(() => {
+    if (active) fetchInflight();
+  }, [active, fetchInflight]);
+
+  // 投板任务落定后外层会 bump reloadToken（跟网格同一把钥匙），占位条跟着立刻重查——
+  // 不然「刚投完那一下」要等到 8 秒横幅或下次切页签才看得见。
+  useEffect(() => {
+    if (reloadToken) fetchInflight();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken]);
+
+  // 自刷：只在「页签在前台 ＆ 确有单子要等」时轮，全回片＋全终态就停轮，不空转。
+  const shown = data?.items.length ?? 0;
+  useEffect(() => {
+    if (!active || !shown) return undefined;
+    const timer = setInterval(() => {
+      if (!document.hidden) fetchInflight();
+    }, 20000);
+    return () => clearInterval(timer);
+  }, [active, shown, fetchInflight]);
+
+  if (!shown) {
+    // 读失败时墙上可能少摆几条在途——宁可说一句「没查到」，也别静默消失让人以为没投。
+    return stale ? (
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        在途投放的进度这一次没查到（不影响下面已回收的成片，稍后自动重试）。
+      </Text>
+    ) : null;
+  }
+
+  const slowAfter = data?.slow_after_minutes ?? 45;
+  const generating = (data?.items || []).filter((i) => i.bucket !== 'failed');
+  const failed = (data?.items || []).filter((i) => i.bucket === 'failed');
+  const gridStyle: React.CSSProperties = {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(168px, 1fr))',
+    gap: 12,
+  };
+
+  return (
+    <div
+      data-inflight="1"
+      style={{ border: '1px dashed #d9d9d9', borderRadius: 8, padding: '8px 10px', background: '#fafafa' }}
+    >
+      {/* ── 在途：豆包还在出片 ── */}
+      {generating.length > 0 && (
+        <>
+          <Space size={8} wrap style={{ marginBottom: 8 }}>
+            <Text strong style={{ fontSize: 13 }}>
+              <SyncOutlined spin style={{ marginRight: 4, color: '#1677ff' }} />
+              豆包正在生成中（{data?.inflight_total ?? generating.length} 张）
+            </Text>
+            <Tooltip title="这些单子已经投上企微后台的任务板、正在豆包那边出片。片子和三视图都还在豆包手里，所以这里只有占位、没有画面——回收回来会自动变成下面的成片卡。进度取自己库里的投板台账，不另外调用后台、不花钱。">
+              <Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>
+                约 25 分钟回片，回来自动摆到下面的墙上
+              </Text>
+            </Tooltip>
+            {stale && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                （最近一次刷新没成功，下面可能是几分钟前的进度）
+              </Text>
+            )}
+            {onGoToProduction && (
+              <Button size="small" type="link" style={{ padding: 0 }} onClick={onGoToProduction}>
+                去看生产单
+              </Button>
+            )}
+          </Space>
+          <div style={gridStyle}>
+            {generating.map((p) => {
+              const mins = p.minutes_since_dispatch;
+              const overdue = mins != null && mins >= slowAfter;
+              const statusText =
+                boardStatusText(p.board_last_status) || (p.status === 'running' ? '出片中' : '已投板，排队中');
+              return (
+                <div
+                  key={p.production_id}
+                  style={{ border: '1px solid #f0f0f0', borderRadius: 8, overflow: 'hidden', background: '#fff' }}
+                >
+                  <div
+                    style={{
+                      position: 'relative',
+                      paddingTop: '133%',
+                      background: overdue ? '#fff7e6' : '#f5f5f5',
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 6,
+                        color: overdue ? '#d46b08' : '#999',
+                        fontSize: 12,
+                        padding: '0 8px',
+                        textAlign: 'center',
+                      }}
+                    >
+                      <SyncOutlined spin style={{ fontSize: 20 }} />
+                      <Text style={{ fontSize: 12, color: overdue ? '#d46b08' : '#8c8c8c' }}>
+                        {overdue ? '比平时久，还没回片' : statusText}
+                      </Text>
+                      {p.board_name && (
+                        <Text type="secondary" style={{ fontSize: 11 }} ellipsis>
+                          {p.board_name}
+                        </Text>
+                      )}
+                    </div>
+                    <div
+                      style={{
+                        position: 'absolute',
+                        right: 6,
+                        bottom: 6,
+                        background: 'rgba(0,0,0,0.55)',
+                        color: '#fff',
+                        fontSize: 11,
+                        borderRadius: 4,
+                        padding: '1px 6px',
+                      }}
+                    >
+                      {mins == null ? '—' : mins < 60 ? `投出 ${mins} 分` : `投出 ${(mins / 60).toFixed(1)} 时`}
+                    </div>
+                  </div>
+                  <div style={{ padding: '6px 8px 8px' }}>
+                    <div style={{ marginBottom: 2 }}>
+                      <Text strong style={{ fontSize: 12 }} ellipsis>
+                        {p.asset_code || p.asset_id.slice(0, 8)}
+                        {p.hook_code ? `｜${p.hook_code}` : ''}
+                        {p.owner_name ? `｜投：${p.owner_name}` : ''}
+                      </Text>
+                    </div>
+                    <Space size={4} wrap>
+                      <Tag
+                        color={overdue ? 'orange' : 'processing'}
+                        style={{ fontSize: 11, lineHeight: '18px', marginInlineEnd: 0 }}
+                      >
+                        {statusText}
+                      </Tag>
+                      {(p.board_total || 1) > 1 && (
+                        <Tooltip title={`这条提示词在板上要了 ${p.board_total} 版，回来就是 ${p.board_total} 条片子`}>
+                          <Tag style={{ fontSize: 11, lineHeight: '18px', marginInlineEnd: 0 }}>×{p.board_total} 版</Tag>
+                        </Tooltip>
+                      )}
+                      {(p.attempts || 0) > 1 && (
+                        <Tooltip title={`板面判过失败，已自动重启 ${p.attempts - 1} 次（同一条 payload 再上一遍板）`}>
+                          <Tag color="orange" style={{ fontSize: 11, lineHeight: '18px', marginInlineEnd: 0 }}>
+                            重试 {p.attempts - 1} 次
+                          </Tag>
+                        </Tooltip>
+                      )}
+                      {p.batch_code && (
+                        <Text type="secondary" style={{ fontSize: 11 }}>
+                          {p.batch_code}
+                        </Text>
+                      )}
+                    </Space>
+                    <div>
+                      <Text type="secondary" style={{ fontSize: 11 }}>
+                        {overdue
+                          ? `投出 ${mins ?? '?'} 分，已过常规出片窗口——去生产单看板面卡在哪`
+                          : p.board_last_check_at
+                            ? `板面查于 ${p.board_last_check_at.slice(11, 16)}`
+                            : '投板后台还没跑第一轮回读'}
+                      </Text>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* ── 失败：板面判了／人工改判了（用户 11-25 点的正是「失败/超时也要标出来」）──
+          这一栏只**报**不**判**：改状态、重投都仍在生产单面板做——那里才有号池与审计口径。 */}
+      {failed.length > 0 && (
+        <div style={{ marginTop: generating.length ? 12 : 0 }}>
+          <Space size={8} wrap style={{ marginBottom: 8 }}>
+            <Text strong style={{ fontSize: 13 }}>
+              <CloseCircleOutlined style={{ marginRight: 4, color: '#cf1322' }} />
+              板面失败待处理（{failed.length} 张
+              {(data?.failed_total ?? 0) > failed.length ? `，共 ${data?.failed_total} 张` : ''}）
+            </Text>
+            <Tooltip
+              title={`只摆最近 ${data?.failed_window_hours ?? 24} 小时判失败的单子。更早的失败账还在生产单面板里（按状态筛 failed），不堆在墙顶——失败行是永久累积的，全摆两周后这屏就没人看了。`}
+            >
+              <Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>
+                成因写在卡上；重投要回生产单点名
+              </Text>
+            </Tooltip>
+            {(data?.failed_older ?? 0) > 0 && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                另有 {data?.failed_older} 张更早的失败没摆在这里
+              </Text>
+            )}
+            {onGoToProduction && (
+              <Button size="small" type="link" style={{ padding: 0 }} onClick={onGoToProduction}>
+                去生产单处理
+              </Button>
+            )}
+          </Space>
+          <div style={gridStyle}>
+            {failed.map((p) => (
+              <div
+                key={p.production_id}
+                style={{ border: '1px solid #ffccc7', borderRadius: 8, overflow: 'hidden', background: '#fff' }}
+              >
+                <div style={{ position: 'relative', paddingTop: '133%', background: '#fff2f0' }}>
+                  <div
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6,
+                      color: '#cf1322',
+                      fontSize: 12,
+                      padding: '0 8px',
+                      textAlign: 'center',
+                    }}
+                  >
+                    <CloseCircleOutlined style={{ fontSize: 20 }} />
+                    <Text style={{ fontSize: 12, color: '#cf1322' }}>没出片（失败）</Text>
+                    {p.error && (
+                      <Tooltip title={p.error}>
+                        <Text type="danger" style={{ fontSize: 11, display: 'block' }} ellipsis>
+                          {p.error}
+                        </Text>
+                      </Tooltip>
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      position: 'absolute',
+                      right: 6,
+                      bottom: 6,
+                      background: 'rgba(0,0,0,0.55)',
+                      color: '#fff',
+                      fontSize: 11,
+                      borderRadius: 4,
+                      padding: '1px 6px',
+                    }}
+                  >
+                    {p.minutes_since_failed == null
+                      ? '—'
+                      : p.minutes_since_failed < 60
+                        ? `失败 ${p.minutes_since_failed} 分`
+                        : `失败 ${(p.minutes_since_failed / 60).toFixed(1)} 时`}
+                  </div>
+                </div>
+                <div style={{ padding: '6px 8px 8px' }}>
+                  <div style={{ marginBottom: 2 }}>
+                    <Text strong style={{ fontSize: 12 }} ellipsis>
+                      {p.asset_code || p.asset_id.slice(0, 8)}
+                      {p.hook_code ? `｜${p.hook_code}` : ''}
+                      {p.owner_name ? `｜投：${p.owner_name}` : ''}
+                    </Text>
+                  </div>
+                  <Space size={4} wrap>
+                    <Tag color="error" style={{ fontSize: 11, lineHeight: '18px', marginInlineEnd: 0 }}>
+                      {boardStatusText(p.board_last_status) || '投板失败'}
+                    </Tag>
+                    {(p.attempts || 0) > 1 && (
+                      <Tooltip title={`已经自动重启过 ${p.attempts - 1} 次仍失败：再重投要先看成因，别连着烧号池`}>
+                        <Tag color="orange" style={{ fontSize: 11, lineHeight: '18px', marginInlineEnd: 0 }}>
+                          重试 {p.attempts - 1} 次仍失败
+                        </Tag>
+                      </Tooltip>
+                    )}
+                    {p.batch_code && (
+                      <Text type="secondary" style={{ fontSize: 11 }}>
+                        {p.batch_code}
+                      </Text>
+                    )}
+                  </Space>
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 11 }}>
+                      {p.error ? '成因见卡上；重投＝再占一次当天号池' : '没写成因，去生产单补一句为什么废'}
+                    </Text>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
  * 成片素材墙（批 K 建，2026-11-07 改两级）：
  *
  * 第一级＝按素材（钩子）/按批次的组清单（每组：最新缩略图＋成片数＋最近回收时间），
@@ -703,6 +1040,15 @@ const AssetOutputWall: React.FC<{
           </Text>
         </Tooltip>
       </Space>
+
+      {/* ── 批 V：已投板、豆包还没回片的占位（跟组清单同一套 owner／批次口径） ── */}
+      <InflightStrip
+        owner={ownerView}
+        batchId={viewMode === 'asset' ? batchFilter : undefined}
+        active={active}
+        reloadToken={reloadToken}
+        onGoToProduction={onGoToProduction}
+      />
 
       {/* ── 第一级：组清单 ── */}
       {!groupsLoading && !groups.length ? (

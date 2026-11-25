@@ -510,11 +510,22 @@ const SimpleLibrary: React.FC<Props> = ({
       ...(hookCodes && hookCodes.length ? { hook_codes: hookCodes } : {}),
     }));
     if (!res) return false; // 取消了「替他人过审候选投产」的确认
+    const sent = res.results.some((r) => r.ok);
     reportVerdict(res.results, res.message, '条投出');
     nudgeAssetJobBanner();
     setSelectedIds([]);
+    // 批 V 需求①（11-25 用户：「投了豆包之后，豆包界面上的那些记录就可以清除了，
+    // 比如说上传的三视图，或者选的文案等」）：真投出去了就把这一屏的输入擦干净——
+    // 卡还挂着、版数还停在上一批的数，回到 ② 时容易当成「上一批没投完」再点一次，
+    // 而重复点这一次就是**重复占当天号池**。只在至少投出去一条时清：闸门全挡下的
+    // 那一批是要改完重投的，卡和号得留着。
+    if (sent) {
+      setCardIds([]);
+      setBoardTotal(1);
+      setHookText('');
+    }
     // 投完直接把人带到 ③：这步之后能看的只有等片，别让他在 ② 空等（11-24 分步页签）
-    if (res.results.some((r) => r.ok)) setTab('outputs');
+    if (sent) setTab('outputs');
     return true;
   };
 
