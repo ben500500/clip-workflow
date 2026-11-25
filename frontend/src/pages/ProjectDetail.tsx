@@ -144,7 +144,7 @@ const ProjectDetail: React.FC = () => {
   const [multiTitle, setMultiTitle] = useState('');
   const [multiUploading, setMultiUploading] = useState(false);
   // 多视频上传「秒差检测」（音画同步）开关：默认关闭
-  const [multiSecondDiff, setMultiSecondDiff] = useState(false);
+  const [multiSecondDiff, setMultiSecondDiff] = useState(true);
 
   // ── 剧集多选 + 批量一键切片 ──
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
@@ -889,9 +889,13 @@ const ProjectDetail: React.FC = () => {
         </Col>
       </Row>
       <Card size="small" style={{ marginBottom: 16 }}>
-        <Descriptions size="small" column={4}>
+        <Descriptions size="small" column={5}>
           <Descriptions.Item label="描述">{project.description || '-'}</Descriptions.Item>
           <Descriptions.Item label="剧集数">{project.episode_count}</Descriptions.Item>
+          {/* 总空间占用（2026-11-25 用户需求）：本集列表所有正片文件大小之和（成品不计入，成品属切片产出） */}
+          <Descriptions.Item label="总空间占用">
+            {formatFileSize(episodes.reduce((sum, e) => sum + (e.file_size || 0), 0))}
+          </Descriptions.Item>
           <Descriptions.Item label="创建时间">{formatDateTime(project.created_at)}</Descriptions.Item>
           <Descriptions.Item label="更新时间">{formatDateTime(project.updated_at)}</Descriptions.Item>
         </Descriptions>
@@ -1190,7 +1194,7 @@ const ProjectDetail: React.FC = () => {
               onChange={(v) => setMultiSecondDiff(v)}
             />
             <Text style={{ fontSize: 13 }}>秒差检测（音画同步校验）</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>开启后逐个视频校验音画时长差，不同步仅提示并标注、不拦截上传（默认关闭）</Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>开启后逐个视频校验音画时长差，不同步仅提示并标注、不拦截上传（默认开启）</Text>
           </Space>
           {multiUploading && (
             uploadProgress < 0 ? (

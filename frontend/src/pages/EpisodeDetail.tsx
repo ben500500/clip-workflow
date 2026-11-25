@@ -1426,7 +1426,7 @@ const EpisodeDetail: React.FC = () => {
         ...prev,
         {
           file_key: res.file_key,
-          position: 'top-left',
+          position: 'top-right',
           name: res.file_name,
           preview,
         },
@@ -1461,7 +1461,7 @@ const EpisodeDetail: React.FC = () => {
     setBadges((prev) =>
       prev.some((b) => b.file_key === item.file_key)
         ? prev
-        : [...prev, { file_key: item.file_key, position: 'top-left', name: item.file_name, preview: item.preview }],
+        : [...prev, { file_key: item.file_key, position: 'top-right', name: item.file_name, preview: item.preview }],
     );
     message.success(`角标「${item.file_name}」已添加`);
     setBadgeLibraryOpen(false);

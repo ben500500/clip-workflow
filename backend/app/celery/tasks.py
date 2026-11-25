@@ -390,10 +390,10 @@ def autoclip_stale_recovery_task():
                             run.completed_at = datetime.utcnow()
                             recovered.append(f"{str(run.id)[:8]}({len(clips)}候选,跳过派发)")
                         else:
-                            await _autoclip_auto_dispatch_slice(str(run.episode_id))
+                            # 2026-11-25 用户需求：选点完成后不再自动触发快速切片
                             run.status = "completed"
                             run.progress = 100.0
-                            run.message = f"选点完成,共生成 {len(clips)} 个候选片段"
+                            run.message = f"选点完成,共生成 {len(clips)} 个候选片段（等待人工切片）"
                             run.completed_at = datetime.utcnow()
                             recovered.append(f"{str(run.id)[:8]}({len(clips)}候选)")
                     except Exception as e:  # noqa: BLE001 - 收割失败保留现场下轮再试
@@ -550,11 +550,9 @@ def autoclip_task(self, episode_id: str, autoclip_project_id: str, video_path: s
             max_duration=0.0,
         ))
         run_async(_save_autoclip_results(episode_id, autoclip_project_id, clips, completed, config))
-        # 选点成功后自动创建带 cutlist 的切片任务（修复「选点→切片」断链）。
-        # 仅独立选点路径生效（批量模式有独立自动切片守护，此处跳过避免重复切）；
-        # 失败仅记日志，不影响选点任务本身。
-        if completed and clips:
-            run_async(_autoclip_auto_dispatch_slice(episode_id))
+        # 2026-11-25 用户需求：选点完成后不再自动触发快速切片（此前会自动派发 fast
+        # 模式切片任务）。用户在候选审核后手动发起切片即可；_autoclip_auto_dispatch_slice
+        # 函数保留备用（如需恢复自动派发，在此重新调用）。
         run_async(_update_autoclip_run(
             episode_id, autoclip_project_id,
             "completed" if completed else "failed",
