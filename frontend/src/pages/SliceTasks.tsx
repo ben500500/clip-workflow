@@ -321,7 +321,7 @@ const SUBTITLE_MASK_PRESETS = [
         ...prev,
         {
           file_key: res.file_key,
-          position: 'top-left',
+          position: 'top-right',
           name: res.file_name,
           preview,
         },
