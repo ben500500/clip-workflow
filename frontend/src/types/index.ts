@@ -19,6 +19,8 @@ export interface Project {
   id: string;
   name: string;
   storage_bytes?: number;
+  // 项目下当前运行中/排队中的切片任务数（列表接口实时返回，0/undefined=无任务）
+  slice_running?: number;
   description: string | null;
   status: string;
   config: Record<string, unknown> | null;

@@ -2058,35 +2058,33 @@ const EpisodeDetail: React.FC = () => {
             { value: 'tail', label: '放在片尾' },
           ]}
         />
-        {/* 钩子混搭输出数量：高光混剪有自己的输出个数（cutlist 组数），两者并存会按组相乘
-            导致输出爆炸 → 高光混剪开启时不展示也不下发。
-            2026-11-21 权限排查修正：数量框此前只在 random/combine 模式渲染，顺序循环模式
-            （新账号默认态）下整块消失，被误认为「素材专员没有权限看到」——改为常驻可见、
-            顺序模式下置灰 + 提示，任何账号任何状态都不会找不到框 */}
-        {!highlightMixEnabled && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span style={{ fontSize: 12, color: '#666', whiteSpace: 'nowrap' }}>生成数量：</span>
-            <InputNumber
-              size="small"
-              min={1}
-              max={999}
-              style={{ width: 100 }}
-              disabled={hookMixMode === 'sequential'}
-              value={hookMixOutputCount}
-              onChange={(v) => setHookMixOutputCount(v ?? 1)}
-            />
-            {hookMixMode === 'sequential' && (
-              <Tooltip title="顺序循环模式每个切片组固定产出 1 个成品；把混搭模式切到「随机混搭」或「拼接组合」后，此数量才会生效">
-                <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>顺序模式固定 1</Text>
-              </Tooltip>
-            )}
-          </div>
-        )}
-        {highlightMixEnabled && (
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            高光混剪模式：输出个数由「混剪配置」决定，钩子按混搭模式拼进每个混剪成品
-          </Text>
-        )}
+        {/* 钩子混搭输出数量：高光混剪有自己的输出个数（混剪配置），两者并存会按组相乘
+            导致输出爆炸 → 高光混剪开启时不下发该数量（仍常驻显示、置灰提示）。
+            2026-11-21 修正：数量框曾只在 random/combine 模式渲染，顺序模式整块消失，
+            被误认为「没有权限看到」；2026-11-25 同类问题再现——高光混剪开启时整块不渲染，
+            而该开关按个人账号持久化（yang 账号开着��所以看不到）。现统一改为
+            **任何状态都常驻可见**，不生效时置灰 + 悬停说明原因 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 12, color: '#666', whiteSpace: 'nowrap' }}>生成数量：</span>
+          <InputNumber
+            size="small"
+            min={1}
+            max={999}
+            style={{ width: 100 }}
+            disabled={hookMixMode === 'sequential' || highlightMixEnabled}
+            value={hookMixOutputCount}
+            onChange={(v) => setHookMixOutputCount(v ?? 1)}
+          />
+          {highlightMixEnabled ? (
+            <Tooltip title="高光混剪模式：输出个数由「混剪配置」决定；关闭本集的高光混剪后，此数量才会生效">
+              <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>高光混剪用混剪配置</Text>
+            </Tooltip>
+          ) : hookMixMode === 'sequential' ? (
+            <Tooltip title="顺序循环模式每个切片组固定产出 1 个成品；把混搭模式切到「随机混搭」或「拼接组合」后，此数量才会生效">
+              <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>顺序模式固定 1</Text>
+            </Tooltip>
+          ) : null}
+        </div>
       </Space>
     );
   };

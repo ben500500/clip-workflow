@@ -256,10 +256,19 @@ async def list_projects(
         .join(Episode, Episode.id == SliceTask.episode_id)
         .group_by(Episode.project_id)
     )).all())
+    # 实时运行状态（2026-11-25 用户需求）：每项目当前运行中/排队中的切片任务数，
+    # 列表页据此展示「运行中 ×N」徽标（免逐项目轮询）
+    running_sum = dict((await db.execute(
+        select(Episode.project_id, func.count(SliceTask.id))
+        .join(SliceTask, SliceTask.episode_id == Episode.id)
+        .where(SliceTask.status.in_(["running", "pending", "processing"]))
+        .group_by(Episode.project_id)
+    )).all())
     items = []
     for p in projects:
         d = _serialize_project(p)
         d["storage_bytes"] = int(ep_sum.get(p.id, 0) or 0) + int(out_sum.get(p.id, 0) or 0)
+        d["slice_running"] = int(running_sum.get(p.id, 0) or 0)
         items.append(d)
     return {
         "items": items,
