@@ -40,6 +40,9 @@ type Config struct {
 	// 进度上报（进度停留、引擎/ffmpeg 挂起），且进程仍存活，则强制 kill 并重新入队。
 	// 0 表示不启用卡死检测。默认 30 分钟。
 	StuckTaskMinutes int `json:"stuck_task_minutes"`
+	// 成品级并发数：同一节点内同时处理多少个成品（默认 1=串行）。>1 时 ffmpeg
+	// 线程按并发数均分，combine 钩子链模式引擎侧自动回退串行。
+	ProductConcurrency int `json:"product_concurrency"`
 	// 是否启用节点专属队列（服务器指定派发任务直投本节点信箱，默认 true）。
 	// 关闭后 Worker 不消费专属队列，完全退回公共 Stream 消费（灰度/回滚用）。
 	EnableDirectQueue bool `json:"enable_direct_queue"`
@@ -109,6 +112,11 @@ func LoadConfig(path string) (*Config, error) {
 	// 专属队列 BRPOP 超时下限保护：<=0 回落默认 2 秒
 	if cfg.DirectQueueTimeout <= 0 {
 		cfg.DirectQueueTimeout = 2
+	}
+
+	// 成品级并发数范围约束：1 ~ 4（再高内存/IO 收益递减）
+	if cfg.ProductConcurrency < 1 || cfg.ProductConcurrency > 4 {
+		cfg.ProductConcurrency = 1
 	}
 
 	return cfg, nil

@@ -4719,6 +4719,14 @@ def main():
         help="钩子拼接位置：head=片头（默认，[封面][钩子][本体]）/ tail=片尾（[封面][本体][钩子]）",
     )
     parser.add_argument(
+        "--product-concurrency",
+        type=int,
+        default=int(os.environ.get("SLICE_PRODUCT_CONCURRENCY", "1")),
+        help="成品级并发数：同一节点内同时处理多少个成品（默认 1=串行；"
+             "环境变量 SLICE_PRODUCT_CONCURRENCY 兜底）。threads 按并发数均分，"
+             "combine 钩子链模式自动回退串行。",
+    )
+    parser.add_argument(
         "--output-tier",
         default="original",
         choices=OUTPUT_TIERS,
@@ -5210,11 +5218,35 @@ def main():
         if use_multi_output and hook_mix_mode == "random":
             preselected_hooks = [random.choice(hook_paths) for _ in range(len(assignments))]
         total = len(assignments)
-        processed = 0
-        # 钩子视频按顺序循环取用（round-robin）：每个输出依次取下一个钩子，
-        # 取完一轮再从第一个开始，确保所有钩子都被用到、且不会饿死末尾钩子。
-        hook_idx = 0
-        for (name_key, variant) in assignments:
+        # 成品级并发（2026-11-25 用户需求）：P>1 时同一节点内并行处理多个成品
+        # （每成品独立临时目录与 ffmpeg 进程），threads 按 P 均分防超卖。
+        # combine 模式的钩子链缓存是任务级共享写入文件，暂不并发（自动回退 P=1）。
+        product_concurrency = max(1, int(args.product_concurrency or 1))
+        if hook_mix_mode == "combine" and use_multi_output and len(hook_paths) > 1:
+            product_concurrency = 1
+        p_threads = max(1, threads // product_concurrency) if product_concurrency > 1 else threads
+        import threading as _threading
+        from concurrent.futures import ThreadPoolExecutor as _Pool, as_completed as _as_completed
+        _out_lock = _threading.Lock()
+        _stage_lock = _threading.Lock()
+        _emitted_stages = set()
+        _state = {"completed": 0}
+
+        def _completed():
+            with _stage_lock:
+                return _state["completed"]
+
+        def _emit_once(key, msg):
+            # 原「processed == 0 才打」的首次阶段文案：并发下改为按 key 只打一次
+            with _stage_lock:
+                if key in _emitted_stages:
+                    return
+                _emitted_stages.add(key)
+            _stage(msg)
+
+        def _process_one(idx, name_key, variant):
+            # 钩子视频按顺序循环取用（round-robin）：每个输出依次取下一个钩子，
+            # 取完一轮再从第一个开始，确保所有钩子都被用到、且不会饿死末尾钩子。
             group = groups[name_key]
             # 变体命名：v1 沿用组名（向后兼容），v2+ 追加 -vN 后缀避免覆盖。
             # 后缀必须插在扩展名之前（如 clip_01-v2.mp4），否则 ffmpeg 无法按
@@ -5265,7 +5297,7 @@ def main():
                                     hook_vf = f"{hook_vf},{vf}"
                                 _stage(f"钩子转码 {ci + 1}/{len(hook_paths)}（{os.path.basename(chp)} {ch_dur:.1f}s）")
                                 slice_segment(chp, 0.0, ch_dur, ch_part,
-                                              vf=hook_vf, af=af, threads=threads, encoder=encoder,
+                                              vf=hook_vf, af=af, threads=p_threads, encoder=encoder,
                                               bgm=bgm_audio, enc_args_override=_match_args)
                                 # 建链心跳（2026-11-21 性能复评 P1）：超长钩子链构建可超
                                 # 30min，期间必须刷新卡死检测心跳——同档位百分比在 worker
@@ -5300,7 +5332,7 @@ def main():
                         if hook_mix_mode == "random" and len(hook_paths) > 1:
                             if use_multi_output:
                                 # 使用预先随机选好的钩子（每个输出一个，变体间尽量不同）
-                                hook_path = preselected_hooks[processed]
+                                hook_path = preselected_hooks[idx]
                                 print(f"钩子拼接[random 变体 {variant}]: {os.path.basename(hook_path)} -> 切片 '{name}'", file=sys.stderr)
                             else:
                                 hook_path = random.choice(hook_paths)
@@ -5308,8 +5340,7 @@ def main():
                         else:
                             # 顺序循环取用：从钩子文件夹中依次取一个钩子视频作为片头，
                             # 用完一轮后回到第一个（round-robin），保证所有钩子都被用到。
-                            hook_path = hook_paths[hook_idx % len(hook_paths)]
-                            hook_idx += 1
+                            hook_path = hook_paths[idx % len(hook_paths)]
                         hook_dur = ffprobe_duration(hook_path) or 0.0
                         hook_part = os.path.join(tmp, "part_0.mp4")
                         hook_w = tier_w or 1280
@@ -5323,7 +5354,7 @@ def main():
                             hook_vf = f"{hook_vf},{vf}"
                         _stage(f"钩子转码（{os.path.basename(hook_path)} {hook_dur:.1f}s）")
                         slice_segment(hook_path, 0.0, hook_dur, hook_part,
-                                      vf=hook_vf, af=af, threads=threads, encoder=encoder,
+                                      vf=hook_vf, af=af, threads=p_threads, encoder=encoder,
                                       bgm=bgm_audio, enc_args_override=_match_args)
                         print(f"钩子拼接: {os.path.basename(hook_path)} (时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
                     if hook_position == "tail":
@@ -5340,16 +5371,16 @@ def main():
                     else:
                         parts.append(hook_part)
                         part_offset = 1
-                _stage(f"成品 {processed + 1}/{total} 切割（{len(group)} 段）")
+                _stage(f"成品 {idx + 1}/{total} 切割（{len(group)} 段）")
                 for i, (start, end, _) in enumerate(group):
                     part = os.path.join(tmp, f"part_{i + part_offset}.mp4")
-                    slice_segment(source_path, start, end, part, vf=vf, af=af, threads=threads, encoder=encoder,
+                    slice_segment(source_path, start, end, part, vf=vf, af=af, threads=p_threads, encoder=encoder,
                                   bgm=bgm_audio)
                     parts.append(part)
                 # 细分进度（2026-11-20 评审 P0-3）：成品内阶段 tick，格式与成品级一致。
                 # 同档位百分比在 worker 侧只续 lease 不重复写 Redis（节流），
                 # 但足以刷新卡死检测心跳——单成品耗时再长也不会被 stuckTaskLoop 误杀。
-                print(f"PROGRESS:{min(99, int((processed + 0.6) * 100 / total))}")
+                print(f"PROGRESS:{min(99, int((_completed() + 0.6) * 100 / total))}")
                 if tail_hook_part:
                     parts.append(tail_hook_part)
                 if outro_part:
@@ -5359,14 +5390,13 @@ def main():
                 # 2026-11-23 优化：钩子/片尾已按本体签名编码时允许流拷贝拼接
                 # （concat_segments 内部做签名一致性与时长校验，不一致自动回退重编码）
                 #
-                concat_segments(parts, out_path, threads=threads, encoder=encoder,
+                concat_segments(parts, out_path, threads=p_threads, encoder=encoder,
                                 copy_if_possible=True)
                 seg_times = [(s, e) for s, e, _ in group]
-                print(f"PROGRESS:{min(99, int((processed + 0.7) * 100 / total))}")
+                print(f"PROGRESS:{min(99, int((_completed() + 0.7) * 100 / total))}")
                 # 源字幕打码：打掉片源自带字幕（在烧录自己的新字幕之前）
                 if subtitle_mask:
-                    if processed == 0:
-                        _stage("源字幕打码中")
+                    _emit_once("src_mask", "源字幕打码中")
                     mask_out = out_path + ".masked.mp4"
                     # 精细化（temporal）模式：优先用帧级检测到的"字幕/水印出现时段"，
                     # 把源时间轴窗口转为切片局部时间轴，只在出现时打码。
@@ -5389,18 +5419,18 @@ def main():
                         apply_subtitle_mask(out_path, mask_out, subtitle_mask,
                                             dynamic_windows=dynamic_windows,
                                             seg_times=seg_times,
-                                            threads=threads, encoder=encoder)
+                                            threads=p_threads, encoder=encoder)
                         os.replace(mask_out, out_path)
                     elif region_windows:
                         apply_subtitle_mask(out_path, mask_out, subtitle_mask,
                                             seg_times=seg_times,
-                                            threads=threads, encoder=encoder)
+                                            threads=p_threads, encoder=encoder)
                         os.replace(mask_out, out_path)
                     elif spatial:
                         apply_subtitle_mask(out_path, mask_out, subtitle_mask,
                                             spatial_windows=spatial,
                                             seg_times=seg_times,
-                                            threads=threads, encoder=encoder)
+                                            threads=p_threads, encoder=encoder)
                         os.replace(mask_out, out_path)
                     elif tw:
                         # 去重变速(speed)会压缩画面时间轴，源时间窗口需按 speed 缩放，
@@ -5410,7 +5440,7 @@ def main():
                         if mask_enable:
                             apply_subtitle_mask(out_path, mask_out, subtitle_mask,
                                                 enable=mask_enable,
-                                                threads=threads, encoder=encoder)
+                                                threads=p_threads, encoder=encoder)
                             os.replace(mask_out, out_path)
                     else:
                         # 普通/快速模式（temporal 与 spatial 均关闭）：
@@ -5419,10 +5449,10 @@ def main():
                         # "定位到字幕区域后至始至终打码"的预期。SRT 时间轴仅用于精细化模式。
                         apply_subtitle_mask(out_path, mask_out, subtitle_mask,
                                             enable="",
-                                            threads=threads, encoder=encoder)
+                                            threads=p_threads, encoder=encoder)
                         os.replace(mask_out, out_path)
                 # 源字幕打码完成（若启用）→ 阶段 tick
-                print(f"PROGRESS:{min(99, int((processed + 0.75) * 100 / total))}")
+                print(f"PROGRESS:{min(99, int((_completed() + 0.75) * 100 / total))}")
                 # 字幕烧录：开启后按该切片的源时间段从源 SRT 截取并烧录到成品
                 if args.subtitle:
                     sub_srt = os.path.join(tmp, "clip_subtitle.srt")
@@ -5440,9 +5470,8 @@ def main():
                         m = subtitle_mask_bottom_margin(subtitle_mask, cur_w, cur_h)
                         if m >= 0:
                             margin_v = m
-                    if processed == 0:
-                        _stage("ASR 字幕烧录中")
-                    burn_subtitle(out_path, sub_srt, sub_out, threads=threads, encoder=encoder,
+                    _emit_once("asr_burn", "ASR 字幕烧录中")
+                    burn_subtitle(out_path, sub_srt, sub_out, threads=p_threads, encoder=encoder,
                                   font_ratio=subtitle_font_ratio,
                                   spacing=subtitle_spacing,
                                   style=args.subtitle_style,
@@ -5453,59 +5482,75 @@ def main():
                                   margin_ratio=subtitle_margin_ratio)
                     os.replace(sub_out, out_path)
                     # 字幕烧录完成 → 阶段 tick
-                    print(f"PROGRESS:{min(99, int((processed + 0.8) * 100 / total))}")
+                    print(f"PROGRESS:{min(99, int((_completed() + 0.8) * 100 / total))}")
             # 恒定水印/角标打码：切片+字幕完成后，打掉片源固定水印（全程打码，
             # 水印是恒定元素无时间轴可言；区域由自动检测或手动 x/y/width/height 指定）。
             if watermark_mask:
-                if processed == 0:
-                    _stage("水印打码中")
+                _emit_once("wm_mask", "水印打码中")
                 wm_out = out_path + ".wmask.mp4"
                 apply_subtitle_mask(out_path, wm_out, watermark_mask,
                                     enable="",
-                                    threads=threads, encoder=encoder)
+                                    threads=p_threads, encoder=encoder)
                 os.replace(wm_out, out_path)
                 print(f"恒定水印打码完成: {os.path.basename(out_path)}", file=sys.stderr)
             # 恒定水印打码完成 → 阶段 tick
-            print(f"PROGRESS:{min(99, int((processed + 0.85) * 100 / total))}")
+            print(f"PROGRESS:{min(99, int((_completed() + 0.85) * 100 / total))}")
             # 图片角标：预叠加成功时成品天然带角标，跳过成品级 pass（防重复叠加，
             # 也省去每成品一次全量重编码）；仅预叠加失败/不可用时回退到此处。
             if badges and not badges_preapplied:
-                if processed == 0:
-                    _stage("角标叠加中")
+                _emit_once("badge", "角标叠加中")
                 badge_out = out_path + ".badge.mp4"
                 apply_badges(
                     out_path, badge_out, badges,
-                    threads=threads, encoder=encoder,
+                    threads=p_threads, encoder=encoder,
                     default_width=args.badge_default_width,
                 )
                 os.replace(badge_out, out_path)
                 # 角标叠加完成 → 阶段 tick
-                print(f"PROGRESS:{min(99, int((processed + 0.88) * 100 / total))}")
+                print(f"PROGRESS:{min(99, int((_completed() + 0.88) * 100 / total))}")
             # 固定文字角标：在图片角标之后再叠加文字（文字常叠在角标之上层）
             if text_overlays:
                 txt_out = out_path + ".textov.mp4"
                 apply_text_overlays(
                     out_path, txt_out, text_overlays,
-                    threads=threads, encoder=encoder,
+                    threads=p_threads, encoder=encoder,
                 )
                 os.replace(txt_out, out_path)
                 # 固定文字角标完成 → 阶段 tick
-                print(f"PROGRESS:{min(99, int((processed + 0.91) * 100 / total))}")
+                print(f"PROGRESS:{min(99, int((_completed() + 0.91) * 100 / total))}")
             # 视频封面：将封面叠加到成品第一帧作为视频首帧
             if args.cover:
                 cover_out = out_path + ".coverout.mp4"
-                if processed == 0:
-                    _stage("封面首帧叠加中")
-                apply_cover_first_frame(out_path, args.cover, cover_out, threads=threads, encoder=encoder)
+                _emit_once("cover", "封面首帧叠加中")
+                apply_cover_first_frame(out_path, args.cover, cover_out, threads=p_threads, encoder=encoder)
                 if os.path.isfile(cover_out):
                     os.replace(cover_out, out_path)
                 # 封面首帧完成 → 阶段 tick
-                print(f"PROGRESS:{min(99, int((processed + 0.93) * 100 / total))}")
+                print(f"PROGRESS:{min(99, int((_completed() + 0.93) * 100 / total))}")
             duration = ffprobe_duration(out_path)
-            outputs.append((name, duration))
-            processed += 1
-            print(f"PROGRESS:{int(processed * 100 / total)}")
-            print(f"OUTPUT:{name}:{duration:.3f}")
+            with _out_lock:
+                outputs.append((name, duration))
+                _state["completed"] += 1
+                print(f"PROGRESS:{int(_state['completed'] * 100 / total)}", flush=True)
+                print(f"OUTPUT:{name}:{duration:.3f}", flush=True)
+
+        if product_concurrency <= 1:
+            for _idx, (_nk, _v) in enumerate(assignments):
+                _process_one(_idx, _nk, _v)
+        else:
+            _errs = []
+            with _Pool(max_workers=product_concurrency) as _ex:
+                _futs = [_ex.submit(_process_one, _i, _nk, _v)
+                         for _i, (_nk, _v) in enumerate(assignments)]
+                for _f in _as_completed(_futs):
+                    try:
+                        _f.result()
+                    except Exception as _e:  # noqa: BLE001
+                        _errs.append(_e)
+            if _errs:
+                # 并发下兄弟成品可能已继续跑完一段才汇总报错：取首个异常上抛，
+                # 语义与串行版一致（任务失败），但失败信息保留第一条根因。
+                raise _errs[0]
 
         print("PROGRESS:100")
     finally:

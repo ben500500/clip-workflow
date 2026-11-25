@@ -227,6 +227,11 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		}
 	}
 
+	// 成品级并发：节点配置 >1 时透传（引擎默认 1=串行；combine 模式引擎自动回退）
+	if te.config.ProductConcurrency > 1 {
+		args = append(args, "--product-concurrency", strconv.Itoa(te.config.ProductConcurrency))
+	}
+
 	// ASR 字幕烧录：把后端下发的 SRT 内容写到本地文件，透传给引擎 --subtitle
 	if len(task.Subtitle) > 0 {
 		enabled, _ := task.Subtitle["enabled"].(bool)
