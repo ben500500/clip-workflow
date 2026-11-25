@@ -44,6 +44,30 @@ const Projects: React.FC = () => {
     fetchProjects();
   }, [fetchProjects]);
 
+  // 实时运行状态（2026-11-25 用户需求）：每 10s 静默刷新列表，让「运行中 ×N」
+  // 徽标随任务起停实时变化；静默=不置 loading、不弹错误，避免打断用户操作
+  useEffect(() => {
+    let stopped = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const res = await projectApi.getList({ page, page_size: pageSize, search: search || undefined });
+        if (!stopped) {
+          setProjects(res.items);
+          setTotal(res.total);
+        }
+      } catch {
+        /* 轮询失败静默，保留现有列表 */
+      }
+      if (!stopped) timer = window.setTimeout(tick, 10000);
+    };
+    timer = window.setTimeout(tick, 10000);
+    return () => {
+      stopped = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [page, pageSize, search]);
+
   const handleSearch = () => {
     setPage(1);
     // 若已在第 1 页，手动触发一次刷新
@@ -129,8 +153,15 @@ const Projects: React.FC = () => {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 120,
-      render: (status: string) => <Tag color={getStatusColor(status)}>{getStatusLabel(status)}</Tag>,
+      width: 130,
+      render: (status: string, record: Project) =>
+        (record.slice_running ?? 0) > 0 ? (
+          <Tag color="processing" style={{ marginInlineEnd: 0 }}>
+            ● 运行中 ×{record.slice_running}
+          </Tag>
+        ) : (
+          <Tag color={getStatusColor(status)}>{getStatusLabel(status)}</Tag>
+        ),
     },
     {
       title: '描述',
