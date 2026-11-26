@@ -490,6 +490,7 @@ const AssetLibrary: React.FC = () => {
           ownerDefault={scopeMine ? 'me' : 'all'}
           ownerSwitchable={canReview}
           active={activeTab === 'outputs'}
+          canCancel={role === 'admin' || role === 'operator'}
           onGoToProduction={() => setActiveTab('production')}
         />
       ),
@@ -613,6 +614,7 @@ const AssetLibrary: React.FC = () => {
           canImport={canProduce}
           canProduce={canProduce}
           canReview={canReview}
+          canCancel={role === 'admin' || role === 'operator'}
           isAdmin={isAdmin}
           userId={user?.id ?? null}
           reloadToken={reloadToken}

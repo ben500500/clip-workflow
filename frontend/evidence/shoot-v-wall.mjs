@@ -241,7 +241,7 @@ async function main() {
       return { seg, hasWall: /按素材（钩子）/.test(seg), stripAbove: !!p.querySelector('[data-inflight]') }; })()
   `);
   assert('V15 墙本身照常渲染（占位条只加不减：分组开关还在、且排在墙内）', wallCtl.hasWall && wallCtl.stripAbove, JSON.stringify(wallCtl));
-  assert('V16 有「去生产单处理」入口', /去生产单处理|去看生产单/.test(s.text), s.text.slice(0, 200));
+  assert('V16 失败栏不再提供「去生产单处理」跳转', !/去生产单处理/.test(s.text), s.text.slice(0, 200));
 
   // ── W：投完把这一屏擦干净 ──
   await segClick('极简'); await sleep(1200);

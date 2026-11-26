@@ -76,6 +76,8 @@ interface Props {
   canProduce: boolean;
   /** 审核职能＋角色：成片墙的「我的／全部」切换 */
   canReview: boolean;
+  /** 删生产单权限：与后端 _REVIEW_ROLES 同口径 */
+  canCancel: boolean;
   isAdmin: boolean;
   /**
    * 批 T（11-24）全局「仅看自己」：true＝脚本库默认只摆「我写的＋我收藏的」（后端 owner=me 口径），
@@ -210,7 +212,7 @@ const ImportHookModal: React.FC<ImportHookModalProps> = ({
  * 风险词闸都在后端。定稿冻结／生产载体见后端 assets/misc.py 脚本库段。
  */
 const SimpleLibrary: React.FC<Props> = ({
-  canImport, canProduce, canReview, isAdmin, scopeMine, userId, reloadToken, onOpenFullTab,
+  canImport, canProduce, canReview, canCancel, isAdmin, scopeMine, userId, reloadToken, onOpenFullTab,
 }) => {
   const cats = useAssetCategories();
   const [defaultCat, setDefaultCat] = useState<string | undefined>(undefined);
@@ -1155,6 +1157,7 @@ const SimpleLibrary: React.FC<Props> = ({
         ownerDefault="all"
         ownerSwitchable={canReview}
         active={tab === 'outputs'}
+        canCancel={canCancel}
         onGoToProduction={() => onOpenFullTab('production')}
       />
     </Space>

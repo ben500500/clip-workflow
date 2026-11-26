@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { OutputGuide } from './PanelGuides';
 import type { OwnerView } from '../../hooks/useOwnerView';
 import { downloadFilesSequentially } from '../../utils/batchDownload';
@@ -492,22 +492,52 @@ const InflightStrip: React.FC<{
   batchId?: string;
   active?: boolean;
   reloadToken?: number;
+  canCancel?: boolean;
   onGoToProduction?: () => void;
-}> = ({ owner, ownerId, batchId, active = true, reloadToken, onGoToProduction }) => {
+}> = ({ owner, ownerId, batchId, active = true, reloadToken, canCancel = false, onGoToProduction }) => {
   const [data, setData] = useState<AssetInflightResult | null>(null);
   const [stale, setStale] = useState(false);
+  // 删单成功后就地移除；ref 同时挡住删单前发出的旧 GET 回写，避免刷新失败或竞态把卡复活。
+  const removedRef = useRef<Set<string>>(new Set());
+  const requestRef = useRef(0);
 
   const fetchInflight = useCallback(async () => {
+    const requestId = ++requestRef.current;
     try {
       const res = await assetApi.listInflightOutputs({ owner, owner_id: ownerId || undefined, batch_id: batchId });
-      setData(res);
+      if (requestId !== requestRef.current) return;
+      const hidden = res.items.filter((i) => removedRef.current.has(i.production_id));
+      const hiddenFailed = hidden.filter((i) => i.bucket === 'failed').length;
+      const hiddenGenerating = hidden.length - hiddenFailed;
+      setData({
+        ...res,
+        items: res.items.filter((i) => !removedRef.current.has(i.production_id)),
+        inflight_total: Math.max(0, res.inflight_total - hiddenGenerating),
+        failed_total: Math.max(0, res.failed_total - hiddenFailed),
+      });
       setStale(false);
     } catch {
       // 占位条拿不到**不算错**：墙上的成片是真读到了。只把这条标成「没查到」，
       // 别 toast——它在 20 秒轮里，失败刷屏比不显示更糟。
-      setStale(true);
+      if (requestId === requestRef.current) setStale(true);
     }
   }, [owner, ownerId, batchId]);
+
+  const removeCard = useCallback((productionId: string) => {
+    removedRef.current.add(productionId);
+    setData((prev) => {
+      if (!prev) return prev;
+      const removed = prev.items.find((i) => i.production_id === productionId);
+      const failedDelta = removed?.bucket === 'failed' ? 1 : 0;
+      return {
+        ...prev,
+        items: prev.items.filter((i) => i.production_id !== productionId),
+        inflight_total: Math.max(0, prev.inflight_total - (removed && !failedDelta ? 1 : 0)),
+        failed_total: Math.max(0, prev.failed_total - failedDelta),
+      };
+    });
+    void fetchInflight();
+  }, [fetchInflight]);
 
   useEffect(() => {
     if (active) fetchInflight();
@@ -530,11 +560,14 @@ const InflightStrip: React.FC<{
     return () => clearInterval(timer);
   }, [active, shown, fetchInflight]);
 
+  // 页签隐藏时连同 Popconfirm portal 一起卸载，避免未确认弹窗跨页签残留。
+  if (!active) return null;
+
   if (!shown) {
     // 读失败时墙上可能少摆几条在途——宁可说一句「没查到」，也别静默消失让人以为没投。
     return stale ? (
       <Text type="secondary" style={{ fontSize: 12 }}>
-        在途投放的进度这一次没查到（不影响下面已回收的成片，稍后自动重试）。
+        在途投放的进度这一次没查到（不影响下面已回收的成片；已删单不会复活）。
       </Text>
     ) : null;
   }
@@ -680,7 +713,7 @@ const InflightStrip: React.FC<{
                     {/* 批 Y（11-25「超时生成的豆包素材删不掉」）：超时死单的人工删单口。
                         只把在途占位置 cancelled，不动桶里文件——片子还在豆包手里。
                         后端只收 queued/running，改判待重写的单在这删会 409，按钮就不摆。 */}
-                    {(p.status === 'queued' || p.status === 'running') && (
+                    {canCancel && (p.status === 'queued' || p.status === 'running') && (
                       <div>
                         <Popconfirm
                           title="删掉这张在途单？"
@@ -695,8 +728,8 @@ const InflightStrip: React.FC<{
                           onConfirm={async () => {
                             try {
                               await assetApi.cancelProduction(p.production_id);
+                              removeCard(p.production_id);
                               message.success('已删单：这张占位卡从墙上消失');
-                              fetchInflight();
                             } catch (e) {
                               message.error((e as Error).message || '删单失败');
                             }
@@ -717,7 +750,8 @@ const InflightStrip: React.FC<{
       )}
 
       {/* ── 失败：板面判了／人工改判了（用户 11-25 点的正是「失败/超时也要标出来」）──
-          这一栏只**报**不**判**：改状态、重投都仍在生产单面板做——那里才有号池与审计口径。 */}
+          这里可删单（failed→cancelled）但不能重投；删单保留原失败成因、审计和号池消耗，
+          重投仍回生产单面板做，避免在墙上重复烧号。 */}
       {failed.length > 0 && (
         <div style={{ marginTop: generating.length ? 12 : 0 }}>
           <Space size={8} wrap style={{ marginBottom: 8 }}>
@@ -738,10 +772,10 @@ const InflightStrip: React.FC<{
                 另有 {data?.failed_older} 张更早的失败没摆在这里
               </Text>
             )}
-            {onGoToProduction && (
-              <Button size="small" type="link" style={{ padding: 0 }} onClick={onGoToProduction}>
-                去生产单处理
-              </Button>
+            {stale && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                （最近一次刷新没成功；已删掉的失败单不会重新出现）
+              </Text>
             )}
           </Space>
           <div style={gridStyle}>
@@ -825,6 +859,36 @@ const InflightStrip: React.FC<{
                       {p.error ? '成因见卡上；重投＝再占一次当天号池' : '没写成因，去生产单补一句为什么废'}
                     </Text>
                   </div>
+                  {/* 11-26 用户口径「失败的豆包投产任务还是没法删除」：红卡也给删单口。
+                      与灰卡同一后端动作（failed→cancelled），卡片消失但失败成因/审计/号池消耗保留。 */}
+                  {canCancel && (
+                    <div>
+                      <Popconfirm
+                        title="删掉这张失败单？"
+                        description={
+                          <div style={{ maxWidth: 280 }}>
+                            只把这张失败卡从墙上移除；台账会改为已作废，原失败成因、操作人和当天已消耗的号池仍保留，可查审计。
+                          </div>
+                        }
+                        okText="删掉失败单"
+                        okButtonProps={{ danger: true }}
+                        cancelText="保留失败"
+                        onConfirm={async () => {
+                          try {
+                            await assetApi.cancelProduction(p.production_id);
+                            removeCard(p.production_id);
+                            message.success('已删单：失败卡从墙上消失，台账仍可审计');
+                          } catch (e) {
+                            message.error((e as Error).message || '删单失败');
+                          }
+                        }}
+                      >
+                        <Button size="small" type="link" danger style={{ padding: 0, fontSize: 11 }}>
+                          删掉失败单
+                        </Button>
+                      </Popconfirm>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -853,6 +917,8 @@ const AssetOutputWall: React.FC<{
   ownerSwitchable?: boolean;
   /** A′ UX：页签切回来自动刷新 */
   active?: boolean;
+  /** 与后端删单权限同口径：仅 operator/admin。 */
+  canCancel?: boolean;
   /** 11-10：空态里「去看生产单」的一跳（切到 ④ 页签），由页面层传 */
   onGoToProduction?: () => void;
 }> = ({
@@ -861,6 +927,7 @@ const AssetOutputWall: React.FC<{
   ownerDefault = 'all',
   ownerSwitchable = false,
   active = true,
+  canCancel = false,
   onGoToProduction,
 }) => {
   // 11-13 用户口径：五板块内嵌动画——本面板＝挑片/交付链路
@@ -1170,6 +1237,7 @@ const AssetOutputWall: React.FC<{
         batchId={viewMode === 'asset' ? batchFilter : undefined}
         active={active}
         reloadToken={reloadToken}
+        canCancel={canCancel}
         onGoToProduction={onGoToProduction}
       />
 
