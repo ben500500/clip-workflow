@@ -114,6 +114,7 @@ with _EnvOverride(_TEST_ENV):
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     from app.api import assets as assets_api
+    from app.asset_main import create_asset_app
     from app.auth import get_password_hash
     from app.config import settings
     from app.database import Base
@@ -263,9 +264,9 @@ async def _bootstrap():
         await s.commit()
 
 
-async def _client_and_headers():
-    """一个 client + 三个角色的 Authorization 头。"""
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test", timeout=30)
+async def _client_and_headers(target_app=None):
+    """一个 client + 三个角色的 Authorization 头；可指定主 app 或独立 asset app。"""
+    client = AsyncClient(transport=ASGITransport(app=target_app or app), base_url="http://test", timeout=30)
     headers = {}
     for name, key in ((MATERIAL_USER, "material"), (OPERATOR_USER, "operator"), (ADMIN_USER, "admin")):
         r = await client.post("/api/auth/login", json={"username": name, "password": PASSWORD})
@@ -291,6 +292,87 @@ async def _row_of(model, row_id):
     """按 id 回读一行（`_rows` 返回的是已 detach 的旧快照，改完状态再拿它会读到写回前的值）。"""
     async with dbmod.async_session_factory() as s:
         return await s.get(model, uuid.UUID(str(row_id)))
+
+
+@pytest.mark.asyncio
+async def test_standalone_asset_app_has_auth_and_only_asset_business_routes():
+    """独立入口能独立登录/访问素材库，但不能借它访问主系统业务路由。"""
+    await _bootstrap()
+    standalone = create_asset_app(run_job_sweep=False)
+    client, headers = await _client_and_headers(standalone)
+
+    assert (await client.get("/api/health")).json() == {
+        "status": "ok", "service": "clip-asset-backend"
+    }
+    assert (await client.get("/api/assets/scripts", headers=headers["material"])).status_code == 200
+    assert (await client.get("/api/assets/scripts")).status_code == 401
+    me = await client.get("/api/auth/me", headers=headers["material"])
+    assert me.status_code == 200 and me.json()["username"] == MATERIAL_USER
+    assert "/api/auth/refresh" in standalone.openapi()["paths"]
+    # SQLite 夹具的 expires_at 为 naive UTC，主 auth 的 refresh 比较面向 Postgres；
+    # 本用例只钉独立入口的会话路由集合，不重复验证主登录模块的数据库适配。
+    assert (await client.get("/api/projects", headers=headers["admin"])).status_code == 404
+
+    # 独立 API 不接管主系统用户/角色/职能管理，也不能顺手暴露改密入口。
+    assert (await client.get("/api/auth/users", headers=headers["admin"])).status_code == 404
+    assert (await client.post("/api/auth/register", headers=headers["admin"], json={})).status_code == 404
+    assert (await client.put("/api/auth/profile", headers=headers["admin"], json={})).status_code == 404
+    assert (await client.post("/api/auth/logout", headers=headers["material"])).status_code == 200
+
+
+def test_external_main_app_does_not_register_asset_routes():
+    """在干净解释器里构建 external 主 app，防止全局 app 的 embedded 状态掩盖漏配。"""
+    env = os.environ.copy()
+    env.update(_TEST_ENV)
+    env["ASSET_API_MODE"] = "external"
+    probe = (
+        "import json; from app.main import app; "
+        "print(json.dumps(sorted(app.openapi()['paths'])))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=BACKEND_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    paths = json.loads(result.stdout.strip().splitlines()[-1])
+    assert any(path.startswith("/api/projects") for path in paths)
+    assert not any(path.startswith("/api/assets") for path in paths)
+
+
+@pytest.mark.asyncio
+async def test_asset_startup_sweep_has_one_owner_per_mode():
+    """embedded 由主 app 清扫；external 主 app 不碰，独立 asset-api 才清扫。"""
+    import app.asset_main as asset_main
+
+    standalone = create_asset_app(run_job_sweep=False)
+    with patch.object(assets_api, "sweep_interrupted_asset_jobs", new_callable=AsyncMock) as sweep, \
+            patch.object(asset_main, "close_db", new_callable=AsyncMock):
+        async with standalone.router.lifespan_context(standalone):
+            pass
+        sweep.assert_not_awaited()
+
+    standalone = create_asset_app(run_job_sweep=True)
+    with patch.object(assets_api, "sweep_interrupted_asset_jobs", new_callable=AsyncMock) as sweep, \
+            patch.object(asset_main, "close_db", new_callable=AsyncMock):
+        async with standalone.router.lifespan_context(standalone):
+            pass
+        sweep.assert_awaited_once()
+
+    with patch.object(settings, "ASSET_API_MODE", "external"), \
+            patch("app.main.init_db", new_callable=AsyncMock), \
+            patch("app.main._create_seed_users", new_callable=AsyncMock), \
+            patch("app.main._create_seed_platform_profiles", new_callable=AsyncMock), \
+            patch("app.main._create_seed_alert_rules", new_callable=AsyncMock), \
+            patch("app.main._sweep_wechat_dl_zombies_at_startup", new_callable=AsyncMock), \
+            patch("app.main._sweep_asset_jobs_at_startup", new_callable=AsyncMock) as main_sweep, \
+            patch("app.main.close_db", new_callable=AsyncMock):
+        async with app.router.lifespan_context(app):
+            pass
+        main_sweep.assert_not_awaited()
 
 
 async def _import(client, h, links, **extra):
@@ -3484,9 +3566,24 @@ def test_production_status_writeback_and_dispatch_counts():
             json={"ids": ids[:2], "status": "queued", "board_tid": "T-1"}, headers=ho)
         assert tid_many.status_code == 400 and "逐条" in tid_many.json()["detail"]
 
-        # 正常：第 1 条投上板
-        q = await client.post("/api/assets/productions/status",
-                              json={"ids": [ids[0]], "status": "queued", "board_tid": "T-9001"}, headers=ho)
+        # 正常：第 1 条投上板。回写口也必须锁住旧状态，不能与删单/回收竞态覆盖。
+        from sqlalchemy import event
+        from sqlalchemy.sql import Select
+        status_locks = []
+
+        def capture_status_select(state):
+            statement = state.statement
+            if isinstance(statement, Select) and AssetProduction.__tablename__ in str(statement):
+                status_locks.append(getattr(statement, "_for_update_arg", None))
+
+        session_class = dbmod.async_session_factory.class_.sync_session_class
+        event.listen(session_class, "do_orm_execute", capture_status_select)
+        try:
+            q = await client.post("/api/assets/productions/status",
+                                  json={"ids": [ids[0]], "status": "queued", "board_tid": "T-9001"}, headers=ho)
+        finally:
+            event.remove(session_class, "do_orm_execute", capture_status_select)
+        assert any(arg is not None for arg in status_locks), "状态回写读取旧状态必须加行锁"
         assert q.status_code == 200, q.text
         assert q.json()["updated"] == 1 and q.json()["results"][0]["attempts"] == 1
         first_row = await _row_of(AssetProduction, ids[0])
@@ -9329,11 +9426,12 @@ def test_output_groups_aggregate_by_asset_and_batch():
 def test_wall_delete_inflight_and_outputs():
     """批 Y（11-25 用户口径「成片墙没有删除功能，比如超时生成的豆包素材无法删掉」）。
 
-    钉六件事：①在途（queued/running）可人工删单→cancelled，成因带操作人与投出时长；
+    钉七件事：①在途（queued/running）可人工删单→cancelled，成因带操作人与投出时长；
     ②删掉的单必须从在途占位里消失——**老查询第二臂 `board_tid is not None` 会把作废单
-    继续摆回墙上**，这是本批唯一真正的回归点；③终态不可删（success/failed/order_ready→409）；
-    ④权限闸与投板同圈人（material→403）、动作进审计；⑤成片删除逐形回报（invalid/
-    not_found/files_failed），MinIO 尽力语义＝删不掉文件照删行并如实报；⑥墙列表跟掉。
+    继续摆回墙上**，这是本批唯一真正的回归点；③失败单也可删→cancelled，原失败成因保留，
+    红卡消失且当天号池消耗不变；④success/order_ready 等终态不可删（409）；
+    ⑤权限闸与投板同圈人（material→403）、动作进审计；⑥成片删除逐形回报（invalid/
+    not_found/files_failed），MinIO 尽力语义＝删不掉文件照删行并如实报；⑦墙列表跟掉。
     """
     _run(_bootstrap())
 
@@ -9356,6 +9454,9 @@ def test_wall_delete_inflight_and_outputs():
         async with dbmod.async_session_factory() as s:
             row = await s.get(AssetProduction, p.id)
             row.status, row.board_tid, row.started_at = PR_QUEUED, "T-Y1", datetime.utcnow() - timedelta(minutes=80)
+            row.board_date = svc.board_timestamp(
+                tz_offset_hours=int(settings.ASSET_BOARD_TZ_OFFSET_HOURS or 0)
+            )
             await s.commit()
         assert (await client.get("/api/assets/outputs/inflight", headers=hadm)).json()["inflight_total"] == 1
 
@@ -9379,6 +9480,94 @@ def test_wall_delete_inflight_and_outputs():
         # ④ 审计留痕
         audits = await _rows(AuditLog, AuditLog.action == "asset.production.cancel")
         assert [a.target_id for a in audits] == [str(p.id)]
+
+        # ③b 失败单也必须能从红卡删掉：failed→cancelled，原失败成因留在 error，
+        # 失败卡消失，但 started_at 已吃掉的号池不能因为「删单」被抹掉。
+        # 原错误刻意塞满 500 字：删单原因必须自己留位，不能被末尾截断吞掉。
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetProduction, p.id)
+            row.status, row.error = PR_FAILED, ("内容审核未通过：角色卡不符；" + "长" * 600)[:500]
+            row.completed_at = datetime.utcnow() - timedelta(minutes=20)
+            row.board_total = 20
+            await s.commit()
+        failed_inf = (await client.get("/api/assets/outputs/inflight", headers=hadm)).json()
+        assert failed_inf["failed_total"] == 1
+        before_disp = (await client.get(f"/api/assets/productions?asset_id={asset_id}", headers=hadm)).json()["dispatch"]
+        assert before_disp["today"]["dispatched"] == 1, before_disp
+        assert before_disp["today"]["board_rows"] == 20, before_disp
+        # SQLite 会静默忽略 FOR UPDATE，所以不能只靠「删单成功」证明并发闸门存在。
+        # 从 ORM 执行事件检查真实 Select 的锁参数；以后有人去掉行锁，这条用例必须红。
+        from sqlalchemy import event
+        from sqlalchemy.sql import Select
+        locked_selects = []
+        statements_seen = []
+
+        def capture_production_select(state):
+            statement = state.statement
+            statements_seen.append(type(statement).__name__)
+            if isinstance(statement, Select) and AssetProduction.__tablename__ in str(statement):
+                locked_selects.append(getattr(statement, "_for_update_arg", None))
+
+        session_class = dbmod.async_session_factory.class_.sync_session_class
+        event.listen(session_class, "do_orm_execute", capture_production_select)
+        try:
+            fc = await client.post(f"/api/assets/productions/{p.id}/cancel", headers=hadm)
+        finally:
+            event.remove(session_class, "do_orm_execute", capture_production_select)
+        assert fc.status_code == 200, fc.text
+        assert any(arg is not None for arg in locked_selects), \
+            f"删单读取生产单必须加行锁，不能与回收改判 success 竞态覆盖：{statements_seen}"
+        fcb = fc.json()
+        assert fcb["status"] == PR_CANCELLED and fcb["error"].startswith("内容审核未通过：角色卡不符")
+        assert "人工删单" in fcb["error"] and ADMIN_USER in fcb["error"], fcb
+        assert len(fcb["error"]) <= 500, "超长原错误不能把删单操作人截掉"
+        failed_after = (await client.get("/api/assets/outputs/inflight", headers=hadm)).json()
+        assert failed_after["failed_total"] == 0 and str(p.id) not in {i["production_id"] for i in failed_after["items"]}
+        after_disp = (await client.get(f"/api/assets/productions?asset_id={asset_id}", headers=hadm)).json()["dispatch"]
+        assert after_disp["today"]["dispatched"] == before_disp["today"]["dispatched"], \
+            f"人工删失败单不能把已消耗号池抹掉：{before_disp} -> {after_disp}"
+        assert after_disp["today"]["tasks"] == before_disp["today"]["tasks"], after_disp
+        assert after_disp["today"]["board_rows"] == before_disp["today"]["board_rows"], \
+            "删单不能把已吃的 20 条板面额度改成 0"
+        assert after_disp["voided_after_dispatch"] == 1, after_disp
+        audits = await _rows(AuditLog, AuditLog.action == "asset.production.cancel")
+        assert len(audits) == 2 and any(
+            ((a.before or {}).get("error") or "").startswith("内容审核未通过：角色卡不符")
+            and len((a.before or {}).get("error") or "") == 500
+            for a in audits
+        ), "审计 before 要保留 500 字原错误全文"
+
+        exported = await client.get(
+            "/api/assets/productions/export", params={"ids": str(p.id), "format": "txt"}, headers=hadm)
+        assert exported.status_code == 200, exported.text
+        export_body = exported.json()
+        assert export_body["items"][0]["status"] == PR_CANCELLED
+        assert export_body["items"][0]["exportable"] is False
+        assert export_body["items"][0]["prompt_text"] is None
+        assert not export_body.get("export_text"), "作废单不得从 txt 口继续交付"
+        fb = _FakeBoard()
+        with _board_off(fb):
+            blocked_dispatch = await _dispatch(client, hadm, [p.id], recover_only=True)
+        assert blocked_dispatch.status_code == 400, blocked_dispatch.text
+        assert "没有可回收的单" in blocked_dispatch.json()["detail"]
+        assert fb.creates == [] and fb.reads == [], "作废单既不新建板任务，也不进回收轮询"
+
+        # 作废后人工回写也不能把卡片复活；正常顺序下应被 cancelled 闸门挡住。
+        revive = await client.post(
+            "/api/assets/productions/status",
+            json={"ids": [str(p.id)], "status": "success"}, headers=hadm,
+        )
+        assert revive.status_code == 200 and revive.json()["updated"] == 0
+        assert "取消" in revive.json()["blocked"][0]["reason"]
+        assert (await _row_of(AssetProduction, p.id)).status == PR_CANCELLED
+
+        # ④ 已出成片的终态仍不可从这里删，必须走产物删除口。
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(AssetProduction, p.id)
+            row.status = PR_SUCCESS
+            await s.commit()
+        success_block = await client.post(f"/api/assets/productions/{p.id}/cancel", headers=hadm)
+        assert success_block.status_code == 409 and "成片走产物删除口" in success_block.text
 
         # ⑤ 成片删除：三行，第 2 行模拟 MinIO 抖动（删不掉文件也照删行，如实回报）
         oids = []
@@ -11843,6 +12032,116 @@ async def _q_video_asset(client, hm, name):
                                  files=[("files", (name, VIDEO_BYTES, "video/mp4"))], headers=hm)
     assert resp.status_code == 201, resp.text
     return resp.json()["items"][0]
+
+
+def test_dispatch_poll_discards_downloaded_output_when_cancelled_before_writeback():
+    """删单抢在轮询写库前：已下载但未落库的成片必须随 cancelled 一起作废。
+
+    精确时序：板面已 succ → _fetch_board_output 已下载并落桶 → 用户删单提交
+    cancelled → 轮询写回前 FOR UPDATE 看到取消态。修法前 _reown 只让状态，仍会把
+    内存里的 outputs 插进 asset_outputs，刷新成片墙就把已删任务复活了。
+    """
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, hadm = h["material"], h["admin"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, hook_codes=["7C0E1"])
+        pid = listed[0]["id"]
+        material = await _q_video_asset(client, hm, "删单并发拼接段.mp4")
+        original_fetch = assets_api._fetch_board_output
+        cancel_status = []
+
+        async def _fetch_then_cancel(*args, **kwargs):
+            rec = await original_fetch(*args, **kwargs)
+            resp = await client.post(f"/api/assets/productions/{pid}/cancel", headers=hadm)
+            cancel_status.append(resp.status_code)
+            return rec
+
+        calls: List[dict] = []
+        fb = _FakeBoard()
+        with _board_off(fb), _q_concat_off(calls), \
+             patch("app.api.assets._fetch_board_output", side_effect=_fetch_then_cancel):
+            resp = await _dispatch(client, h["operator"], [pid], concat_asset_id=material["id"])
+        assert cancel_status == [200], cancel_status
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        row = await _row_of(AssetProduction, pid)
+        assert row.status == PR_CANCELLED, row.status
+        assert "人工删单" in (row.error or "") and ADMIN_USER in (row.error or ""), row.error
+        assert await _rows(AssetOutput) == [], "cancelled 单的晚到产物不许落库"
+        assert calls == [], "产物没落库，自动拼接也不许被触发"
+        result = body["results"][pid]
+        assert result["status"] == PR_CANCELLED
+        assert "随作废丢弃" in (result.get("note") or ""), result
+        assert "新增产物" not in body["message"], body["message"]
+        wall = await client.get("/api/assets/outputs", params={"production_id": pid}, headers=hadm)
+        assert wall.status_code == 200 and wall.json()["items"] == [], wall.text
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_auto_concat_discards_render_when_production_is_cancelled_mid_render():
+    """轮询已 commit 后用户仍可删 queued/running 单：拼接渲染中途删单也不能落 composed。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        hm, hadm = h["material"], h["admin"]
+        asset_id, _sid, listed = await _order_ready_production(client, h, hook_codes=["7C0E2"])
+        pid = listed[0]["id"]
+        material = await _q_video_asset(client, hm, "渲染中删单拼接段.mp4")
+        out_id = uuid.uuid4()
+        async with dbmod.async_session_factory() as s:
+            prod = await s.get(AssetProduction, uuid.UUID(pid))
+            prod.concat_asset_id = uuid.UUID(material["id"])
+            prod.concat_order = "hook_first"
+            prod.status = PR_QUEUED
+            prod.started_at = datetime.utcnow()
+            s.add(AssetOutput(
+                id=out_id, production_id=prod.id, asset_id=prod.asset_id,
+                kind="doubao_raw", file_key=f"asset/board/{out_id}.mp4",
+                bucket=settings.MINIO_BUCKET_RAW, file_name="已回收钩子.mp4",
+                duration=10.08, resolution="720x1280",
+            ))
+            await s.commit()
+        outcome = {
+            "outputs": [{
+                "production_id": pid, "_inserted": True, "_output_id": str(out_id),
+                "file_key": f"asset/board/{out_id}.mp4", "bucket": settings.MINIO_BUCKET_RAW,
+                "file_name": "已回收钩子.mp4",
+            }],
+            "prods": {pid: prod},
+        }
+        original_render = assets_api._concat_render
+        cancel_status = []
+
+        async def _render_then_cancel(*args, **kwargs):
+            rendered = await original_render(*args, **kwargs)
+            resp = await client.post(f"/api/assets/productions/{pid}/cancel", headers=hadm)
+            cancel_status.append(resp.status_code)
+            return rendered
+
+        operator = (await _rows(User, User.username == ADMIN_USER))[0]
+        async with dbmod.async_session_factory() as s:
+            live_prod = await s.get(AssetProduction, uuid.UUID(pid))
+            outcome["prods"] = {pid: live_prod}
+            with _q_concat_off([]), patch("app.api.assets._concat_render", side_effect=_render_then_cancel):
+                note = await assets_api._auto_concat_recovered(s, outcome, operator=operator)
+
+        assert cancel_status == [200], cancel_status
+        assert note["composed"] == 0 and note["attempted"] == 1, note
+        assert note["results"][0]["result"] == "cancelled", note
+        row = await _row_of(AssetProduction, pid)
+        assert row.status == PR_CANCELLED and row.concat_last_result is None, row.concat_last_result
+        outs = await _rows(AssetOutput)
+        assert len(outs) == 1 and outs[0].kind == "doubao_raw", "真实已回收成片保留，不新增拼接产物"
+        assert await _rows(AuditLog, AuditLog.action == "asset.concat.auto") == []
+        await client.aclose()
+
+    _run(_scenario())
 
 
 def test_dispatch_auto_concat_composes_each_hook_and_lights_the_asset_ready():

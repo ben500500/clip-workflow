@@ -4648,7 +4648,7 @@ async def _supersede_productions(
             select(AssetProduction).where(
                 AssetProduction.summary_id == summary.id,
                 AssetProduction.status.in_([PR_ORDER_READY, PR_SKIPPED, PR_FAILED]),
-            )
+            ).with_for_update()
         )
     ).scalars().all()
     for p in rows:
@@ -4907,6 +4907,23 @@ async def _assert_no_running_twin(
             )
 
 
+async def _lock_asset_job_scope(
+    db: AsyncSession, *, kind: str, params: Dict[str, Any], batch_id: Optional[str]
+) -> None:
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    scopes = (
+        [f"batch:{batch_id}"]
+        if batch_id
+        else [f"id:{scope_id}" for scope_id in _job_scope_ids(kind, params)]
+    )
+    for scope in sorted(scopes):
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+            {"scope": f"clip-asset-job:{kind}:{scope}"},
+        )
+
+
 async def _start_asset_job(
     db: AsyncSession,
     *,
@@ -4925,6 +4942,7 @@ async def _start_asset_job(
     让「发起人≠批次主人」这件事在台账动作里也查得到。
     """
     params = data.model_dump(mode="json")
+    await _lock_asset_job_scope(db, kind=kind, params=params, batch_id=batch_id)
     await _assert_no_running_twin(db, kind=kind, params=params, batch_id=batch_id)
     job = AssetJob(
         kind=kind,
@@ -4989,9 +5007,13 @@ async def _run_asset_job(job_id: str, kind: str, params: Dict[str, Any], operato
     # 挂着未提交事务（异常路径尤其如此），两个会话抢同一条连接在 sqlite 测试里就是死锁。
     outcome: Optional[Tuple[str, Optional[dict], Optional[str]]] = None
     async with _database.async_session_factory() as db:
-        job = await db.get(AssetJob, uid)
-        if job is None or job.status not in JOB_OPEN_STATES:
-            # 进程重启的清扫已经把它判成 interrupted，别再假装还在跑
+        job = (
+            await db.execute(
+                select(AssetJob).where(AssetJob.id == uid).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if job is None or job.status != JB_QUEUED:
+            # 只有 queued 可认领；running 说明已有执行器，不能被第二次调度重入
             return
         operator = await db.get(User, uuid.UUID(operator_id))
         if operator is None:
@@ -9354,11 +9376,14 @@ _DISPATCH_TRANSITIONS: Dict[str, Tuple[str, ...]] = {
 }
 # 「还没投出去」的态：用来判 attempts 该不该 +1（补报也算投过一次的证据）
 _NOT_DISPATCHED = (PR_ORDER_READY,)
-# 「投过、但后来被系统作废」的单（R-5：撤审把 failed 单一并 supersede）。
+# 「投过、但后来被作废/人工删掉」的单（R-5 撤审 supersede；成片墙删单 cancelled）。
 # 这类单**当日确实占了号池**，计数时必须还当已投——否则「今天投了多少条」会因为
-# 事后一次撤审而变小，一线据此再排今天的量就会超。判据用 started_at（没真投过的
-# 作废单这个字段是 NULL，撤审只改 status 不改 started_at，两者不会互相污染）。
-_VOIDED_BUT_SENT = and_(AssetProduction.status == PR_SUPERSEDED, AssetProduction.started_at.is_not(None))
+# 事后一次撤审或删卡而变小，一线据此再排今天的量就会超。判据用 started_at（没真投过的
+# 作废单这个字段是 NULL，撤审/删单只改 status 不改 started_at，两者不会互相污染）。
+_VOIDED_BUT_SENT = and_(
+    AssetProduction.status.in_([PR_SUPERSEDED, PR_CANCELLED]),
+    AssetProduction.started_at.is_not(None),
+)
 
 
 async def _converge_produce_stage(db: AsyncSession, asset_ids: set) -> Dict[str, str]:
@@ -9432,7 +9457,7 @@ async def _dispatch_counts_dual(db: AsyncSession, *conds, owner_uid: Any = None)
     async def _voided(filter_owner: bool) -> int:
         stmt = select(func.count()).select_from(AssetProduction).where(
             and_(
-                AssetProduction.status == PR_SUPERSEDED,
+                AssetProduction.status.in_([PR_SUPERSEDED, PR_CANCELLED]),
                 AssetProduction.started_at.is_not(None),
                 *base_conds,
             )
@@ -9457,7 +9482,7 @@ async def _dispatch_counts_dual(db: AsyncSession, *conds, owner_uid: Any = None)
             "success_rate": round(succeeded / terminal, 3) if terminal else None,
             "scope_note": (
                 "by_status 含未投的 order_ready；success_rate 只按已终态（成功+失败）算，"
-                "在投/出片中不进分母；投上板后又被撤审作废的单仍计入 dispatched（号池那天真被吃了）"
+                "在投/出片中不进分母；投上板后又被撤审或人工删掉的单仍计入 dispatched（号池那天真被吃了）"
             ),
         }
 
@@ -9475,6 +9500,8 @@ async def _dispatch_counts_dual(db: AsyncSession, *conds, owner_uid: Any = None)
                 and_(
                     AssetProduction.board_date >= day_start,
                     AssetProduction.board_date < day_start + timedelta(days=1),
+                    # 与单口径一致：作废单只有真投过（started_at 非空）才继续吃号池。
+                    or_(AssetProduction.status.in_(list(_DISPATCH_STATES)), _VOIDED_BUT_SENT),
                 )
             ).group_by(AssetProduction.status)
         )
@@ -9491,7 +9518,8 @@ async def _dispatch_counts_dual(db: AsyncSession, *conds, owner_uid: Any = None)
         "succeeded": today_status.get(PR_SUCCESS, 0),
         "failed": today_status.get(PR_FAILED, 0),
         "dispatched": sum(today_status.get(s, 0) for s in _DISPATCH_STATES)
-        + today_status.get(PR_SUPERSEDED, 0),
+        + today_status.get(PR_SUPERSEDED, 0)
+        + today_status.get(PR_CANCELLED, 0),
         "soft_cap": cap,
         "over_cap": max(0, today_board_rows - cap) if cap > 0 else 0,
         "note": (
@@ -9529,7 +9557,10 @@ async def _dispatch_counts(
         stmt = stmt.where(and_(*conds))
     by_status = {str(s): int(n) for s, n in (await db.execute(stmt)).all()}
 
-    void_conds = [AssetProduction.status == PR_SUPERSEDED, AssetProduction.started_at.is_not(None)]
+    void_conds = [
+        AssetProduction.status.in_([PR_SUPERSEDED, PR_CANCELLED]),
+        AssetProduction.started_at.is_not(None),
+    ]
     if conds:
         void_conds.extend(conds)
     voided_after_dispatch = int(
@@ -9576,7 +9607,7 @@ async def _dispatch_counts(
         "success_rate": round(succeeded / terminal, 3) if terminal else None,
         "scope_note": (
             "by_status 含未投的 order_ready；success_rate 只按已终态（成功+失败）算，"
-            "在投/出片中不进分母；投上板后又被撤审作废的单仍计入 dispatched（号池那天真被吃了）"
+            "在投/出片中不进分母；投上板后又被撤审或人工删掉的单仍计入 dispatched（号池那天真被吃了）"
         ),
         "today": {
             "day": day_start.strftime("%Y-%m-%d"),
@@ -9586,7 +9617,8 @@ async def _dispatch_counts(
             "succeeded": today_status.get(PR_SUCCESS, 0),
             "failed": today_status.get(PR_FAILED, 0),
             "dispatched": sum(today_status.get(s, 0) for s in _DISPATCH_STATES)
-            + today_status.get(PR_SUPERSEDED, 0),
+            + today_status.get(PR_SUPERSEDED, 0)
+            + today_status.get(PR_CANCELLED, 0),
             "soft_cap": cap,
             # 软提示线是**条/日**（号池实测 120 条），所以比的是 Σ board_total 不是行数：
             # 6 张 ×20 条的板面吃掉 120 条＝已到线，按 tasks 算只会得出 6，永远提示不到人。
@@ -9650,8 +9682,17 @@ async def update_production_status(
         )
 
     ids = [_as_uuid(i, "生产单 id") for i in data.ids]
+    # 与成片墙删单、板面回收争同一行：锁必须覆盖「读旧状态→迁移校验→提交」。
+    # 单边给删单加锁不够——若本口先读到 failed、删单先提交 cancelled，随后本口仍会把
+    # success 写回去，已删掉的卡就会复活。两边都锁后，谁先提交谁就决定后到者看到的真值。
     rows = list(
-        (await db.execute(select(AssetProduction).where(AssetProduction.id.in_(ids)))).scalars().all()
+        (
+            await db.execute(
+                select(AssetProduction)
+                .where(AssetProduction.id.in_(ids))
+                .with_for_update()
+            )
+        ).scalars().all()
     )
     # R-5（11-04 批 B）双保险：撤审当场已经把失败单作废（见 `_supersede_productions`），
     # 但还有一条补不上时间差的路——**撤审那一刻这张单正在板上（queued/running）**，
@@ -11027,6 +11068,40 @@ async def _execute_dispatch(
                          "这张单先不钉 tid，请立刻到板面核对，直接重投会烧两遍额度",
             })
             continue
+        # 建板期间允许撤审/删单先提交。网络回来后必须持行锁重读，不能拿旧对象覆盖新状态。
+        await db.commit()
+        locked = (
+            await db.execute(
+                select(AssetProduction)
+                .where(AssetProduction.id == p.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if locked is None or locked.status != PR_ORDER_READY:
+            if locked is None:
+                reason = "生产单已不存在，但板面任务已创建"
+            else:
+                reason = f"建板期间生产单已变为 {locked.status}，不再恢复为出片中"
+            if locked is not None:
+                _adopt_tids(locked, after, new_tids, activate=False)
+            await _write_audit(
+                db,
+                action="asset.production.dispatch_voided",
+                operator=operator,
+                target_type="asset_production",
+                target_id=p.id,
+                before={"status": PR_ORDER_READY},
+                after={
+                    "status": locked.status if locked is not None else None,
+                    "board_tid": locked.board_tid if locked is not None else None,
+                    "reason": reason,
+                },
+            )
+            blocked.append({"id": str(p.id), "hook_code": p.hook_code, "reason": reason, "tids": new_tids})
+            await db.commit()
+            continue
+        p = locked
         _adopt_tids(p, after, new_tids)
         tracked[str(p.id)] = {
             "prod": p, "tids": new_tids, "tag": tag, "payload": payload,
@@ -11262,6 +11337,25 @@ async def _auto_concat_recovered(
     if not wanted:
         return {"attempted": 0, "composed": 0, "failed": 0, "already": 0, "results": [], "note": ""}
 
+    # 删单与回收之间只隔着一个自动拼接：产物可能已在轮询末尾 commit、用户随后把
+    # queued/running/failed 单软删成 cancelled。不能继续拿这张已作废单的原片去拼——
+    # 拼接产物不挂 production_id，事后既不会随删单消失，也无从判断它本该被作废。
+    wanted_ids = {uuid.UUID(str(r["production_id"])) for r in wanted}
+    live_status = {
+        str(pid): status
+        for pid, status in (
+            await db.execute(
+                select(AssetProduction.id, AssetProduction.status).where(AssetProduction.id.in_(wanted_ids))
+            )
+        ).all()
+    }
+    wanted = [
+        r for r in wanted
+        if live_status.get(str(r["production_id"])) not in (None, PR_SUPERSEDED, PR_CANCELLED, PR_SKIPPED)
+    ]
+    if not wanted:
+        return {"attempted": 0, "composed": 0, "failed": 0, "already": 0, "results": [], "note": ""}
+
     # 一次性把要用的素材行读齐：拼接素材（可能是同一条被多张单共用）＋各单产物要挂的那条来源素材
     concat_ids = {str(prods[str(r["production_id"])].concat_asset_id) for r in wanted}
     hook_ids = {str(prods[str(r["production_id"])].asset_id) for r in wanted}
@@ -11292,6 +11386,7 @@ async def _auto_concat_recovered(
     results: List[Dict[str, Any]] = []
     per_prod: Dict[str, Dict[str, Any]] = {}
     composed_output_ids: List[str] = []
+    cancelled_during_render: set[str] = set()
     n_ok = n_failed = n_already = 0
     for rec in wanted:
         prod = prods[str(rec["production_id"])]
@@ -11386,6 +11481,37 @@ async def _auto_concat_recovered(
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
+        # 渲染可能跑几十秒：用户若在这段窗口里删单，cancelled 必须先于拼接落库。
+        # 行锁把「删单提交 / 拼接写入」串行化；读到作废态就释放锁并丢弃这次渲染结果。
+        live_before_write = (
+            await db.execute(
+                select(AssetProduction.status)
+                .where(AssetProduction.id == prod.id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if live_before_write is None or live_before_write in (PR_SUPERSEDED, PR_CANCELLED, PR_SKIPPED):
+            await db.commit()
+            cancelled_during_render.add(str(prod.id))
+            item.update({"result": "cancelled", "reason": "生产单已删单，本次自动拼接已作废"})
+            results.append(item)
+            continue
+
+        # 预查之后可能已有另一个回收协程拼完并提交；持生产单行锁后再查一次幂等键。
+        existing_output_id = await db.scalar(
+            select(AssetOutput.id)
+            .where(AssetOutput.composed_from_output_id == uuid.UUID(out_id))
+            .limit(1)
+        )
+        if existing_output_id is not None:
+            await db.commit()
+            already.add(out_id)
+            n_already += 1
+            acc["already"] += 1
+            item.update({"result": "already", "reason": "另一轮回收已自动拼过（幂等键命中），没重拼"})
+            results.append(item)
+            continue
+
         # 短事务：写产物行 + 来源素材的拼接阶段 + 审计，写完立刻 commit（规矩 4）
         out_row = AssetOutput(
             production_id=None,
@@ -11439,6 +11565,7 @@ async def _auto_concat_recovered(
         )
         await db.commit()
         await db.refresh(out_row)
+        already.add(out_id)
         composed_output_ids.append(str(out_row.id))
         n_ok += 1
         acc["ok"] += 1
@@ -11451,6 +11578,8 @@ async def _auto_concat_recovered(
 
     # 每单一份「拼没拼」结果写回行上（界面列 + 台账话术都读它，不参与任何判定）
     for pid, acc in per_prod.items():
+        if pid in cancelled_during_render:
+            continue
         prod = prods.get(pid)
         if prod is None:
             continue
@@ -11496,7 +11625,13 @@ async def _auto_concat_recovered(
     }
 
 
-def _adopt_tids(p: AssetProduction, board_rows: Dict[str, Dict[str, Any]], new_tids: List[str]) -> None:
+def _adopt_tids(
+    p: AssetProduction,
+    board_rows: Dict[str, Dict[str, Any]],
+    new_tids: List[str],
+    *,
+    activate: bool = True,
+) -> None:
     """把刚建上的板任务认领给这张生产单：钉 tid/rgid、落 queued、attempts+1。
 
     `board_tid` 是**逐条**主键，一行只有一个位置：一条 create 出 `total` 个任务时，
@@ -11508,15 +11643,16 @@ def _adopt_tids(p: AssetProduction, board_rows: Dict[str, Dict[str, Any]], new_t
     p.board_tid = str(new_tids[0])[:60]
     if first.get("rgid"):
         p.board_rgid = str(first["rgid"])[:60]
-    p.status = PR_QUEUED
     p.attempts = int(p.attempts or 0) + 1
     if p.started_at is None:
         p.started_at = datetime.utcnow()
-    p.completed_at = None
-    p.error = None
+    if activate:
+        p.status = PR_QUEUED
+        p.completed_at = None
+        p.error = None
     # 批 L：认领瞬间先钉一个初始板侧状态——从这一刻到轮询第一轮回读之间
     # （最长一个轮询间隔），界面上有「已投板」可看，而不是干等列全空。
-    p.board_last_status = "已投板"
+    p.board_last_status = "已投板" if activate else "已投板（生产单已作废）"
     p.board_last_check_at = datetime.utcnow()
 
 
@@ -11587,6 +11723,8 @@ async def _poll_and_collect(
     outputs: List[dict] = []
     # 批 M（评审一·P1-1）：prod 引用一开始就钉死。人工让位的行会从 tracked 摘除，
     # 但已回读到手的产物仍要按它落库（引用还在 prod_refs 里，不会 KeyError）。
+    # 唯一例外是 cancelled／行已不存在：删单是整张单作废，本轮尚未落库的晚到产物
+    # 必须一起丢弃，不能 commit 后又把这张卡"复活"到成片墙。
     prod_refs: Dict[str, AssetProduction] = {pid: t["prod"] for pid, t in tracked.items()}
 
     async def _take_outputs(pid: str, t: Dict[str, Any], rows: List[Dict[str, Any]], s: Dict[str, Any]) -> None:
@@ -11617,7 +11755,7 @@ async def _poll_and_collect(
     # 规矩：库里 status ≠ 本轮快照（或行没了）＝所有权已交还人工——这一行**整行让位**：
     # 恢复轮前快照（撤销本轮全部改动）、状态/心跳一律不写、从 tracked 摘除不再跟踪，
     # summary 里留 note 点名。已下载到手的产物照插：那是板侧已发生的事实（本单 tid
-    # 出的片子），与状态互不覆盖。
+    # 出的片子），与状态互不覆盖；但 cancelled／行已不存在属于整单作废，未落库产物丢弃。
     # 每轮查两次：开工时一次（防按旧快照重启烧号池），写回前一次 SELECT ... FOR UPDATE
     # （行锁把「轮询 commit vs 人工回写 UPDATE」串行化，写回窗口从整轮几分钟缩到毫秒级）。
     # 两次都裹在 no_autoflush 里：本轮的改动此刻还只在内存里，绝不能被 autoflush 先冲下去，
@@ -11635,15 +11773,30 @@ async def _poll_and_collect(
             for k, v in pre_round_attrs[pid].items():
                 setattr(t["prod"], k, v)
         s = summary[pid]
+        discarded_note = ""
+        if db_status is None or db_status == PR_CANCELLED:
+            discarded = {
+                rec["file_key"]
+                for rec in outputs
+                if rec.get("production_id") == pid and not rec.get("_inserted")
+            }
+            if discarded:
+                outputs[:] = [
+                    rec for rec in outputs
+                    if not (rec.get("production_id") == pid and not rec.get("_inserted"))
+                ]
+                s["outputs"] = [key for key in s.get("outputs", []) if key not in discarded]
+                discarded_note = "；本轮已下载但尚未落库的产物随作废丢弃"
         if db_status:
             s["status"] = db_status
             s["note"] = (
                 f"{when}人工已把状态改成 {db_status}（轮询按快照记的还是 {pre_round_status[pid]}）："
                 "这行交还人工——轮询不再跟踪、本轮状态与板侧心跳都没有写回"
-                + ("；已回读到的产物照常落库" if when == "写回前" else "")
+                + ("；已回读到的产物照常落库" if when == "写回前" and db_status != PR_CANCELLED else "")
+                + discarded_note
             )
         else:
-            s["note"] = f"{when}这张生产单已不存在（人工删除？）：整行让位，轮询不再跟踪、不写回"
+            s["note"] = f"{when}这张生产单已不存在（人工删除？）：整行让位，轮询不再跟踪、不写回" + discarded_note
 
     while True:
         pending = {pid: t for pid, t in tracked.items() if summary[pid]["status"] not in (PR_SUCCESS, PR_FAILED)}
@@ -11894,11 +12047,13 @@ async def _poll_and_collect(
 
     return {
         "summary": summary,
-        "outputs": outputs,
+        # 只交已真正落库的产物：cancelled 单本轮晚到的下载件已在 _reown 丢弃，
+        # 不能带到自动拼接，也不能在结果话术里冒充"新增产物"。
+        "outputs": [rec for rec in outputs if rec.get("_inserted")],
         "gap": gap,
         # 批 Q：把 prod 引用一并交出去。人工让位的行会从 tracked 摘除（`_reown`），
-        # 但它这次到手的产物仍要按它落库、也仍要拼——自动拼接若只认 tracked，
-        # 「刚被人工改过状态的单」就会静默少拼一条。
+        # 但它这次已落库的产物仍可拼；cancelled 由 _auto_concat_recovered 再按库里
+        # 真实状态排除，覆盖"轮询已 commit、删单随后才提交"的窗口。
         "prods": prod_refs,
         "rounds": rounds,
         "read_fail_rounds": read_fail_rounds,
@@ -12602,46 +12757,62 @@ async def cancel_inflight_production(
     db: AsyncSession = Depends(get_db),
     _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
 ):
-    """在途单人工删单（批 Y，11-25 用户口径：「成片墙没有删除功能，超时生成的豆包素材
-    无法删掉」）。
+    """在途/失败单人工删单（批 Y，11-25；11-26 补失败单）。
 
-    只管 `queued/running`（已投板未回片）——这正是墙上超时也不动的灰卡。`success` 的
-    账是既成事实，要清的是片子，走产物删除口；`failed` 留失败条由板面/人工判读，
-    覆盖成 cancelled 会把「败了几张」的口径改脏；作废三态本身就不该再出现在墙上。
+    `queued/running` 是墙上超时也不动的灰卡；`failed` 是红卡。两者都允许操作人从
+    成片墙删掉：状态改 `cancelled`，卡片随即消失，但原失败成因、操作人和投板时长
+    仍留在台账/审计，已消耗的号池也照常计数。`success` 的账是既成事实，要清的是
+    片子，走产物删除口；`order_ready` 尚未投板，也不能走这个删单口。
 
-    下游不用新加任何守卫（11-05 起 `cancelled` 的读口全部就位，只差这个写口）：
-    回收只认点名后的状态迁移表，作废态在 `_block` 里被拒（10380）→ 删掉的单就算
+    下游不用新加任何守卫（11-05 起 `cancelled` 的读口全部就位）：
+    回收只认点名后的状态迁移表，作废态在 `_block` 里被拒 → 删掉的单就算
     豆包后来真回片，回收那一步也只是把片子报丢，不会复活；导出/交付集同样禁作废态。
     """
+    # 与人工回写/回收争同一行：行锁必须覆盖「读状态→校验→提交」整段。
+    # 否则删单读到 failed 后暂停，另一请求先把它改成 success 并提交，删单再覆盖成
+    # cancelled 就会把已成片的事实抹掉。Postgres/MySQL 的 FOR UPDATE 会等对方提交后
+    # 重新读到最新状态，这时 success 会被下面的 409 闸门挡住。
     p = (
         await db.execute(
-            select(AssetProduction).where(AssetProduction.id == _as_uuid(production_id, "production_id"))
+            select(AssetProduction)
+            .where(AssetProduction.id == _as_uuid(production_id, "production_id"))
+            .with_for_update()
         )
     ).scalar_one_or_none()
     if p is None:
         raise HTTPException(status_code=404, detail="这条生产单不存在")
-    if p.status not in (PR_QUEUED, PR_RUNNING):
+    if p.status not in (PR_QUEUED, PR_RUNNING, PR_FAILED):
         raise HTTPException(
             status_code=409,
-            detail=f"只有已投板未回片的单能从这里删（当前状态 {p.status}）；"
-                   "成片走产物删除口，失败单留在失败条里判读",
+            detail=f"只有已投板未回片或已失败的单能从这里删（当前状态 {p.status}）；"
+                   "成片走产物删除口，未投板单请先撤单或重开",
         )
     was = p.status
+    previous_error = p.error
     mins = None
     if p.started_at:
         mins = int((datetime.utcnow() - p.started_at).total_seconds() // 60)
+    if was == PR_FAILED:
+        reason = "成片墙人工删单（板面已判失败）"
+    else:
+        reason = f"成片墙人工删单（投出{'约 ' + str(mins) + ' 分钟' if mins is not None else ''}未回片）"
+    reason += f"：操作人 {current_user.username}"
+    # 失败单删卡不能把原始失败成因抹掉：审计 before 保留原文，error 也拼在后面，
+    # 生产单详情里仍看得到「为什么失败＋谁把它从墙上删掉」。error 列只有 500 字，
+    # 必须给删单原因留位——否则原错误已经写满时，追加的操作人会被末尾截断吞掉。
     p.status = PR_CANCELLED
-    p.error = (
-        f"成片墙人工删单（投出{'约 ' + str(mins) + ' 分钟' if mins is not None else ''}未回片）"
-        f"：操作人 {current_user.username}"
-    )[:500]
+    if previous_error:
+        keep = max(0, 500 - len(reason) - 1)
+        p.error = f"{previous_error[:keep]}；{reason}" if keep else reason[:500]
+    else:
+        p.error = reason[:500]
     await _write_audit(
         db,
         action="asset.production.cancel",
         operator=current_user,
         target_type="asset_production",
         target_id=p.id,
-        before={"status": was, "error": None},
+        before={"status": was, "error": previous_error},
         after={"status": PR_CANCELLED, "error": p.error},
     )
     await db.commit()
