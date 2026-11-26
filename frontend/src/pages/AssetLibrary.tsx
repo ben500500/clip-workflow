@@ -388,7 +388,8 @@ const AssetLibrary: React.FC = () => {
       if (!fnProduce) return <Tag color="orange">运营（投产职能已关）：不能开单投板——要投产找管理员在用户管理里开通</Tag>;
       return <Tag color="orange">运营：可导入、可反推文案、可审核过审、可出生产单与登记投板结果</Tag>;
     }
-    return <Tag color="blue">素材专员：可导入/读视频/出文案，不能审自己写的文案、不能出生产单（审核台与生产单只读）</Tag>;
+    if (!fnProduce) return <Tag color="orange">素材专员（投产职能已关）：不能投豆包——要投产找管理员在用户管理里开通</Tag>;
+    return <Tag color="blue">素材专员：可导入/读视频/出文案/投豆包，不能审核文案</Tag>;
   }, [fnProduce, fnReview, isAdmin, role]);
 
   // 用户口径 2026-11-09：页签按**业务流程顺序**排列并加编号——
@@ -610,7 +611,7 @@ const AssetLibrary: React.FC = () => {
         <SimpleLibrary
           scopeMine={scopeMine}
           canImport={canProduce}
-          canProduce={canReview && fnProduce}
+          canProduce={canProduce}
           canReview={canReview}
           isAdmin={isAdmin}
           userId={user?.id ?? null}

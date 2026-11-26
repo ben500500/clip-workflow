@@ -14,7 +14,7 @@
  *   ③ **组合出片那屏从界面撤下**（后端 compose/matrix 不动，界面不摆行列矩阵）；
  *   ④ 旧五环（完整模式）没被带坏；
  *   ⑤ 偏好接口 pending 时不空白（52e61ee 的兜底）；
- *   ⑥ material 角色（无审核职能）看到的按钮文案说真话；
+ *   ⑥ material 角色（无审核职能）仍可投豆包，按钮与角色说明都说真话；
  *   ⑦ 批 T（11-24）素材隔离：顶栏「仅看自己」开关默认关＝看全部、开了跟着账号存，
  *      脚本库的 ⭐ 收藏能把**同事的**稿子拉进「我的」（只改可见范围，不改归属）。
  *      用户原话：「默认是要能看到全部的，但是可以加入一个开关或者复选框，仅看自己。
@@ -766,6 +766,11 @@ async function main() {
     assert('C4 material 主按钮文案含「投豆包」',
       !!(mBtns && mBtns.dispatch && mBtns.dispatch.some(b => b.t.includes('投豆包'))),
       JSON.stringify(mBtns && mBtns.dispatch));
+    const matText = await js('document.body.innerText');
+    assert('C5 material 投产职能已开时不出现「没有投产职能」提示',
+      !String(matText).includes('你的账号没有投产职能'), String(matText).slice(0, 240));
+    assert('C6 material 角色说明不再误报「不能出生产单」',
+      !String(matText).includes('不能出生产单'), String(matText).slice(0, 240));
     await shot('c-material-role');
   } else {
     assert('C0 material token 缺（跳过 C 段）', true);
