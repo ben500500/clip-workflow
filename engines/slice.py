@@ -1072,6 +1072,57 @@ def build_concat_filtergraph(specs, tw, th):
     return filter_complex, len(silent_idx), notes
 
 
+def _detect_aac_preroll(path: str) -> dict | None:
+    """探测 AAC 首包是否带超过一帧的正常 priming 预滚。"""
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_packets", "-read_intervals", "%+#1",
+             "-show_entries", "stream=codec_name,sample_rate:packet=pts_time:packet_side_data=skip_samples",
+             "-of", "json", path],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            return {"status": "unknown", "error": (proc.stderr or "ffprobe failed").strip()}
+        meta = json.loads(proc.stdout or "{}")
+    except Exception as e:  # noqa: BLE001
+        return {"status": "unknown", "error": str(e)}
+
+    streams = meta.get("streams") or []
+    if not streams or streams[0].get("codec_name") != "aac":
+        return None
+    packets = meta.get("packets") or []
+    if not packets:
+        return {"status": "unknown", "error": "AAC stream has no readable first packet"}
+    packet = packets[0]
+    try:
+        sample_rate = int(streams[0].get("sample_rate") or 0)
+    except (TypeError, ValueError):
+        sample_rate = 0
+    try:
+        pts = float(packet.get("pts_time"))
+    except (TypeError, ValueError):
+        pts = None
+    skip_samples = 0
+    for side_data in packet.get("side_data_list") or []:
+        try:
+            skip_samples = int(side_data.get("skip_samples") or 0)
+        except (TypeError, ValueError):
+            pass
+    normal_preroll = 1024.0 / sample_rate if sample_rate > 0 else 0.0
+    excessive_skip = skip_samples > 1024
+    excessive_pts = pts is not None and pts < -(normal_preroll + 0.005)
+    if not (excessive_skip or excessive_pts):
+        return None
+    return {
+        "status": "risk",
+        "pts_time": pts,
+        "skip_samples": skip_samples,
+        "sample_rate": sample_rate,
+        "normal_preroll_seconds": round(normal_preroll, 6),
+    }
+
+
 def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True,
                     faststart=False):
     """多段拼一条。`faststart` 默认关＝切片线既有产物字节不变；素材库拼接传 True。"""
@@ -1097,6 +1148,24 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
             if _COPY_MISS_LOGGED <= 3:
                 print(f"[copy-concat] 签名不一致，回退重编码：{sigs}", file=sys.stderr)
         if uniform:
+            preroll_checks = [(i, _detect_aac_preroll(p)) for i, p in enumerate(parts)]
+            risks = [(i, result) for i, result in preroll_checks if result and result.get("status") == "risk"]
+            unknowns = [(i, result) for i, result in preroll_checks if result and result.get("status") == "unknown"]
+            for i, result in risks:
+                print(
+                    f"[copy-concat] WARNING AAC_PREROLL_RISK out={out} "
+                    f"segment={i} part={parts[i]} pts={result['pts_time']}s "
+                    f"skip_samples={result['skip_samples']} "
+                    f"normal_preroll={result['normal_preroll_seconds']}s "
+                    "仍按当前策略流拷贝拼接",
+                    file=sys.stderr,
+                )
+            for i, result in unknowns:
+                print(
+                    f"[copy-concat] WARNING AAC_PREROLL_CHECK_FAILED out={out} "
+                    f"segment={i} part={parts[i]}: {result['error']}",
+                    file=sys.stderr,
+                )
             try:
                 _concat_demuxer(parts, out)
                 expect = sum((ffprobe_duration(p) or 0.0) for p in parts)
