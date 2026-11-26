@@ -9421,7 +9421,8 @@ def test_wall_delete_inflight_and_outputs():
                                      json={"ids": [str(uuid.uuid4()) for _ in range(201)]})
         assert too_many.status_code == 400
         assert (await client.post("/api/assets/outputs/delete", headers=hm, json={"ids": [gone_id]})).status_code == 403
-        d2 = await client.post("/api/assets/outputs/delete", headers=ho, json={"ids": [gone_id]})
+        with patch("app.api.assets.misc.delete_file", _fake_delete):
+            d2 = await client.post("/api/assets/outputs/delete", headers=ho, json={"ids": [gone_id]})
         assert d2.status_code == 200 and d2.json()["deleted"] == 1
         d_audits = await _rows(AuditLog, AuditLog.action == "asset.outputs.delete")
         assert len(d_audits) == 2
@@ -12998,7 +12999,7 @@ def test_script_carrier_is_hidden_from_five_rings_and_cannot_bypass_recheck():
             json={"summary_ids": [normal_sid], "n": 1, "script_texts": {normal_sid: carrier_text},
                   "hook_codes": ["7Z903"], "async_mode": False},
             headers=ho)
-        assert not_carrier.status_code == 400 and "不是脚本的生产载体" in not_carrier.json()["detail"]
+        assert not_carrier.status_code == 400 and "不是已定稿脚本的生产载体" in not_carrier.json()["detail"]
 
         # 绕过尝试三：载体的投递正文与过审正文不一致 → 400（审的必须就是投的）
         mismatch = await client.post(
@@ -13175,8 +13176,8 @@ def test_script_batch_retire_soft_deletes_own_and_names_others():
 
 
 def test_script_produce_dispatches_to_board_without_model_expansion():
-    """屏 2「投豆包」：已过审的脚本 → 一脚本一单 → 直投板上。不调模型展开、成片照进
-    成片墙（不是试产）；未过审不能投；用别人过审的脚本要先确认（且确认前不烧号）。"""
+    """屏 2「投豆包」：已定稿脚本 → 一脚本一单 → 直投板上。不调模型展开、成片照进
+    成片墙（不是试产）；用别人的定稿脚本要先确认（且确认前不烧号）。"""
     _run(_bootstrap())
 
     async def _scenario():
@@ -13194,10 +13195,13 @@ def test_script_produce_dispatches_to_board_without_model_expansion():
         fb = _FakeBoard()
         with _board_off(fb), patch("app.api.assets._take_hook_codes", fake_take), \
                 patch("app.api.assets._call_autoclip", _fake_autoclip()) as expand:
-            # ① 未过审：不能投，也没取号
+            # ① 未过审也已是定稿：运营投同事的稿先确认；确认前没取号，也没伪造人工审核
             early = await client.post(f"{_SCRIPT_URL}/produce", json={"script_ids": [s["id"]]}, headers=ho)
-            assert early.status_code == 400 and "还没过审" in early.json()["detail"], early.text
+            assert early.status_code == 400 and "替他人过审候选投产" in early.json()["detail"], early.text
+            assert "作者" in early.json()["detail"], early.text
             assert taken == []
+            assert await _count(AssetProduction) == 0
+            assert [a for a in await _rows(AuditLog, AuditLog.action == "asset.script.direct_ready")] == []
 
             # ② 管理员过审 → 运营来投＝用了别人过审的脚本：先确认；确认前不建单、不取号
             ap = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": [s["id"]]}, headers=ha)
@@ -13251,11 +13255,239 @@ def test_script_produce_dispatches_to_board_without_model_expansion():
             assert [a for a in await _rows(AuditLog, AuditLog.action == "asset.hook_code.take")
                     if (a.after or {}).get("via") == "script_produce"] == []
 
-        # ⑤ 素材专员没有投产职能 → 403；⑥ 不存在的脚本 → 400
+        # ⑤ 素材专员有关投产职能才可用；关掉即 403；⑥ 不存在的脚本 → 400
+        await _set_flags(MATERIAL_USER, can_produce=False)
         assert (await client.post(
             f"{_SCRIPT_URL}/produce", json={"script_ids": [s["id"]]}, headers=hm)).status_code == 403
         ghost = await client.post(f"{_SCRIPT_URL}/produce", json={"script_ids": [str(uuid.uuid4())]}, headers=ho)
         assert ghost.status_code == 400 and ghost.json()["detail"].startswith("这几条还不能投")
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_material_produces_ready_script_without_review_and_keeps_guards():
+    """素材专员定稿直投：无审核职能也无需送审；风险词、草稿、自审旋钮的边界仍保留。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.models.asset import AssetScript
+
+        client, h = await _client_and_headers()
+        hm = h["material"]
+        await _set_flags(MATERIAL_USER, can_review=False, can_produce=True)
+        taken: List[int] = []
+
+        async def fake_take(n):
+            taken.append(n)
+            start = len(taken)
+            return ([f"7Z6{i:02d}" for i in range(start, start + n)], [], None)
+
+        mine = await _mk_script(client, hm, name="专员定稿直投")
+        assert (await _finalize(client, hm, mine["id"])).status_code == 200
+        risky_ready = await _mk_script(
+            client, hm, name="定稿后词表变严", body=_SCRIPT_BODY + "镜头4：灰外套女孩停下脚步。")
+        assert (await _finalize(client, hm, risky_ready["id"])).status_code == 200
+        draft = await _mk_script(client, hm, name="还没定稿", body=_SCRIPT_BODY + "镜头4：她继续往前走。")
+
+        fb = _FakeBoard()
+        with _board_off(fb), patch("app.api.assets._take_hook_codes", fake_take), \
+                patch("app.api.assets._call_autoclip", _fake_autoclip()) as expand, \
+                patch.object(settings, "ASSET_SELF_PRODUCE_ALLOWED", False):
+            res = await client.post(f"{_SCRIPT_URL}/produce", json={"script_ids": [mine["id"]]}, headers=hm)
+            assert res.status_code == 200, res.text
+            prod = await _row_of(AssetProduction, uuid.UUID(res.json()["results"][0]["production_id"]))
+            assert prod.prompt_text == _SCRIPT_BODY and prod.created_by is not None
+            assert (await _wait_job(client, hm, res.json()["dispatch"]["job_id"]))["status"] == "succeeded"
+            assert expand.call_count == 0
+            assert taken == [1]
+
+            blocked_draft = await client.post(
+                f"{_SCRIPT_URL}/produce", json={"script_ids": [draft["id"]]}, headers=hm)
+            assert blocked_draft.status_code == 400 and "还没定稿" in blocked_draft.json()["detail"]
+            assert taken == [1]
+
+            await _write_lexicon({"block": ["灰外套"]})
+            blocked_risk = await client.post(
+                f"{_SCRIPT_URL}/produce", json={"script_ids": [risky_ready["id"]]}, headers=hm)
+            assert blocked_risk.status_code == 400 and "灰外套" in blocked_risk.json()["detail"], blocked_risk.text
+            assert taken == [1] and await _count(AssetProduction) == 1
+            carrier = (await _row_of(AssetScript, uuid.UUID(risky_ready["id"]))).carrier_summary_id
+            assert carrier is None, "风险词拦在取号与载体创建之前，不该留下待审载体"
+
+            await _write_lexicon({"block": []})
+            from app.api.assets.misc import _ensure_script_carrier
+            async with dbmod.async_session_factory() as s:
+                script_row = await s.get(AssetScript, uuid.UUID(risky_ready["id"]))
+                operator = (await s.execute(select(User).where(User.username == MATERIAL_USER))).scalar_one()
+                carrier = await _ensure_script_carrier(s, script_row, operator=operator)
+                carrier.text = "这是待审载体的旧占位正文，不是定稿脚本正文。"
+                await s.commit()
+            retry = await client.post(
+                f"{_SCRIPT_URL}/produce", json={"script_ids": [risky_ready["id"]]}, headers=hm)
+            assert retry.status_code == 200, retry.text
+            prod2 = await _row_of(AssetProduction, uuid.UUID(retry.json()["results"][0]["production_id"]))
+            assert prod2.prompt_text == risky_ready["body"]
+            assert (await _wait_job(client, hm, retry.json()["dispatch"]["job_id"]))["status"] == "succeeded"
+            assert taken == [1, 1]
+
+        direct_logs = [a for a in await _rows(AuditLog, AuditLog.action == "asset.script.direct_ready")]
+        assert len(direct_logs) == 2
+        assert any((a.after or {}).get("text_changed") is True for a in direct_logs)
+        assert all((a.after or {}).get("via") == "simple_script_direct_produce" for a in direct_logs)
+        audit_before_fields = {
+            "audit_status", "text", "word_count", "reviewed_by", "reviewed_at",
+            "reject_reason", "resubmit_note", "risk_hit",
+        }
+        assert all(audit_before_fields <= set(a.before or {}) for a in direct_logs)
+        assert [a for a in await _rows(AuditLog, AuditLog.action == "asset.summary_review.approve")] == []
+        assert [a for a in await _rows(AuditLog, AuditLog.action == "asset.script.submit")] == []
+
+        human_self = await _mk_script(client, h["operator"], name="人工自审稿", body=_SCRIPT_BODY + "镜头4：她坐到窗边。")
+        assert (await _finalize(client, h["operator"], human_self["id"])).status_code == 200
+        approved = await client.post(
+            f"{_SCRIPT_URL}/approve", json={"script_ids": [human_self["id"]]}, headers=h["operator"])
+        assert approved.json()["results"][0]["ok"] is True, approved.text
+        with patch.object(settings, "ASSET_SELF_PRODUCE_ALLOWED", False):
+            self_blocked = await client.post(
+                f"{_SCRIPT_URL}/produce", json={"script_ids": [human_self["id"]]}, headers=h["operator"])
+        assert self_blocked.status_code == 400 and "自己过审" in self_blocked.json()["detail"], self_blocked.text
+        assert taken == [1, 1] and await _count(AssetProduction) == 2
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_script_texts_cannot_bypass_pending_carrier_readiness():
+    """待就绪载体不能绕过定稿直投口的风险复核、自动就绪与独立审计。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        s = await _mk_script(client, ho, name="本人待就绪载体", body=_SCRIPT_BODY + "镜头5：他停下脚步。")
+        assert (await _finalize(client, ho, s["id"])).status_code == 200
+        sub = await client.post(f"{_SCRIPT_URL}/submit", json={"script_ids": [s["id"]]}, headers=ho)
+        assert sub.status_code == 200 and sub.json()["results"][0]["ok"] is True, sub.text
+        carrier_id = sub.json()["results"][0]["carrier_summary_id"]
+        carrier_text = (await _row_of(AssetSummary, uuid.UUID(carrier_id))).text
+        refused = await client.post(
+            "/api/assets/produce",
+            json={
+                "summary_ids": [carrier_id], "n": 1, "expand": False,
+                "script_texts": {carrier_id: carrier_text}, "hook_codes": ["7Z703"], "async_mode": False,
+            },
+            headers=ho,
+        )
+        assert refused.status_code == 400 and "生产载体尚未就绪" in refused.json()["detail"], refused.text
+        assert await _count(AssetProduction) == 0
+        assert not [a for a in await _rows(AuditLog, AuditLog.action == "asset.script.direct_ready")]
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_script_produce_rereads_carrier_locked_after_manual_review_commit():
+    """人工审核在初次读载体后提交：直投必须锁内重读，使用最新过审正文且不抹审核人。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.api.assets import misc as misc_mod
+        from app.models.asset import AssetScript
+
+        client, h = await _client_and_headers()
+        ho = h["operator"]
+        s = await _mk_script(client, ho, name="审核与直投竞态", body=_SCRIPT_BODY + "镜头5：他停下脚步。")
+        assert (await _finalize(client, ho, s["id"])).status_code == 200
+        sub = await client.post(f"{_SCRIPT_URL}/submit", json={"script_ids": [s["id"]]}, headers=ho)
+        assert sub.status_code == 200 and sub.json()["results"][0]["ok"] is True, sub.text
+        carrier_id = uuid.UUID(sub.json()["results"][0]["carrier_summary_id"])
+        human_text = _SCRIPT_BODY + "镜头6：这是人工审核提交的最新正文。"
+        original = misc_mod._ensure_script_carrier
+
+        async def review_between_reads(db, script, *, operator):
+            stale = await original(db, script, operator=operator)
+            async with dbmod.async_session_factory() as review_db:
+                carrier = await review_db.get(AssetSummary, carrier_id)
+                reviewer = (await review_db.execute(
+                    select(User).where(User.username == OPERATOR_USER)
+                )).scalar_one()
+                carrier.text = human_text
+                carrier.audit_status = RV_APPROVED
+                carrier.reviewed_by = reviewer.id
+                carrier.reviewed_at = datetime.utcnow()
+                await review_db.commit()
+            return stale
+
+        fb = _FakeBoard()
+        with _board_off(fb), patch.object(misc_mod, "_ensure_script_carrier", review_between_reads), \
+                patch("app.api.assets._take_hook_codes", AsyncMock(return_value=(["7Z704"], [], None))), \
+                patch("app.api.assets._call_autoclip", _fake_autoclip()) as expand:
+            res = await client.post(f"{_SCRIPT_URL}/produce", json={"script_ids": [s["id"]]}, headers=ho)
+            assert res.status_code == 200, res.text
+            assert (await _wait_job(client, ho, res.json()["dispatch"]["job_id"]))["status"] == "succeeded"
+            assert expand.call_count == 0
+
+        prod = await _row_of(AssetProduction, uuid.UUID(res.json()["results"][0]["production_id"]))
+        carrier = await _row_of(AssetSummary, carrier_id)
+        assert prod.prompt_text == human_text
+        assert fb.creates[0]["prompt"] == human_text
+        assert carrier.text == human_text and carrier.audit_status == RV_APPROVED
+        assert carrier.reviewed_by is not None and carrier.reviewed_at is not None
+        assert not [a for a in await _rows(AuditLog, AuditLog.action == "asset.script.direct_ready")]
+        await client.aclose()
+
+    _run(_scenario())
+
+
+def test_script_texts_cannot_bypass_ready_state_or_owner_confirmation():
+    """底层 script_texts 通道也不是后门：草稿/下架拒投，别人作者的脚本必须确认并留痕。"""
+    _run(_bootstrap())
+
+    async def _scenario():
+        from app.models.asset import AssetScript, SCRIPT_DRAFT, SCRIPT_RETIRED
+
+        client, h = await _client_and_headers()
+        hm, ho, ha = h["material"], h["operator"], h["admin"]
+        s = await _mk_script(client, hm, name="同事的定稿", body=_SCRIPT_BODY + "镜头4：她走进屋里。")
+        assert (await _finalize(client, hm, s["id"])).status_code == 200
+        sub = await client.post(f"{_SCRIPT_URL}/submit", json={"script_ids": [s["id"]]}, headers=ho)
+        carrier_id = sub.json()["results"][0]["carrier_summary_id"]
+        carrier_text = (await _row_of(AssetSummary, uuid.UUID(carrier_id))).text
+
+        cross = await client.post(
+            f"{_SCRIPT_URL}/produce", json={"script_ids": [s["id"]]}, headers=ho)
+        assert cross.status_code == 400 and "替他人过审候选投产" in cross.json()["detail"], cross.text
+        assert "作者" in cross.json()["detail"] and await _count(AssetProduction) == 0
+
+        approved = await client.post(f"{_SCRIPT_URL}/approve", json={"script_ids": [s["id"]]}, headers=ha)
+        assert approved.json()["results"][0]["ok"] is True, approved.text
+
+        payload = {
+            "summary_ids": [carrier_id], "n": 1, "expand": False,
+            "script_texts": {carrier_id: carrier_text}, "hook_codes": ["7Z701"], "async_mode": False,
+        }
+        bypass = await client.post("/api/assets/produce", json=payload, headers=ha)
+        assert bypass.status_code == 400 and "替他人过审候选投产" in bypass.json()["detail"], bypass.text
+        assert "作者" in bypass.json()["detail"] and await _count(AssetProduction) == 0
+
+        ok = await client.post(
+            "/api/assets/produce", json={**payload, "cross_person_confirm": True}, headers=ha)
+        assert ok.status_code == 200 and ok.json()["created"] == 1, ok.text
+        order_audits = [a for a in await _rows(AuditLog, AuditLog.action == "asset.produce_order")]
+        direct = order_audits[-1].after["owner_cross"]["direct_scripts"][0]
+        assert direct["script_id"] == s["id"] and direct["cross"] is True and direct["owner_name"] == "素材专员"
+
+        for state in (SCRIPT_DRAFT, SCRIPT_RETIRED):
+            async with dbmod.async_session_factory() as sess:
+                row = await sess.get(AssetScript, uuid.UUID(s["id"]))
+                row.state = state
+                await sess.commit()
+            refused = await client.post(
+                "/api/assets/produce",
+                json={**payload, "hook_codes": ["7Z702"], "cross_person_confirm": True}, headers=ho)
+            assert refused.status_code == 400 and "不是已定稿脚本" in refused.json()["detail"], refused.text
+            assert await _count(AssetProduction) == 1
         await client.aclose()
 
     _run(_scenario())
@@ -14927,9 +15159,9 @@ def test_mirror_from_full_mode_produces_latest_approved_text():
 
     旧 bug：script_texts 校验 join `is_shell=true` 只认壳载体——完整模式导入镜像出来的
     稿（载体=真候选，is_shell=false）在极简②整批 400「不是脚本的生产载体」。
-    这条钉三件事：① 镜像稿能投，投的是载体**过审正文**、不调模型展开；
-    ② 没过审时话术说「还没过审」而不是「不是载体」；
-    ③ 审核台「改后通过」换了正文 → 极简再投自动跟到最新过审稿（审的＝投的）。
+    这条钉三件事：① 没过审的 ready 镜像稿可直接投，投的是冻结的脚本正文、不调模型展开；
+    ② 人工审核改正文后，镜像再投自动跟到最新过审稿（审的＝投的）；
+    ③ 自动就绪不会伪装成人工过审，作者确认与审计都保留。
     """
     _run(_bootstrap())
 
@@ -14962,31 +15194,22 @@ def test_mirror_from_full_mode_produces_latest_approved_text():
         fb = _FakeBoard()
         with _board_off(fb), patch("app.api.assets._take_hook_codes", fake_take), \
                 patch("app.api.assets._call_autoclip", _fake_autoclip()) as expand:
-            # ① 没过审的镜像稿：话术是「还没过审」，且没烧号——旧 bug 话术「不是脚本的生产载体」不再出现
-            early = await client.post(f"{_SCRIPT_URL}/produce", json={"script_ids": [mid]}, headers=ho)
-            assert early.status_code == 400 and "还没过审" in early.json()["detail"], early.text
-            assert "不是脚本的生产载体" not in early.json()["detail"]
-            assert seq["n"] == 0, "被拦的那一枪不许烧号"
-
-            # ② ③ 审核台过审（用户真路径）→ 镜像稿照投，正文=过审文案，不调展开
-            ap = await client.post(
-                "/api/assets/summaries/review",
-                json={"summary_ids": [sid], "action": "approve"}, headers=ho)
-            assert ap.json()["results"][0]["ok"] is True, ap.text
-
-            res = await client.post(
-                f"{_SCRIPT_URL}/produce",
-                json={"script_ids": [mid], "board_total": 1, "cross_person_confirm": True}, headers=ho)
-            assert res.status_code == 200, res.text
-            pid = res.json()["results"][0]["production_id"]
-            assert pid, res.text
-            prod = await _row_of(AssetProduction, uuid.UUID(pid))
-            assert prod.prompt_text == _X_HOOK and prod.prompt_snapshot == _X_HOOK, prod.prompt_text
+            # ① 没过审的镜像稿：ready 即可直投，按冻结正文投产，没烧冤枉号
+            early = await client.post(f"{_SCRIPT_URL}/produce", json={"script_ids": [mid]}, headers=hm)
+            assert early.status_code == 200, early.text
+            pid0 = early.json()["results"][0]["production_id"]
+            prod0 = await _row_of(AssetProduction, uuid.UUID(pid0))
+            assert prod0.prompt_text == _X_HOOK and prod0.prompt_snapshot == _X_HOOK
             assert expand.call_count == 0, "镜像稿走脚本直投路：不该调模型展开"
-            job = await _wait_job(client, ho, res.json()["dispatch"]["job_id"])
-            assert job["status"] == "succeeded", job
+            job0 = await _wait_job(client, hm, early.json()["dispatch"]["job_id"])
+            assert job0["status"] == "succeeded", job0
+            assert seq["n"] == 1
+            direct_logs = [a for a in await _rows(AuditLog, AuditLog.action == "asset.script.direct_ready")]
+            assert len(direct_logs) == 1 and direct_logs[0].after["via"] == "simple_script_direct_produce"
+            carrier0 = await _row_of(AssetSummary, uuid.UUID(sid))
+            assert carrier0.audit_status == RV_APPROVED and carrier0.reviewed_by is None
 
-            # ④ 改后通过换正文 → 再投跟到最新过审稿（旧镜像正文不参与投递）
+            # ② 人工驳回后「改后通过」换正文 → 镜像稿照投，正文=最新过审文案，不调展开
             rev = await client.post(
                 "/api/assets/summaries/review",
                 json={"summary_ids": [sid], "action": "reject", "reason": "AC门禁要改词"}, headers=ho)
@@ -14997,16 +15220,41 @@ def test_mirror_from_full_mode_produces_latest_approved_text():
                 json={"summary_ids": [sid], "action": "pass_edited", "new_text": edit_text}, headers=ho)
             assert ed.json()["results"][0]["ok"] is True, ed.text
 
+            res = await client.post(
+                f"{_SCRIPT_URL}/produce",
+                json={"script_ids": [mid], "board_total": 1, "cross_person_confirm": True}, headers=ho)
+            assert res.status_code == 200, res.text
+            pid = res.json()["results"][0]["production_id"]
+            assert pid, res.text
+            prod = await _row_of(AssetProduction, uuid.UUID(pid))
+            assert prod.prompt_text == edit_text and prod.prompt_snapshot == edit_text, prod.prompt_text
+            assert prod.prompt_text != _X_HOOK
+            assert expand.call_count == 0, "镜像稿走脚本直投路：不该调模型展开"
+            job = await _wait_job(client, ho, res.json()["dispatch"]["job_id"])
+            assert job["status"] == "succeeded", job
+            assert seq["n"] == 2
+
+            # ③ 再改一次并过审 → 再投仍跟最新过审稿
+            rev2 = await client.post(
+                "/api/assets/summaries/review",
+                json={"summary_ids": [sid], "action": "reject", "reason": "AC门禁二次改词"}, headers=ho)
+            assert rev2.status_code == 200, rev2.text
+            edit_text2 = _X_HOOK[:-1] + "新画面：他把合同折好放进包里。"
+            ed2 = await client.post(
+                "/api/assets/summaries/review",
+                json={"summary_ids": [sid], "action": "pass_edited", "new_text": edit_text2}, headers=ho)
+            assert ed2.json()["results"][0]["ok"] is True, ed2.text
+
             res2 = await client.post(
                 f"{_SCRIPT_URL}/produce",
                 json={"script_ids": [mid], "board_total": 1, "cross_person_confirm": True}, headers=ho)
             assert res2.status_code == 200, res2.text
             pid2 = res2.json()["results"][0]["production_id"]
             prod2 = await _row_of(AssetProduction, uuid.UUID(pid2))
-            assert prod2.prompt_text == edit_text, prod2.prompt_text
-            assert prod2.prompt_text != _X_HOOK
+            assert prod2.prompt_text == edit_text2, prod2.prompt_text
             job2 = await _wait_job(client, ho, res2.json()["dispatch"]["job_id"])
             assert job2["status"] == "succeeded", job2
+            assert seq["n"] == 3
 
     _run(_scenario())
 

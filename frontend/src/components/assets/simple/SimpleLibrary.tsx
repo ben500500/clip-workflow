@@ -74,7 +74,7 @@ interface Props {
   canImport: boolean;
   /** 投产职能＋角色：建单、投板 */
   canProduce: boolean;
-  /** 审核职能＋角色：轻量过审 */
+  /** 审核职能＋角色：成片墙的「我的／全部」切换 */
   canReview: boolean;
   isAdmin: boolean;
   /**
@@ -92,18 +92,12 @@ interface Props {
   onOpenFullTab: (tab: string) => void;
 }
 
-/** 脚本在库里的「一句话状态」：待审/已过审跟着载体走（送审才有载体） */
+/** 脚本在库里的「一句话状态」：已定稿即可投豆包 */
 const scriptStatus = (s: AssetScript): { text: string; color: string } => {
   if (s.state === 'retired') return { text: '已下架', color: 'default' };
   if (s.state === 'draft') return { text: '库稿', color: 'default' };
-  if (!s.carrier) return { text: '可投稿', color: 'blue' };
-  if (isApproved(s)) return { text: '已过审', color: 'green' };
-  return { text: '待审', color: 'orange' };
+  return { text: '可投豆包', color: 'green' };
 };
-
-function isApproved(s: AssetScript): boolean {
-  return s.state === 'ready' && !!s.carrier && (s.carrier.audit_status === 'approved' || s.carrier.audit_status === 'passed_edited');
-}
 
 // ─────────────────────────  导入钩子视频（链接／文件）＋原型  ─────────────────────────
 
@@ -210,7 +204,7 @@ const ImportHookModal: React.FC<ImportHookModalProps> = ({
  *   那套拼接功能搬过来再放，别在中间态摆一张行列矩阵让人猜）。
  *   导入**不再是独立一屏**（11-24 用户：「那一小行的功能块直接放在脚本库的上方，
  *   这样就少一个 tab；名称不要叫"先弄到稿"，就叫"导入"」）——它是脚本库顶部的
- *   一张卡，与"收进脚本库""待过审""改稿·定稿"同屏，省掉一次页签往返。
+ *   一张卡，与"收进脚本库""改稿·定稿"同屏，省掉一次页签往返。
  *
  * 只折叠界面、不旁路逻辑：导入、反推、投产、投板全走五环同一个接口；钩子号、跨人确认、
  * 风险词闸都在后端。定稿冻结／生产载体见后端 assets/misc.py 脚本库段。
@@ -261,31 +255,9 @@ const SimpleLibrary: React.FC<Props> = ({
     return () => clearTimeout(t);
   }, [qInput]);
 
-  // ── 待过审（只有有审核职能的人看得到）：同事送审的脚本在这里点那一下 ──
-  // 口径跟「改稿·定稿」那张表同一个开关：选了「我的」就只留我写的∪我收藏的，
-  // 别在一屏里一半按开关筛、一半硬编 all（11-24 用户：「选择我的之后，
-  // 未定稿的即使不在我的收藏里也会展现」——漏的就是这里原先写死的 'all'）。
-  const [pending, setPending] = useState<AssetScript[]>([]);
-  const [pendingIds, setPendingIds] = useState<string[]>([]);
-  const fetchPending = useCallback(async () => {
-    if (!canReview) {
-      setPending([]);
-      return;
-    }
-    try {
-      const res = await assetApi.listScripts({
-        owner, owner_id: ownerFilter || undefined, carrier_status: 'pending', page_size: 100,
-      });
-      setPending(res.items || []);
-    } catch {
-      /* 待审数读不到不拦主流程 */
-    }
-  }, [canReview, owner, ownerFilter]);
-  useEffect(() => { void fetchPending(); }, [fetchPending, reloadToken]);
-
   const refreshAll = useCallback(
-    async () => { await Promise.all([fetchScripts(), fetchPending()]); },
-    [fetchScripts, fetchPending],
+    async () => { await fetchScripts(); },
+    [fetchScripts],
   );
 
   // ── 刚导入的钩子视频：记在 sessionStorage（按人隔离），反推出稿后收进脚本库 ──
@@ -509,53 +481,10 @@ const SimpleLibrary: React.FC<Props> = ({
     else setEditor({ open: true, script: row }); // 定稿被拦：切到刚存下的那条，接着改
   };
 
-  /** 送审：没有审核职能的账号走到这一步（等同事过审） */
-  const submitRows = async (rows: AssetScript[]) => {
-    if (!rows.length) return;
-    setBusy('submit');
-    try {
-      const sub = await assetApi.submitScripts(rows.map((r) => r.id));
-      reportVerdict(
-        sub.results,
-        `已送审 ${sub.results.filter((r) => r.ok).length} 条——等有审核职能的同事过审`,
-        '条送审',
-      );
-      setSelectedIds((prev) => prev.filter((id) => !rows.some((r) => r.id === id)));
-    } catch (e) {
-      message.error((e as Error).message || '送审没成');
-    } finally {
-      setBusy('');
-      await refreshAll();
-    }
-  };
-
-  /** 轻量过审：逐条带 ok，没过的点名（HTTP 200 ≠ 全过）。返回过审成功的脚本 id */
-  const approveRows = async (rows: AssetScript[]): Promise<string[]> => {
-    if (!rows.length) return [];
-    const ap = await assetApi.approveScripts(rows.map((r) => r.id));
-    const okIds = ap.results.filter((r) => r.ok).map((r) => r.script_id);
-    reportVerdict(ap.results, `已过审 ${okIds.length} 条`, '条过审');
-    return okIds;
-  };
-
-  const reviewPending = async (rows: AssetScript[]) => {
-    if (!rows.length) return;
-    setBusy('review');
-    try {
-      await approveRows(rows);
-      setPendingIds([]);
-    } catch (e) {
-      message.error((e as Error).message || '过审没成', 8);
-    } finally {
-      setBusy('');
-      await refreshAll();
-    }
-  };
-
   /**
    * 批 AB-2（11-25 用户「素材库增加批量删除」）：批量删除＝批量下架，和逐行
-   * 「下架」同一颗内核（软删，投过的记录留着对账）。同 approve/submit 口径，
-   * 接口 HTTP 200 ≠ 全删完——别人的脚本删不动，逐条点名，别让人以为清干净了。
+   * 「下架」同一颗内核（软删，投过的记录留着对账）。接口 HTTP 200 ≠ 全删完——
+   * 别人的脚本删不动，逐条点名，别让人以为清干净了。
    */
   const deleteRows = (rows: AssetScript[]) => {
     if (!rows.length) return;
@@ -592,8 +521,6 @@ const SimpleLibrary: React.FC<Props> = ({
     () => items.filter((s) => selectedIds.includes(s.id)),
     [items, selectedIds],
   );
-  const unapproved = selected.filter((s) => !isApproved(s));
-  const needReview = unapproved.length > 0;
 
   // 批 U（11-25）：自动取号被拦下时的「我自己贴号」退路。
   // 后端 502 话术开头钉着 `【需要手工贴号:N】`（misc.py 的 _HOOK_TAKE_MARKER），N＝还缺几个号。
@@ -611,7 +538,7 @@ const SimpleLibrary: React.FC<Props> = ({
       cross_person_confirm: c,
       ...(hookCodes && hookCodes.length ? { hook_codes: hookCodes } : {}),
     }));
-    if (!res) return false; // 取消了「替他人过审候选投产」的确认
+    if (!res) return false; // 取消了「替他人投产」的确认
     const sent = res.results.some((r) => r.ok);
     reportVerdict(res.results, res.message, '条投出');
     nudgeAssetJobBanner();
@@ -647,37 +574,18 @@ const SimpleLibrary: React.FC<Props> = ({
 
   const doProduce = async () => {
     if (!selected.length) return;
-    if (unapproved.length && !canReview) {
-      // 没有审核职能：这一下只能是送审
-      await submitRows(unapproved);
-      return;
-    }
     setBusy('produce');
-    let target: AssetScript[] = [];
     try {
-      let approvedNow = selected.filter(isApproved);
-      if (unapproved.length) {
-        const okIds = await approveRows(unapproved);
-        approvedNow = [...approvedNow, ...unapproved.filter((s) => okIds.includes(s.id))];
-        if (!approvedNow.length) return; // 一条都没过：原因已经在弹窗里点名了
-      }
-      target = approvedNow;
-      await runProduce(approvedNow, null);
+      await runProduce(selected, null);
     } catch (e) {
-      if (!offerHookPaste(e, target)) message.error((e as Error).message || '投豆包没成功', 8);
+      if (!offerHookPaste(e, selected)) message.error((e as Error).message || '投豆包没成功', 8);
     } finally {
       setBusy('');
       await refreshAll();
     }
   };
 
-  const primaryLabel = !selected.length
-    ? '投豆包'
-    : needReview && !canReview
-      ? `送审（${selected.length}）`
-      : needReview
-        ? `轻量过审并投豆包（${selected.length}）`
-        : `投豆包（${selected.length}）`;
+  const primaryLabel = selected.length ? `投豆包（${selected.length}）` : '投豆包';
 
   // 贴号框点「贴上并重发」：本地校验只挡明显填错（数量／重号），库里撞号仍由后端点名。
   // 重发这一枪仍可能报「还差 N 个」（比如管理员只给了一半），所以失败时照原路把缺口数刷新。
@@ -710,10 +618,9 @@ const SimpleLibrary: React.FC<Props> = ({
   const coverIds = useMemo(() => {
     const ids: Array<string | null | undefined> = hookAssets.map((a) => a.id);
     items.forEach((s) => ids.push(s.origin_asset_id));
-    pending.forEach((s) => ids.push(s.origin_asset_id));
     selected.forEach((s) => ids.push(s.origin_asset_id));
     return ids;
-  }, [hookAssets, items, pending, selected]);
+  }, [hookAssets, items, selected]);
   const { cover: covers, loading: coversLoading } = useCoverMap(coverIds);
   const [play, setPlay] = useState<{ assetId: string; title: string } | null>(null);
   const previewOf = (assetId: string | null | undefined, title: string, height = 56) => (
@@ -886,9 +793,6 @@ const SimpleLibrary: React.FC<Props> = ({
             >
               定稿
             </Button>
-          )}
-          {r.state === 'ready' && !r.carrier && !canReview && (
-            <Button size="small" type="link" onClick={() => void submitRows([r])}>送审</Button>
           )}
           <Button
             size="small" type="link" danger icon={<StopOutlined />}
@@ -1077,79 +981,14 @@ const SimpleLibrary: React.FC<Props> = ({
     </>
   );
 
-  // ── ① 脚本库：导入 ＋ 改稿 · 定稿（· 待过审）──
+  // ── ① 脚本库：导入 ＋ 改稿 · 定稿 ──
   const paneScripts = (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       {importBlock}
       <Text type="secondary" style={{ fontSize: 12 }}>
-        打开改到满意点「定稿」，<Text strong>只有定稿的脚本能投豆包</Text>；
+        打开改到满意点「定稿」，<Text strong>定稿后无需送审，可直接投豆包</Text>；
         改一份已定稿的会派生新草稿，投过的稿子不会被覆盖。
       </Text>
-      {/* 待过审（只有有审核职能的人看得到） */}
-      {canReview && !!pending.length && (
-        <Card
-          size="small"
-          title={(
-            <Space size={6}>
-              待过审
-              <Badge count={pending.length} color="orange" showZero={false} />
-              <Text type="secondary" style={{ fontSize: 12, fontWeight: 400 }}>同事送审的脚本，过审后他能自己投</Text>
-            </Space>
-          )}
-        >
-          <Table
-            rowKey="id"
-            size="small"
-            pagination={false}
-            dataSource={pending}
-            rowSelection={{ selectedRowKeys: pendingIds, onChange: (keys) => setPendingIds(keys.map(String)) }}
-            columns={[
-              {
-                title: '预览',
-                key: 'preview',
-                width: 62,
-                render: (_: unknown, r) => previewOf(r.origin_asset_id, r.name),
-              },
-              { title: '脚本', dataIndex: 'name', ellipsis: true, render: (v: string, r) => (
-                  <Space size={4}>
-                    <Text strong>{v}</Text>
-                    {/* 批 X：镜像候选行（出文案/导入同步落进脚本库的那条）在待过审区也要认得出 */}
-                    {r.source_kind === 'mirror' && <Tag color="purple" style={{ marginInlineEnd: 0 }}>候选</Tag>}
-                  </Space>
-                ) },
-              { title: '谁的', dataIndex: 'owner_name', width: 100 },
-              {
-                title: '原型',
-                dataIndex: 'category_name',
-                width: 150,
-                ellipsis: true,
-                render: (v: string | null) => (v ? splitCategoryName(v).short : '未选'),
-              },
-            ]}
-          />
-          <div style={{ marginTop: 8 }}>
-            <Button
-              size="small"
-              type="primary"
-              loading={busy === 'review'}
-              disabled={!pendingIds.length || busy !== ''}
-              onClick={() => void reviewPending(pending.filter((p) => pendingIds.includes(p.id)))}
-            >
-              过审选中的 {pendingIds.length} 条
-            </Button>
-            <Button
-              size="small"
-              type="link"
-              disabled={busy !== ''}
-              onClick={() => {
-                setPendingIds(pending.map((p) => p.id));
-              }}
-            >
-              全选
-            </Button>
-          </div>
-        </Card>
-      )}
 
       {/* 脚本库表格 */}
       <Card
@@ -1227,7 +1066,7 @@ const SimpleLibrary: React.FC<Props> = ({
     </Space>
   );
 
-  // ── ② 投豆包：勾脚本 → 三视图 → 出几版 → （轻量过审）投 ──
+  // ── ② 投豆包：勾脚本 → 三视图 → 出几版 → 投 ──
   const paneProduce = (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <Text type="secondary" style={{ fontSize: 12 }}>
@@ -1327,7 +1166,7 @@ const SimpleLibrary: React.FC<Props> = ({
         activeKey={tab}
         onChange={(k) => setTab(k as typeof tab)}
         items={[
-          { key: 'scripts', label: tabLabel('①', '脚本库', pending.length), children: paneScripts },
+          { key: 'scripts', label: tabLabel('①', '脚本库'), children: paneScripts },
           { key: 'produce', label: tabLabel('②', '投豆包', selected.length), children: paneProduce },
           { key: 'outputs', label: '③ 看成片', children: paneOutputs },
         ]}

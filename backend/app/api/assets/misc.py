@@ -467,10 +467,10 @@ class ProduceRequest(BaseModel):
     script_texts: Optional[Dict[str, str]] = Field(
         None,
         description=(
-            "极简模式脚本直投（2026-11-23）：候选 id → 脚本正文。键必须是**脚本的生产载体**"
-            "（asset_scripts.carrier_summary_id），且正文须与载体的过审正文逐字一致（审的＝投的）。"
+            "极简模式脚本直投（2026-11-26）：候选 id → 已定稿脚本正文。键必须是**已定稿脚本的"
+            "生产载体**（asset_scripts.carrier_summary_id），且正文须与载体正文逐字一致。"
             "这些行不展开、不过 A2-1 形态复核（形态闸是给钩子文案的，脚本本身就是提示词），"
-            "提示词与板面 name（脚本名）直落行；风险词 block 闸仍在投板侧照扫。"
+            "提示词与板面 name（脚本名）直落行；极简入口投产前重扫风险词 block，投板侧照扫。"
         ),
     )
     board_total: Optional[int] = Field(None, description="板上 total＝**同一条提示词出几版**（1..20，默认 1）。与 n 是两个量，混用会白烧 n×total")
@@ -479,7 +479,7 @@ class ProduceRequest(BaseModel):
     character_card_key: Optional[str] = Field(None, description="角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投）")
     cross_person_confirm: bool = Field(
         False,
-        description="A′ 归属跨人确认：投**别人过审**的候选（reviewed_by≠操作者）必须 true——谁投账算谁，候选过审人进审计；投自己过审的或无主公共候选不用带",
+        description="A′ 归属跨人确认：投**别人作者或别人过审**的脚本/候选时必须 true——谁投账算谁，脚本作者与候选过审人进审计；投自己的或无主公共候选不用带",
     )
 
     @field_validator("character_card_key")
@@ -7140,7 +7140,14 @@ async def review_summaries(
         raise HTTPException(status_code=400, detail=f"一次最多审 300 条（当前 {len(data.summary_ids)}）——分批处理")
     _s_uuids = [_as_uuid(s, "summary_id") for s in data.summary_ids]
     _summary_map: Dict[Any, AssetSummary] = {}
-    for _row in (await db.execute(select(AssetSummary).where(AssetSummary.id.in_(_s_uuids)))).scalars().all():
+    # 与脚本定稿直投共用载体：先锁后读，避免旧审核态覆盖直投或漏作废已投生产单。
+    _summary_stmt = (
+        select(AssetSummary)
+        .where(AssetSummary.id.in_(_s_uuids))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    for _row in (await db.execute(_summary_stmt)).scalars().all():
         _summary_map[_row.id] = _row
     _asset_map: Dict[Any, AssetItem] = {}
     _asset_uuids = {s.asset_id for s in _summary_map.values()}
@@ -8501,10 +8508,11 @@ async def create_productions(
             ),
         )
 
-    # 极简模式脚本直投（2026-11-23）：入参里的键必须是脚本的生产载体、正文须与载体过审正文
-    # 逐字一致。为什么在这里卡死而不是信前端：script_texts 会让这些行跳过 A2-1 形态复核——
-    # 不校验的话，任何有投产权的人都能拿它当"绕过复核的任意提示词"入口。
+    # 极简模式脚本直投（2026-11-26 定稿即可投）：入参里的键必须是已定稿脚本的生产载体，
+    # 正文须与载体当前正文逐字一致。为什么在这里卡死而不是信前端：script_texts 会让这些行
+    # 跳过 A2-1 形态复核——不校验的话，任何有投产权的人都能拿它当"绕过复核的任意提示词"入口。
     direct_texts: Dict[str, str] = {}
+    _direct_script_rows: List[Any] = []
     if data.script_texts:
         _d_keys = [str(k).strip() for k, v in data.script_texts.items() if str(k).strip()]
         _unknown = sorted(k for k in _d_keys if k not in {str(x) for x in data.summary_ids})
@@ -8521,32 +8529,72 @@ async def create_productions(
         # 都发 script_texts，完整模式导入/出文案镜像出来的行（载体＝真候选，is_shell=false）
         # 于是整批 400「不是脚本的生产载体」。批 X 的设计本来就是「镜像让候选在脚本库可投」，
         # 这条过滤与它自相矛盾。安全锁一条不少：①键必须是**某脚本的生产载体**（普通候选仍拒，
-        # 防把 script_texts 当绕展开的后门）；②投递正文必须逐字＝**载体过审正文**
-        # （AssetSummary.text——审的必须就是投的；壳的正文自创建起就被定稿冻结纪律锁死，
-        # 与脚本 body 恒等；镜像稿若被审核台改后过，投的是改后版，旧镜像撞比对即拒）。
+        # 防把 script_texts 当绕展开的后门）；②投递正文必须逐字＝**已定稿脚本的载体正文**。
+        # 镜像稿若被审核台改后过，投的是改后版；草稿/下架稿即使还挂着载体也不能从这里投产。
         _carrier_rows = (
             await db.execute(
-                select(AssetScript.carrier_summary_id, AssetSummary.text)
+                select(
+                    AssetScript.id.label("script_id"),
+                    AssetScript.name.label("script_name"),
+                    AssetScript.owner_id.label("script_owner_id"),
+                    AssetScript.carrier_summary_id,
+                    AssetSummary.text,
+                    AssetSummary.audit_status,
+                )
                 .join(AssetSummary, AssetSummary.id == AssetScript.carrier_summary_id)
                 .where(
                     AssetScript.carrier_summary_id.in_(_carrier_ids),
+                    AssetScript.state == SCRIPT_READY,
                 )
             )
         ).all()
-        _carrier_body = {str(cid): (text or "") for cid, text in _carrier_rows if cid is not None}
+        _carrier_body = {
+            str(r.carrier_summary_id): (r.text or "") for r in _carrier_rows if r.carrier_summary_id is not None
+        }
+        _carrier_state = {
+            str(r.carrier_summary_id): r.audit_status for r in _carrier_rows if r.carrier_summary_id is not None
+        }
+        _direct_script_rows = list(_carrier_rows)
         for k in _d_keys:
             _want = (data.script_texts.get(k) or "").strip()
             if k not in _carrier_body:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"script_texts 的键 {k[:8]}… 不是脚本的生产载体（只能是极简脚本库里的稿——送审过的或完整模式镜像进来的）",
+                    detail=f"script_texts 的键 {k[:8]}… 不是已定稿脚本的生产载体（只能是极简脚本库里已定稿的稿——手写/上传或完整模式镜像）",
+                )
+            if _carrier_state.get(k) not in REVIEW_PASSED_STATES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"脚本 {k[:8]}… 的生产载体尚未就绪——请从脚本库「投豆包」入口完成风险复核与就绪留痕后再投",
                 )
             if _want != _carrier_body[k].strip():
                 raise HTTPException(
                     status_code=400,
-                    detail=f"脚本 {k[:8]}… 的投递正文与过审正文不一致（审的必须就是投的）——改过稿请重新定稿过审；镜像稿以审核台最新过审正文为准",
+                    detail=f"脚本 {k[:8]}… 的投递正文与已定稿载体正文不一致——改过稿请重新定稿；镜像稿以审核台最新过审正文为准",
                 )
             direct_texts[k] = _want
+
+        cross_direct_scripts = [
+            r for r in _direct_script_rows if str(r.script_owner_id) != str(current_user.id)
+        ]
+        if cross_direct_scripts and not data.cross_person_confirm:
+            script_owner_names = await _user_names(db, {r.script_owner_id for r in cross_direct_scripts})
+            shown_scripts = "；".join(
+                f"「{r.script_name}」（作者 {script_owner_names.get(str(r.script_owner_id), '未知')}）"
+                for r in cross_direct_scripts[:5]
+            )
+            more_scripts = (
+                f"（另有 {len(cross_direct_scripts) - 5} 条，本条只列前 5 条）"
+                if len(cross_direct_scripts) > 5 else ""
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"投产涉及{_CROSS_OWNER_MARKER}：{shown_scripts}{more_scripts}。"
+                    "谁投账算谁（生产单记你名下、脚本作者留审计）——请确认确实是替同事补单/代班："
+                    "界面弹窗点「确认替他人投产」后再发一次（带 cross_person_confirm=true），这一次没有建单。"
+                ),
+            )
 
     # 反过来也要堵：**是脚本载体、却没带 script_texts** 的候选，一律不许在这里建单。
     # 不堵的后果与正文长短有关（所以靠形态闸"碰巧拦住"不算闸）：脚本短于 80 字时形态闸
@@ -8675,7 +8723,7 @@ async def create_productions(
         # 提示词上会全拦；且待审条目多无反推稿，_prompt_script_of 的补稿路径会同步等
         # 模型——正是弹窗长时间转圈的来源。试产提示词的风险词闸在投板侧照扫
         #（_risk_recheck_map 扫的就是 p.prompt_text，admin force+理由同一道口）。
-        # 脚本直投行：正文已由脚本库的轻量过审把关（风险词 block 重扫＋审计），形态闸不适用
+        # 脚本直投行：正文已由脚本库定稿直投入口完成风险词 block 重扫、就绪留痕与审计，形态闸不适用
         direct_text = direct_texts.get(str(uuid_s))
         waived = None
         if not data.trial and direct_text is None:
@@ -9038,8 +9086,12 @@ async def create_productions(
     missing_codes = sum(1 for p in productions if not p.hook_code)
     missing_names = sum(1 for p in productions if not p.board_name)
     _owner_names_all = await _user_names(
-        db, {s.reviewed_by for s in (*cross_summaries, *self_summaries) if s.reviewed_by}
-    ) if (cross_summaries or self_summaries) else {}
+        db,
+        {
+            *(s.reviewed_by for s in (*cross_summaries, *self_summaries) if s.reviewed_by),
+            *(r.script_owner_id for r in _direct_script_rows),
+        },
+    ) if (cross_summaries or self_summaries or _direct_script_rows) else {}
     await _write_audit(
         db,
         action="asset.produce_order",
@@ -9080,9 +9132,20 @@ async def create_productions(
                             "self": s.reviewed_by == current_user.id,
                         }
                         for s in (*cross_summaries, *self_summaries)
-                    ]
+                    ],
+                    "direct_scripts": [
+                        {
+                            "script_id": str(r.script_id),
+                            "script_name": r.script_name,
+                            "carrier_summary_id": str(r.carrier_summary_id),
+                            "owner_id": str(r.script_owner_id),
+                            "owner_name": _owner_names_all.get(str(r.script_owner_id)),
+                            "cross": str(r.script_owner_id) != str(current_user.id),
+                        }
+                        for r in _direct_script_rows
+                    ],
                 }
-                if cross_summaries or self_summaries
+                if cross_summaries or self_summaries or _direct_script_rows
                 else None
             ),
             "hook_codes": hook_codes or None,
@@ -15983,18 +16046,15 @@ def _split_ids(raw: Optional[str], field: str) -> List[str]:
 #   · 钩子文案（asset_summaries）：≤80 字形态闸 → 过审 → autoclip 展开成提示词 → 投板
 #   · 脚本（asset_scripts）：本身就是提示词，不展开；只过风险词 block 闸 → 投板
 #
-# 四条口径（施工方案 §9.0/§9.1，11-23 评审后定稿）：
+# 四条口径（2026-11-26 定稿直投）：
 # 1. **只折叠 UI，不旁路逻辑**：投产走同一个 `create_productions`（`ProduceRequest.script_texts`
 #    脚本直投），投板走同一个 `dispatch_productions`——号池「一发即烧」、跨人确认、
-#    风险词重扫、卡片校验全部复用，这里不自判。
-# 2. **定稿即冻结**：`ready` 行的正文不可改，要改就派生新草稿（`based_on_script_id`）。
-#    投出去的永远是对得上号的那一版（审的＝投的，produce 口里逐字校验）。
+#    风险词重扫、卡片校验全部复用。
+# 2. **定稿即冻结、定稿即可投**：`ready` 行正文不可改，要改就派生新草稿；无需先送审。
+#    未人工过审的载体在投产前按定稿正文自动就绪，已人工过审的镜像仍投最新过审正文。
 # 3. **生产载体**：生产单必须挂在候选文案上（`asset_productions.summary_id` NOT NULL），
-#    所以每个脚本送审时配一个素材壳＋候选行（`carrier_summary_id` 回指）。载体不是钩子
-#    文案，五环的 ②③ 读口默认把它藏起来（`_not_script_carrier`）。
-# 4. **轻量过审**（`/approve`）：角色/职能闸、风险词 block 重扫、审计，全部与审核口同口径；
-#    唯一差别是**不套 ≤80 字的文案形态闸**（那是给钩子文案的）。素材专员没有审核职能，
-#    送审（`/submit`）后等有审核职能的同事点那一下。
+#    所以每个脚本配一个素材壳＋候选行（`carrier_summary_id` 回指）；完整模式镜像直接指真候选。
+# 4. **人工审核端点保留**：`/submit`、`/approve` 与审核台仍可走原人工流程，但不是极简投产前置。
 # ═════════════════════════════════════════════════════════════════════════════════════
 
 _SCRIPT_NAME_MAX = 60
@@ -16046,15 +16106,15 @@ class ScriptSaveFromAssetRequest(BaseModel):
 
 
 class ScriptProduceRequest(BaseModel):
-    """极简模式屏 2「投豆包」：选好的可投稿脚本 → 建生产单 → 直接投板（后台任务）。"""
+    """极简模式屏 2「投豆包」：已定稿脚本 → 建生产单 → 直接投板（后台任务）。"""
 
-    script_ids: List[str] = Field(default_factory=list, description="可投稿且已过审的脚本")
+    script_ids: List[str] = Field(default_factory=list, description="已定稿的脚本")
     board_total: int = Field(1, description="每个脚本出几版（板上 total，1..ASSET_BOARD_TOTAL_MAX）")
     card_asset_ids: Optional[List[str]] = Field(None, description="人物三视图（第 1 张＝主形象）")
     hook_codes: Optional[List[str]] = Field(
-        None, description="手工粘的钩子编号（数量须等于脚本数）；不传＝后端自动取号"
+        None, description="手工粘的钩子编号（数量须等于缺号脚本数）；不传＝后端自动取号"
     )
-    cross_person_confirm: bool = Field(False, description="用了别人过审的脚本时要知情确认")
+    cross_person_confirm: bool = Field(False, description="用了别人的定稿脚本时要知情确认")
 
 
 def _script_hash(body: Optional[str]) -> str:
@@ -16123,10 +16183,11 @@ async def _ensure_script_carrier(
     """给脚本配生产载体（素材壳＋候选行），幂等。
 
     为什么要有载体：生产单必须挂在候选文案上（`asset_productions.summary_id`
-    NOT NULL）。载体正文＝脚本正文，审核态记在这条候选行上（待审/已过审）。
-    壳不带批次（`batch_id` 可空是既有设计）——这样五环的批次下拉里不会多出一个
-    「脚本库」批次；代价是投板侧的「替他人批次花钱」闸对它不触发，跨人口径改由
-    载体的过审人承担（`reviewed_by ≠ 操作者` → produce 口的跨人确认，与五环同一条）。
+    NOT NULL）。新载体先记待审，极简模式在定稿脚本投产时自动就绪；保留人工审核态供
+    完整模式与历史流程使用。壳不带批次（`batch_id` 可空是既有设计）——这样五环的
+    批次下拉里不会多出一个「脚本库」批次；代价是投板侧的「替他人批次花钱」闸对它
+    不触发，跨人口径由脚本作者与真实审核人承担（`reviewed_by ≠ 操作者` → produce
+    口的跨人确认，与五环同一条）。
     """
     if script.carrier_summary_id:
         existing = await db.get(AssetSummary, script.carrier_summary_id)
@@ -16161,14 +16222,62 @@ async def _ensure_script_carrier(
     return carrier
 
 
+async def _mark_script_carrier_ready(
+    db: AsyncSession, *, script: AssetScript, carrier: AssetSummary, operator: User, risk_hit: str
+) -> None:
+    """把未人工过审的定稿脚本载体就绪；不伪装人工审核，也不触发自审旋钮。"""
+    if carrier.audit_status in REVIEW_PASSED_STATES:
+        carrier.risk_hit = risk_hit
+        return
+    before = {
+        "audit_status": carrier.audit_status,
+        "text": carrier.text,
+        "word_count": carrier.word_count,
+        "reviewed_by": str(carrier.reviewed_by) if carrier.reviewed_by else None,
+        "reviewed_at": carrier.reviewed_at.isoformat() if carrier.reviewed_at else None,
+        "reject_reason": carrier.reject_reason,
+        "resubmit_note": carrier.resubmit_note,
+        "risk_hit": carrier.risk_hit,
+    }
+    carrier.text = script.body
+    carrier.word_count = svc.count_copy_chars(script.body)
+    carrier.audit_status = RV_APPROVED
+    carrier.reviewed_by = None
+    carrier.reviewed_at = None
+    carrier.reject_reason = None
+    carrier.resubmit_note = None
+    carrier.risk_hit = risk_hit
+    asset = await db.get(AssetItem, carrier.asset_id)
+    if asset is not None:
+        asset.has_approved_copy = True
+        svc.apply_stage(asset, "summary", STAGE_SUCCESS, has_approved_copy=True)
+    await db.flush()
+    await _write_audit(
+        db,
+        action="asset.script.direct_ready",
+        operator=operator,
+        target_type="asset_script",
+        target_id=script.id,
+        before=before,
+        after={
+            "audit_status": carrier.audit_status,
+            "carrier_summary_id": str(carrier.id),
+            "text_changed": before["text"] != carrier.text,
+            "via": "simple_script_direct_produce",
+            "script": {"id": str(script.id), "name": script.name, "owner_id": str(script.owner_id)},
+        },
+        strict=True,
+    )
+
+
 async def _mirror_scripts_for_summaries(
     db: AsyncSession, summaries: List[AssetSummary], *, operator: User
 ) -> List[AssetScript]:
     """批 X 写入面打通（11-25 用户口径「两种模式下的文案数据要打通」）：候选 → 脚本行镜像。
 
-    每条真候选同步落一行**可投稿**脚本，carrier_summary_id **直接指真候选**——
-    候选在 ③ 过审的那一刻，极简脚本库的那条立即可投（produce 闸门读的就是载体
-    审核态，不需要任何同步写）。载体判别读 is_shell 列（同批改属性式），
+    每条真候选同步落一行**可投豆包**脚本，carrier_summary_id **直接指真候选**——
+    脚本定稿即可投；未人工过审的载体按冻结的脚本正文自动就绪，已人工过审的则继续
+    投审核台最新正文，不需要任何同步写。载体判别读 is_shell 列（同批改属性式），
     真候选不会被误判成壳藏进 ②③。
 
     幂等：同 owner 同正文的在用脚本已存在（`_find_twin_ready`）就不新建——
@@ -16267,7 +16376,7 @@ async def _serialize_scripts(
         for p in prows:
             prod_by_carrier.setdefault(str(p.summary_id), []).append(p)
 
-    _state_label = {SCRIPT_DRAFT: "库稿", SCRIPT_READY: "可投稿", SCRIPT_RETIRED: "已下架"}
+    _state_label = {SCRIPT_DRAFT: "库稿", SCRIPT_READY: "可投豆包", SCRIPT_RETIRED: "已下架"}
     out: List[dict] = []
     for r in rows:
         c = carriers.get(str(r.carrier_summary_id)) if r.carrier_summary_id else None
@@ -16320,19 +16429,22 @@ async def _serialize_scripts(
     return out
 
 
-async def _load_scripts(db: AsyncSession, script_ids: List[str]) -> Dict[str, AssetScript]:
+async def _load_scripts(
+    db: AsyncSession, script_ids: List[str], *, lock: bool = False
+) -> Dict[str, AssetScript]:
     """按 id 批量取脚本（去重、保持传入顺序由调用方处理）。非法 id 当场 400 点名。"""
     uuids = [_as_uuid(x, "script_id") for x in dict.fromkeys(script_ids)]
     if not uuids:
         return {}
-    rows = (
-        await db.execute(select(AssetScript).where(AssetScript.id.in_(uuids)))
-    ).scalars().all()
+    stmt = select(AssetScript).where(AssetScript.id.in_(uuids))
+    if lock:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    rows = (await db.execute(stmt)).scalars().all()
     return {str(r.id): r for r in rows}
 
 
 async def _find_twin_ready(db: AsyncSession, owner_id: Any, body_hash: str, *, exclude_id: Any = None):
-    """同一人名下、正文相同的那条**可投稿**脚本（没有＝None）。定稿/新建的幂等依据。"""
+    """同一人名下、正文相同的那条**可投豆包**脚本（没有＝None）。定稿/新建的幂等依据。"""
     conds = [AssetScript.owner_id == owner_id, AssetScript.body_hash == body_hash, AssetScript.state == SCRIPT_READY]
     if exclude_id is not None:
         conds.append(AssetScript.id != exclude_id)
@@ -16355,7 +16467,7 @@ async def create_script(
 ):
     """新建脚本（草稿）。手写或文件上传（前端读文件后把正文贴过来）都走这里。
 
-    幂等：自己名下已有**内容相同的在用脚本**（优先可投稿）→ 不新建，原样返回那条
+    幂等：自己名下已有**内容相同的在用脚本**（优先可投豆包）→ 不新建，原样返回那条
     （HTTP 200 ＋ `reused: true`）。
     `based_on_script_id`：基于别人的脚本派生自己的草稿——读全员可见，派生不用问人。
     """
@@ -16417,7 +16529,7 @@ async def create_script(
 @router.get("/assets/scripts")
 async def list_scripts(
     owner: Optional[str] = "me",
-    state: Optional[str] = Query(None, description="逗号多值；不传＝在用的（库稿＋可投稿），已下架要显式点名"),
+    state: Optional[str] = Query(None, description="逗号多值；不传＝在用的（库稿＋可投豆包），已下架要显式点名"),
     category_id: Optional[str] = None,
     carrier_status: Optional[str] = Query(
         None, description="按载体的审核态筛：pending 待审／approved 已过审／none 还没送审；不传＝不限"
@@ -16596,10 +16708,9 @@ async def submit_scripts(
     current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
     db: AsyncSession = Depends(get_db),
 ):
-    """送审：给可投稿脚本建生产载体（候选行，待审）。幂等——已建过的原样返回。
+    """人工送审：给已定稿脚本建生产载体（候选行，待审）。幂等——已建过的原样返回。
 
-    谁会用到：没有审核职能的账号（素材专员）定稿之后点「送审」，等有审核职能的同事
-    在屏 2 的「待过审」里点那一下轻量过审。
+    极简模式定稿直投不经过这里；此端点保留给需要人工审核记录的历史流程。
     """
     if not data.script_ids:
         raise HTTPException(status_code=400, detail="请点名要送审的脚本（script_ids 为空）")
@@ -16759,7 +16870,7 @@ async def approve_scripts(
     db: AsyncSession = Depends(get_db),
     _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
 ):
-    """轻量过审：给已送审的脚本点那一下「过」（极简模式屏 2）。
+    """人工过审：给已送审的脚本点那一下「过」。极简定稿直投不经过这里。
 
     权限与审核口完全一致（审核职能＋运营/管理员角色）；**响应里逐条带 ok/error**——
     界面必须把 `ok:false` 的条数念出来，别让人以为整批都过了（HTTP 200 ≠ 全过）。
@@ -16818,14 +16929,14 @@ async def produce_from_scripts(
     data: ScriptProduceRequest,
     current_user: Annotated[User, Depends(require_functions("produce"))],
     db: AsyncSession = Depends(get_db),
-    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
+    _role_gate: User = Depends(require_roles(*_PROD_ROLES)),
 ):
-    """极简模式屏 2「投豆包」：选好的脚本 → 建生产单 → 直接投板（后台任务，受理即回）。
+    """极简模式屏 2「投豆包」：已定稿脚本 → 建生产单 → 直接投板（后台任务，受理即回）。
 
     - 一脚本一单：脚本正文就是提示词（不展开、不调模型），`board_total`＝出几版；
-    - 走**同一个** `create_productions`（脚本直投入参）与同一个 `dispatch_productions`：
-      钩子号「一发即烧」、跨人确认、风险词重扫、卡片校验一条不少，这里不自判；
-    - 只吃**已过审**的脚本（审的＝投的；produce 口里还会逐字比对载体正文）；
+    - 走**同一个** `create_productions` 与 `dispatch_productions`，钩子号、卡片校验照旧；
+    - 只吃**已定稿**脚本；未人工过审的载体在取号前按定稿正文自动就绪并重扫风险词；
+    - 已人工过审的镜像仍投最新过审正文；跨人确认与审计照旧；
     - 受理即回任务号：豆包出片约 25 分钟，成片回到成片墙。
     """
     if not data.script_ids:
@@ -16840,7 +16951,7 @@ async def produce_from_scripts(
             status_code=400, detail=f"每个脚本出几版只能是 1..{total_cap}（收到 {data.board_total}）"
         )
     ordered = list(dict.fromkeys(data.script_ids))
-    found = await _load_scripts(db, ordered)
+    found = await _load_scripts(db, ordered, lock=True)
     problems: List[str] = []
     picked: List[AssetScript] = []
     carrier_of: Dict[str, AssetSummary] = {}
@@ -16850,20 +16961,47 @@ async def produce_from_scripts(
             problems.append(f"{str(raw)[:8]}…：不在库里")
         elif row.state != SCRIPT_READY:
             problems.append(f"「{row.name}」还没定稿")
-        elif not row.carrier_summary_id:
-            problems.append(f"「{row.name}」还没过审")
         else:
-            carrier = await db.get(AssetSummary, row.carrier_summary_id)
-            if carrier is None or carrier.audit_status not in REVIEW_PASSED_STATES:
-                problems.append(f"「{row.name}」还没过审")
-            else:
-                picked.append(row)
-                carrier_of[str(row.id)] = carrier
+            carrier = await _ensure_script_carrier(db, row, operator=current_user)
+            carrier = (
+                await db.execute(
+                    select(AssetSummary)
+                    .where(AssetSummary.id == carrier.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one()
+            picked.append(row)
+            carrier_of[str(row.id)] = carrier
     if problems:
         raise HTTPException(
             status_code=400,
             detail="这几条还不能投：" + "；".join(problems[:4]) + (f"；另有 {len(problems) - 4} 条" if len(problems) > 4 else "")
-            + "——先定稿、过审再来",
+            + "——先定稿再来",
+        )
+
+    body_of = {
+        str(s.id): ((carrier_of[str(s.id)].text or "").strip()
+                    if carrier_of[str(s.id)].audit_status in REVIEW_PASSED_STATES
+                    else (s.body or "").strip())
+        for s in picked
+    }
+    book, exemptions = await _risk_lexicon(db)
+    risk_problems: List[str] = []
+    risk_hit_of: Dict[str, str] = {}
+    for s in picked:
+        hits = svc.scan_risk(body_of[str(s.id)], lexicon=book, exemptions=exemptions)
+        risk_hit_of[str(s.id)] = svc.format_risk_hits(hits)
+        blocked = svc.risk_block_hits(hits)
+        if blocked:
+            risk_problems.append(
+                f"「{s.name}」：" + "、".join(f"含高风险词「{h.get('word')}」" for h in blocked[:4])
+            )
+    if risk_problems:
+        raise HTTPException(
+            status_code=400,
+            detail="定稿正文复核未过（本次没有取号、没有建单）：" + "；".join(risk_problems[:4])
+            + "——改掉脚本里的这些词并重新定稿后再投",
         )
 
     # ── 会 400 的闸先过，再取号：号是「一发即烧」，先取号再被闸拦下＝白烧 ──
@@ -16871,12 +17009,24 @@ async def produce_from_scripts(
     # _CROSS_OWNER_MARKER 识别跨人确认）；真正的闸仍在 create_productions 里照跑一遍。
     if data.card_asset_ids:
         await _resolve_card_assets(db, data.card_asset_ids)   # 脏卡 id 当场 400
-    _cross = [s for s in picked if carrier_of[str(s.id)].reviewed_by is not None
-              and str(carrier_of[str(s.id)].reviewed_by) != str(current_user.id)]
+    _cross = [
+        s for s in picked
+        if str(s.owner_id) != str(current_user.id)
+        or (carrier_of[str(s.id)].reviewed_by is not None
+            and str(carrier_of[str(s.id)].reviewed_by) != str(current_user.id))
+    ]
     if _cross and not data.cross_person_confirm:
-        _names = await _user_names(db, {carrier_of[str(s.id)].reviewed_by for s in _cross})
+        _who = {
+            s.id: (carrier_of[str(s.id)].reviewed_by
+                   if carrier_of[str(s.id)].reviewed_by is not None
+                   and str(carrier_of[str(s.id)].reviewed_by) != str(current_user.id)
+                   else s.owner_id)
+            for s in _cross
+        }
+        _names = await _user_names(db, set(_who.values()))
         _shown = "；".join(
-            f"「{s.name}」（过审人 {_names.get(str(carrier_of[str(s.id)].reviewed_by), '未知')}）"
+            f"「{s.name}」（{'过审人' if _who[s.id] == carrier_of[str(s.id)].reviewed_by else '作者'} "
+            f"{_names.get(str(_who[s.id]), '未知')}）"
             for s in _cross[:5]
         )
         raise HTTPException(
@@ -16884,7 +17034,7 @@ async def produce_from_scripts(
             detail=(
                 f"投产涉及{_CROSS_OWNER_MARKER}：{_shown}"
                 f"{'（另有 ' + str(len(_cross) - 5) + ' 条，本条只列前 5 条）' if len(_cross) > 5 else ''}。"
-                "谁投账算谁（生产单记你名下、过审人留审计）——请确认确实是替同事补单/代班："
+                "谁投账算谁（生产单记你名下、脚本作者与审核人留审计）——请确认确实是替同事补单/代班："
                 "界面弹窗点「确认替他人投产」后再发一次（带 cross_person_confirm=true），这一次没有建单、没有取号。"
             ),
         )
@@ -16897,6 +17047,15 @@ async def produce_from_scripts(
                 "（ASSET_SELF_PRODUCE_ALLOWED=false）。质检与投产分离是三角色模型的纪律——"
                 "确需一人包干（小团队/应急），由管理员把该旋钮设为 true 后重发。"
             ),
+        )
+
+    for s in picked:
+        await _mark_script_carrier_ready(
+            db,
+            script=s,
+            carrier=carrier_of[str(s.id)],
+            operator=current_user,
+            risk_hit=risk_hit_of[str(s.id)],
         )
 
     # ── 取号：一钩一号、一发即烧，所以**先吃文案名下已预取的号，缺几个补几个** ──
@@ -16985,11 +17144,9 @@ async def produce_from_scripts(
             )
         codes = [str(c.hook_code).strip().upper() for c in carriers]
 
-    # 批 AC（11-25 用户「从完整模式导过来的文案无法进行豆包投产」）：喂给建单口的
-    # 是载体的**过审正文**，不是脚本 body——壳载体两者恒等（定稿冻结纪律保证），
-    # 镜像稿的候选若被审核台「改后通过」，该投的是改后那一版（审的＝投的），
-    # 旧镜像正文不参与投递；create_productions 里还会逐字比对兜底。
-    bodies = {str(s.carrier_summary_id): (carrier_of[str(s.id)].text or "") for s in picked}
+    # 未人工过审的脚本已按冻结的 ready 正文自动就绪；已人工过审的镜像则保留审核台最新正文。
+    # create_productions 仍会逐字比对载体正文，防止链路中再被改写。
+    bodies = {str(s.carrier_summary_id): body_of[str(s.id)] for s in picked}
     produce_res = await create_productions(
         ProduceRequest(
             summary_ids=list(bodies.keys()),
@@ -17353,11 +17510,11 @@ async def finalize_script(
     current_user: Annotated[User, Depends(require_roles(*_PROD_ROLES))],
     db: AsyncSession = Depends(get_db),
 ):
-    """定稿：库稿 → 可投稿（仅本人）。定稿后正文冻结，投板时就用这一版。
+    """定稿：库稿 → 可投豆包（仅本人）。定稿后正文冻结，投板时就用这一版。
 
     三道关卡，缺一不可：
     1. **风险词 block 重扫**（与审核/投板同一张词表）——命中即 409 点名是哪几个词；
-    2. **同一人不留两条内容相同的可投稿脚本**——内容与已有定稿相同则幂等返回那一行
+    2. **同一人不留两条内容相同的可投豆包脚本**——内容与已有定稿相同则幂等返回那一行
        （草稿随之收起），不堆重复；这是库级唯一索引 `(owner_id, body_hash) WHERE state='ready'`
        的应用层前置提示，并发窗口由索引兜底；
     3. **审计**（strict）——改前原文、改后正文、谁点的，一样不落。
@@ -17391,7 +17548,7 @@ async def finalize_script(
     before = {"state": row.state, "body": row.body, "category_id": str(row.category_id) if row.category_id else None}
     twin = await _find_twin_ready(db, row.owner_id, body_hash, exclude_id=row.id)
     if twin is not None:
-        # 内容已经有定稿版：这条草稿收起，直接用那一行（不堆两条一样的可投稿脚本）
+        # 内容已经有定稿版：这条草稿收起，直接用那一行（不堆两条一样的可投豆包脚本）
         row.state = SCRIPT_RETIRED
         await _write_audit(
             db,

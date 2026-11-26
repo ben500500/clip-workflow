@@ -2850,9 +2850,9 @@ export interface AssetScript {
   /** 仅详情/新建/派生响应带全文 */
   body?: string;
   /**
-   * 生产载体：生产单必须挂在候选文案上，所以每个脚本送审时配一条候选行。
-   * 载体的 audit_status＝这条脚本的审核态（pending 待审 / approved 已过审）。
-   * null＝还没送审。五环的 ②③ 列表默认看不到载体（它不是钩子文案）。
+   * 生产载体：生产单必须挂在候选文案上，所以每个脚本配一条候选行。
+   * 极简模式只看脚本是否已定稿；载体审核态保留给完整模式与历史人工审核。
+   * null＝还没投产过。五环的 ②③ 列表默认看不到壳载体（它不是钩子文案）。
    */
   carrier: {
     summary_id: string;
@@ -2883,7 +2883,7 @@ export interface AssetScriptListParams {
   owner?: 'me' | 'all';
   /** 批 AA：按上传人点名（用户 id）；给了它 owner 让位，且收藏不算归属 */
   owner_id?: string;
-  /** 逗号多值；不传＝在用的（库稿＋可投稿） */
+  /** 逗号多值；不传＝在用的（库稿＋可投豆包） */
   state?: string;
   category_id?: string;
   /** 按审核态筛：pending 待审／approved 已过审／none 还没送审 */
@@ -3516,7 +3516,7 @@ export const assetApi = {
       removed: number;
     }>,
 
-  /** 定稿：库稿 → 可投稿。风险词 block 命中 409；正文冻结，之后要改只能派生 */
+  /** 定稿：库稿 → 可投豆包。风险词 block 命中 409；正文冻结，之后要改只能派生 */
   finalizeScript: (
     scriptId: string,
     data?: { body?: string; category_id?: string | null; clear_category?: boolean },
@@ -3526,7 +3526,7 @@ export const assetApi = {
   saveScriptFromAsset: (data: { asset_id: string; name?: string | null; category_id?: string | null }) =>
     client.post('/assets/scripts/save-from-asset', data) as Promise<AssetScript>,
 
-  /** 送审：给可投稿脚本建生产载体（待审）。没有审核职能的账号走到这一步 */
+  /** 人工送审：给已定稿脚本建生产载体（待审）。极简定稿直投不需要先调它 */
   submitScripts: (scriptIds: string[]) =>
     client.post('/assets/scripts/submit', { script_ids: scriptIds }) as Promise<{
       results: AssetScriptVerdictItem[];
@@ -3534,14 +3534,14 @@ export const assetApi = {
       message: string;
     }>,
 
-  /** 轻量过审：与审核口同口径（角色/职能/自审旋钮/风险词 block/审计），逐条带 ok */
+  /** 人工过审：与审核口同口径（角色/职能/自审旋钮/风险词 block/审计），逐条带 ok */
   approveScripts: (scriptIds: string[], waiveReason?: string) =>
     client.post('/assets/scripts/approve', {
       script_ids: scriptIds,
       waive_reason: waiveReason || undefined,
     }) as Promise<{ results: AssetScriptVerdictItem[]; message: string }>,
 
-  /** 屏 2「投豆包」：建单＋直投板，受理即回任务号。用了别人过审的脚本要先确认 */
+  /** 屏 2「投豆包」：已定稿脚本直接建单＋投板，受理即回任务号。用了同事的脚本要先确认 */
   produceFromScripts: (data: {
     script_ids: string[];
     board_total?: number;

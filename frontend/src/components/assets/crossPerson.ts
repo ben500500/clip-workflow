@@ -51,9 +51,10 @@ export async function withCrossPersonConfirm<T>(
 /**
  * A′ 按运营隔离（2026-11-07）：归属跨人确认的前端半边。
  *
- * 后端口径：投**别人过审**的候选（reviewed_by≠操作者）不带 `cross_person_confirm=true`
- * 会 400，白话点名候选与过审人。谁投账算谁（生产单记实际投产人、候选过审人进审计）——
- * 这里只管"投产前点一下头"，与花钱口径的 withCrossPersonConfirm（替他人批次）并存。
+ * 后端口径：投别人的脚本，或投别人过审的候选（reviewed_by≠操作者），不带
+ * `cross_person_confirm=true` 会 400，白话点名作者或过审人。谁投账算谁（生产单记实际
+ * 投产人、脚本作者与审核人进审计）——这里只管"投产前点一下头"，与花钱口径的
+ * withCrossPersonConfirm（替他人批次）并存。
  */
 
 export const CROSS_OWNER_MARKER = '替他人过审候选投产';
@@ -70,7 +71,7 @@ export async function withCrossOwnerConfirm<T>(
     if (!isCrossOwnerAsk(e)) throw e;
     return new Promise<T | undefined>((resolve, reject) => {
       Modal.confirm({
-        title: '这是别人过审的文案，生产单会记在你名下',
+        title: '这是同事的文案，生产单会记在你名下',
         width: 560,
         content: (e as Error).message,
         okText: '确认替他人投产',

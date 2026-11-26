@@ -20,7 +20,8 @@
  *      用户原话：「默认是要能看到全部的，但是可以加入一个开关或者复选框，仅看自己。
  *      这个仅看自己，不是说仅仅是自己导入的文案也可以在已有的脚本库里面勾选，然后收藏起来。」
  *
- * 全程不点「投豆包」（花钱），只做勾选/切页签/点开预览这类只读动作。
+ * 除 material 的「定稿直投」段外不点真实「投豆包」；该段在 CDP 层拦截并 mock 成功响应，
+ * 用来验证界面只发 produce、不发 submit/approve，全程不创建真实豆包任务、不烧号。
  *
  * 11-24 踩坑：shot() 不 await 会抢下一跳的页面——p3 那张截成了下一屏（③）的内容，
  * p4/c 两张干脆没落盘（进程退出前 capture 还没回）。所有截图一律 await。
@@ -59,8 +60,9 @@ let MAT_TOK = '';
 try { MAT_TOK = readFileSync(process.argv[3] || '/tmp/.cdp_tok_material', 'utf8').trim(); } catch {}
 if (!ADMIN_TOK.startsWith('ey')) { console.error('admin token 文件不对'); process.exit(2); }
 
-const CDP_PORT = 9343;
-const USER_DATA = '/tmp/asset-shot-profile-simple';
+const CDP_PORT = Number(process.env.SHOOT_CDP_PORT || 9343);
+const USER_DATA = process.env.SHOOT_PROFILE || '/tmp/asset-shot-profile-simple';
+const ONLY_MATERIAL = process.env.SHOOT_ONLY === 'material';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const flat = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -85,7 +87,9 @@ const HANG_URL = '/api/assets/ui/preferences';
 // 只看界面文字判不了这件事——四个面板各自都有「我的/全部」，本地数据又全属于 admin，
 // 收不收在屏幕上看不出区别，只有请求参数骗不了人。
 const netLog = [];
+const produceDiagnostics = [];
 let netOn = false;
+let mockProduce = false;
 
 async function main() {
   let target = null;
@@ -106,9 +110,37 @@ async function main() {
       m.error ? p.rej(new Error(JSON.stringify(m.error).slice(0, 200))) : p.res(m.result);
       return;
     }
+    if (m.method === 'Runtime.exceptionThrown') {
+      produceDiagnostics.push(`exception: ${JSON.stringify(m.params.exceptionDetails).slice(0, 500)}`);
+    }
+    if (m.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(m.params.type)) {
+      produceDiagnostics.push(`${m.params.type}: ${m.params.args.map((a) => a.value || a.description || '').join(' ').slice(0, 500)}`);
+    }
+    if (m.method === 'Network.loadingFailed' && m.params.requestId) {
+      produceDiagnostics.push(`network: ${m.params.errorText} ${m.params.canceled ? 'canceled' : ''}`);
+    }
     if (m.method === 'Fetch.requestPaused') {
       const url = m.params.request.url;
       if (netOn && url.includes('/api/assets')) { netLog.push(url); if (netLog.length > 400) netLog.shift(); }
+      const path = (() => { try { return new URL(url).pathname; } catch { return url; } })();
+      if (mockProduce && path === '/api/assets/scripts/produce') {
+        let payload = {};
+        try { payload = JSON.parse(m.params.request.postData || '{}'); } catch {}
+        const ids = Array.isArray(payload.script_ids) ? payload.script_ids : [];
+        const body = JSON.stringify({
+          production_ids: ids.map((id) => `cdp-mock-${id}`),
+          results: ids.map((id) => ({ script_id: id, ok: true, production_id: `cdp-mock-${id}`, hook_code: 'CDP-MOCK' })),
+          message: `已生成 ${ids.length} 条生产单（CDP mock，未投真板）`,
+          dispatch: { queued: true, job_id: 'cdp-mock-job' },
+        });
+        send('Fetch.fulfillRequest', {
+          requestId: m.params.requestId,
+          responseCode: 200,
+          responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+          body: Buffer.from(body).toString('base64'),
+        }).catch((e) => produceDiagnostics.push(`mock: ${String(e)}`));
+        return;
+      }
       const shouldHang = Date.now() < hangUntil && url.includes(HANG_URL);
       if (shouldHang) hungCount++;
       // 挂起＝什么都不回（continue 也不发），fetch 会永远 pending
@@ -201,7 +233,13 @@ async function main() {
     return 'ok';
   })()`);
   const parseJson = (s) => { try { return typeof s === 'string' ? JSON.parse(s) : s; } catch { return null; } };
+  const api = async (path) => parseJson(await js(`(async () => {
+    const r = await fetch(${JSON.stringify(path)}, { headers: { Authorization: 'Bearer ' + (localStorage.getItem('auth_token') || '') } });
+    let b = null; try { b = await r.json(); } catch (e) {}
+    return JSON.stringify({ status: r.status, body: b });
+  })()`)) || {};
 
+  if (!ONLY_MATERIAL) {
   // ───────────────────────────────────────────────────────────
   // D. 旧五环回归 + Segmented 在位（admin 未存偏好 → 默认 full）
   // ───────────────────────────────────────────────────────────
@@ -344,8 +382,7 @@ async function main() {
   //    **正文**（抽屉里的正文是全文，不是列表那条 100 字预览）。
   //    正文这次是真从详情口 GET /assets/scripts/{id} 取回来的——列表口只回 preview（前 100 字），
   //    所以判据取「抽屉字数 > 列表那格字数」两个实测值比大小，既不拍种子长度也不看「有没有字」。
-  //    ⚠️ ① 屏有**两张表**（待过审 ＋ 改稿·定稿），一切查找锁到「改稿」那张卡里，
-  //    否则会把待过审的行也算进来（那张表没有标题链接，点不出抽屉）。
+  //    ⚠️ ① 屏只保留「改稿 · 定稿」一张表，一切查找锁到这张卡里，避免命中别的面板。
   // ───────────────────────────────────────────────────────────
   const EDIT_SCOPE = `(() => {
     const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
@@ -456,8 +493,8 @@ async function main() {
   assert('P9 ② 活动面板里就摆着「这次要投的脚本」，列出勾中那条且带预览图',
     !!(chip.card && chip.hasName && chip.thumb >= 1), JSON.stringify(chip));
   const pBtns = parseJson(await grabButtons());
-  assert('P10 ② 主按钮按已勾条数说真话（含「投豆包（1）」/「轻量过审并投豆包（1）」）',
-    !!(pBtns && pBtns.dispatch && pBtns.dispatch.some(b => /（1）/.test(b.t))),
+  assert('P10 ② 主按钮按已勾条数说真话，只保留「投豆包（1）」',
+    !!(pBtns && pBtns.dispatch && pBtns.dispatch.some(b => b.t === '投豆包（1）')),
     JSON.stringify(pBtns && pBtns.dispatch));
   await shot('p3-produce-chips');
 
@@ -483,8 +520,7 @@ async function main() {
   // T. 批 T（11-24）素材隔离：「仅看自己」开关 ＋ 脚本库 ⭐ 收藏
   //    两只手分开验：开关＝全局可见范围（默认关＝看全部，选择按人存后端）；
   //    收藏＝把别人的稿子挪进「我的」清单，**不改归属**（写口仍只认 owner_id）。
-  //    ② 这一屏有两张表（待过审 ＋ 改稿·定稿），所以一切查找锁到「改稿」那张卡里，
-  //    否则会把待过审的行也算进来（它们没有星标）。
+  //    脚本库只保留「改稿·定稿」一张表，查找仍锁到这张卡里，避免命中别的面板。
   //    全程只点开关/星标/页签，不投产、不花钱；结尾把收藏关系和开关都还原。
   // ───────────────────────────────────────────────────────────
   const SCOPE = `(() => {
@@ -534,11 +570,6 @@ async function main() {
     const sel = seg.querySelector('.ant-segmented-item-selected');
     return sel ? norm(sel.textContent) : 'NO-SEL';
   })()`);
-  const api = async (path) => parseJson(await js(`(async () => {
-    const r = await fetch(${JSON.stringify(path)}, { headers: { Authorization: 'Bearer ' + (localStorage.getItem('auth_token') || '') } });
-    let b = null; try { b = await r.json(); } catch (e) {}
-    return JSON.stringify({ status: r.status, body: b });
-  })()`)) || {};
   // 「谁的」必须按表头定位到**那一个单元格**取。首跑拿整行 innerText 判，结果被
   // 我自己在稿正文里写的「用来验收藏…」里的「收藏」二字判红——门禁自伤，不是产品缺。
   const DATA_ROWS = `.ant-table-tbody tr:not(.ant-table-measure-row):not(.ant-table-expanded-row):not(.ant-table-placeholder)`;
@@ -591,11 +622,10 @@ async function main() {
   await sleep(2200);
   const whoSeg = await segSelected();
   assert('T3b 全局开关翻了，脚本库的「我的/全部」跟着落到「我的」（一处翻动五处一起收）', whoSeg === '我的', whoSeg);
-  // 用户②那条的硬判据：待过审那次请求（carrier_status=pending）**必须带上 owner**。
-  // 少了这颗参数，「我的」里就会混进别人的未定稿——正是用户看到的现象。
+  // 定稿直投后「待过审」区已整体撤下，界面不该再发这个筛选请求。
   const pendReqs = netLog.filter((u) => u.includes('carrier_status=pending'));
-  assert('T3e 「待过审」区跟着开关一起收：底层请求带上了 owner=me（漏传＝别人的稿会冒出来）',
-    pendReqs.length >= 1 && pendReqs.every((u) => /[?&]owner=me(&|$)/.test(u)),
+  assert('T3e 极简脚本库不再请求「待过审」列表（定稿即可投，不先送审）',
+    pendReqs.length === 0,
     JSON.stringify({ n: pendReqs.length, sample: pendReqs.slice(0, 3) }));
   const headsT = await js(`
     (() => Array.from((${SCOPE}).querySelectorAll('.ant-table-thead th'))
@@ -742,8 +772,10 @@ async function main() {
   assert('T9e 还原后素材列表请求带的是 owner=all（不是卡在 me 上）', /[?&]owner=all(&|$)/.test(backLast),
     `${backFam.length}条 末条=${backLast.slice(0, 160)}`);
 
+  }
+
   // ───────────────────────────────────────────────────────────
-  // C. material 角色：无 canReview → 主按钮文案是「投豆包」；默认极简
+  // C. material 角色：无审核职能也能定稿直投；CDP mock 投产，不碰真板
   // ───────────────────────────────────────────────────────────
   if (MAT_TOK) {
     await setToken(MAT_TOK);
@@ -757,21 +789,99 @@ async function main() {
     const matTabs = await grabTabs();
     assert('C2 material 的极简也是三步页签', ['脚本库', '投豆包', '看成片']
       .every((w) => String(matTabs).includes(w)), `tabs=${matTabs}`);
+
+    const matMe = await api('/api/auth/me');
+    const matId = String(matMe.body?.id || '');
+    const matScripts = await api('/api/assets/scripts?owner=me&state=ready&page_size=200');
+    let direct = (matScripts.body?.items || []).find((x) =>
+      String(x.owner_id) === matId && x.state === 'ready' && x.carrier_status !== 'approved');
+    if (!direct) {
+      const seedName = `CDP门·免审直投${Date.now()}`;
+      const created = parseJson(await js(`(async () => {
+        const r = await fetch('/api/assets/scripts', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('auth_token') },
+          body: JSON.stringify({ name: ${JSON.stringify(seedName)}, body: '这是素材专员自己定稿的脚本，用来验证极简模式无需送审即可投豆包。' }),
+        });
+        let b = null; try { b = await r.json(); } catch (e) {}
+        return JSON.stringify({ status: r.status, body: b });
+      })()`)) || {};
+      const seedId = String(created.body?.id || created.body?.item?.id || '');
+      const finalized = parseJson(await js(`(async () => {
+        const r = await fetch('/api/assets/scripts/${seedId}/finalize', {
+          method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + localStorage.getItem('auth_token') },
+          body: '{}',
+        });
+        let b = null; try { b = await r.json(); } catch (e) {}
+        return JSON.stringify({ status: r.status, body: b });
+      })()`)) || {};
+      assert('C2b 本机种子是一条 material 自己的未过审定稿脚本',
+        [200, 201].includes(created.status) && finalized.status === 200 && !!seedId,
+        JSON.stringify({ created: created.status, finalized: finalized.status, seedId }));
+      direct = { id: seedId, name: seedName, owner_id: matId, state: 'ready', carrier_status: null };
+      await goto('/assets');
+      await sleep(1800);
+    }
+
+    assert('C2c 切回脚本库勾选自己的未过审定稿脚本', (await clickTab('脚本库')) === 'ok');
+    await sleep(1800);
+    const pickedDirect = await js(`(() => {
+      const scope = document.querySelector('.ant-tabs-tabpane-active') || document.body;
+      const rows = Array.from(scope.querySelectorAll('.ant-table-tbody tr'));
+      const hit = rows.find((r) => (r.innerText || '').includes(${JSON.stringify(String(direct.name))}));
+      if (!hit) return 'no-row';
+      const box = hit.querySelector('input[type=checkbox]');
+      if (!box || box.disabled) return 'disabled';
+      box.click();
+      return 'ok';
+    })()`);
+    assert('C2d 未过审定稿脚本可以勾选', pickedDirect === 'ok', pickedDirect);
     await clickTab('投豆包');
     await sleep(1500);
     const mBtns = parseJson(await grabButtons());
-    assert('C3 material 看不到「轻量过审并投豆包」（无审核职能）',
+    assert('C3 material 看不到「轻量过审并投豆包」',
       !!(mBtns && mBtns.dispatch && !mBtns.dispatch.some(b => b.t.includes('轻量过审'))),
       JSON.stringify(mBtns && mBtns.dispatch));
-    assert('C4 material 主按钮文案含「投豆包」',
-      !!(mBtns && mBtns.dispatch && mBtns.dispatch.some(b => b.t.includes('投豆包'))),
+    assert('C4 material 主按钮就是「投豆包（1）」',
+      !!(mBtns && mBtns.dispatch && mBtns.dispatch.some(b => b.t === '投豆包（1）' && !b.d)),
       JSON.stringify(mBtns && mBtns.dispatch));
     const matText = await js('document.body.innerText');
-    assert('C5 material 投产职能已开时不出现「没有投产职能」提示',
-      !String(matText).includes('你的账号没有投产职能'), String(matText).slice(0, 240));
-    assert('C6 material 角色说明不再误报「不能出生产单」',
-      !String(matText).includes('不能出生产单'), String(matText).slice(0, 240));
-    await shot('c-material-role');
+    assert('C5 定稿脚本不出现送审/等同事过审提示',
+      !/送审|等有审核权限的同事过审|轻量过审/.test(String(matText)), String(matText).slice(0, 300));
+    assert('C6 material 投产职能已开时不出现「没有投产职能」或「不能出生产单」',
+      !String(matText).includes('你的账号没有投产职能') && !String(matText).includes('不能出生产单'),
+      String(matText).slice(0, 240));
+
+    mockProduce = true;
+    netOn = true;
+    netLog.length = 0;
+    const clicked = await js(`(() => {
+      const scope = document.querySelector('.ant-tabs-tabpane-active') || document.body;
+      const hit = Array.from(scope.querySelectorAll('button')).find((b) =>
+        b.textContent.replace(/\\s+/g, ' ').trim() === '投豆包（1）' && !b.disabled);
+      if (!hit) return 'no-button';
+      hit.click();
+      return 'ok';
+    })()`);
+    await sleep(2500);
+    mockProduce = false;
+    netOn = false;
+    const pathOfReq = (u) => { try { return new URL(u).pathname; } catch { return u; } };
+    const produceReqs = netLog.filter((u) => pathOfReq(u) === '/api/assets/scripts/produce');
+    const reviewReqs = netLog.filter((u) => /\/api\/assets\/scripts\/(submit|approve)$/.test(pathOfReq(u)));
+    assert('C7 material 点「投豆包（1）」直接发 produce 请求', clicked === 'ok' && produceReqs.length === 1,
+      JSON.stringify({ clicked, produceReqs }));
+    assert('C8 全程不发 submit/approve（定稿即可投，不先送审）', reviewReqs.length === 0,
+      JSON.stringify(reviewReqs));
+    const afterTab = await js(`(() => {
+      const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+      const tab = Array.from(document.querySelectorAll('.ant-tabs-tab'))
+        .filter((t) => { const nav = t.closest('.ant-tabs'); return nav && !(nav.parentElement && nav.parentElement.closest('.ant-tabs')); })
+        .find((t) => t.classList.contains('ant-tabs-tab-active'));
+      return tab ? norm(tab.textContent) : 'NO-ACTIVE';
+    })()`);
+    assert('C9 mock 受理后顺势跳到「看成片」', afterTab === '③ 看成片',
+      JSON.stringify({ afterTab, diagnostics: produceDiagnostics.slice(-12) }));
+    await shot('c-material-direct-ready');
   } else {
     assert('C0 material token 缺（跳过 C 段）', true);
   }
