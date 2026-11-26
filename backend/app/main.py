@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.config import settings, cors_origins
 from app.database import init_db, close_db, async_session_factory
 from app.logging_setup import install_credential_redaction
-from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance, watermark, shortdrama, publish_material, batch_slice, channel_accounts, variants, dramas, dedupe, theaters, remotion, assets
+from app.api import projects, upload, autoclip, intervals, slice, preview, publications, config as config_api, publish, dashboard, auth, workers, monitor, maintenance, watermark, shortdrama, publish_material, batch_slice, channel_accounts, variants, dramas, dedupe, theaters, remotion
 from app.auth import get_password_hash, get_current_user
 from app.models.models import User, UserRole, PlatformProfile
 from app.api.config import DEFAULT_PLATFORM_PROFILES
@@ -155,8 +155,13 @@ async def lifespan(app: FastAPI):
     logger.info("Seed platform profiles initialized.")
     await _create_seed_alert_rules()
     logger.info("Seed alert rules initialized.")
-    await _sweep_asset_jobs_at_startup()
-    logger.info("Asset background jobs swept.")
+    if settings.ASSET_API_MODE == "embedded":
+        await _sweep_asset_jobs_at_startup()
+        logger.info("Asset background jobs swept.")
+    else:
+        # external 模式下素材后台任务只由独立 asset-api 启动清扫，避免两个进程
+        # 同时抢同一批 queued/running 任务（会重复出文案、投板或抽帧）。
+        logger.info("Asset API is external; startup sweep delegated to asset-api.")
     await _sweep_wechat_dl_zombies_at_startup()
     logger.info("Wechat-dl zombie prompt tasks swept.")
     yield
@@ -282,8 +287,12 @@ _protected_routers = [
     dedupe,
     theaters,
     remotion,
-    assets,
 ]
+if settings.ASSET_API_MODE == "embedded":
+    # external 模式留给独立 asset-api；主 backend 不再导入/注册这套大路由。
+    from app.api import assets
+
+    _protected_routers.append(assets)
 for _r in _protected_routers:
     app.include_router(_r.router, prefix="/api", dependencies=[Depends(get_current_user)])
 

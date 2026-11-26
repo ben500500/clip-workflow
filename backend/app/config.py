@@ -360,6 +360,14 @@ class Settings(BaseSettings):
     # 交付包（packages/）相关的 ASSET_PACKAGE_PREFIX / _KEEP_DAYS 曾在 P0 定义里挂空：
     # 全仓零引用、P2 才做交付包，届时连同桶 lifecycle Expiration 规则一起接线（B 组死配置清理）。
 
+    # 素材库运行位置：embedded＝由主 backend 注册路由并清扫后台任务（兼容旧部署）；
+    # external＝主 backend 不注册素材路由、不清扫素材任务，改由 app.asset_main:app 独占。
+    # 拆的是运行/发布轨道，数据库、MinIO、Cookie 密钥卷与外部业务凭据仍共用。
+    ASSET_API_MODE: str = "embedded"
+    # 独立 asset-api 的启动清扫开关。正常切换完成后必须为 true；旁路启动阶段先设
+    # false，避免主 backend 仍在 embedded 模式时两个进程同时抢同一批后台任务。
+    ASSET_JOB_SWEEP_ENABLED: bool = True
+
     # ── 素材库 · 单次请求条数上限（原直接 os.getenv，收进 Settings 供运维调）──
     # 反推/出文案都是**同步等外部接口**的，100 条串跑会把请求挂到网关超时；
     # P1 上队列后这两个上限交给队列，不由 HTTP 层扛。
@@ -504,6 +512,13 @@ class Settings(BaseSettings):
         # 后端 Settings 未定义这些字段，忽略而非报错，避免启动失败。
         "extra": "ignore",
     }
+
+    @field_validator("ASSET_API_MODE")
+    @classmethod
+    def _asset_api_mode(cls, v: str) -> str:
+        if v not in {"embedded", "external"}:
+            raise ValueError("ASSET_API_MODE 只能是 embedded 或 external")
+        return v
 
     @field_validator("JWT_SECRET")
     @classmethod

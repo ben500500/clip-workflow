@@ -1,0 +1,85 @@
+# 素材库旁路验证专用：只新增 asset-backend / asset-frontend，
+# 不覆盖主 backend、frontend、nginx，也不触发它们重建。
+# 用法（必须先完成 Cookie 密钥播种）：
+#   docker compose -p clip-workflow -f docker-compose.yml -f docker-compose.asset-bypass.yml up -d --no-deps asset-backend
+#   docker compose -p clip-workflow -f docker-compose.yml -f docker-compose.asset-bypass.yml up -d --no-deps asset-frontend
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-common-env: &common-env
+  TZ: Asia/Shanghai
+
+services:
+  asset-backend:
+    # 旁路也使用独立镜像，避免继续依赖主 backend 镜像而漏带素材业务修复。
+    # 不重建 clip-backend，也不修改主 backend 的运行模式。
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: clip-asset-backend:latest
+    container_name: clip-asset-backend
+    restart: unless-stopped
+    networks:
+      - clip-network
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-clipworkflow}:${POSTGRES_PASSWORD:?请在 .env 中设置 POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-clipworkflow}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?请在 .env 中设置 REDIS_PASSWORD}@redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?请在 .env 中设置 MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-clipworkflow}
+      MINIO_EXTERNAL_ENDPOINT: ${MINIO_EXTERNAL_ENDPOINT:-localhost:9000}
+      HF_HUB_OFFLINE: "1"
+      # 主 backend 仍在 embedded 模式，旁路绝不抢素材后台任务清扫。
+      ASSET_JOB_SWEEP_ENABLED: "false"
+      HOOK_ID_LEDGER: ${HOOK_ID_LEDGER:-${HOST_DATA_DIR:-/home/cc12703}/hook-ledger/occupancy.json}
+    command: ["uvicorn", "app.asset_main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+    ports:
+      - "127.0.0.1:${ASSET_BACKEND_PORT:-8101}:8080"
+    volumes:
+      - backend_cookie_data:/app/data
+      - media_data:/app/media
+      - chrome_profiles:/data/chrome-profiles
+      - ./engines:/app/engines:ro
+      - ./hf-cache:/app/.cache
+      - ${HOST_DATA_DIR:-/home/cc12703}/videos:${HOST_DATA_DIR:-/home/cc12703}/videos
+      - dedupe_upload_data:/tmp/dedupe_upload
+      - ${HOST_DATA_DIR:-/home/cc12703}/data-update/data/dashboard:/data/board:ro
+      - ${HOST_DATA_DIR:-/home/cc12703}/hook_id.py:${HOST_DATA_DIR:-/home/cc12703}/hook_id.py:ro
+      - ${HOST_DATA_DIR:-/home/cc12703}/hook-ledger:${HOST_DATA_DIR:-/home/cc12703}/hook-ledger
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+  asset-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_PUBLIC_BASE: /asset-static/
+        NGINX_CONFIG: nginx.asset.conf
+    image: clip-asset-frontend:latest
+    container_name: clip-asset-frontend
+    restart: unless-stopped
+    networks:
+      - clip-network
+    environment:
+      <<: *common-env
+    ports:
+      - "127.0.0.1:${ASSET_FRONTEND_PORT:-3100}:80"
+    logging: *default-logging
+
+volumes:
+  # 只共享 Cookie 密钥，不共享主 backend 的整个 /app/data。
+  backend_cookie_data:

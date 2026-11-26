@@ -61,7 +61,7 @@ SYNC_DIRS=(backend slice-worker frontend engines alembic deploy scripts autoclip
 # 根级散落文件同步（不在任何 SYNC_DIRS 里，必须单列，否则会与仓库漂移）
 # nginx.conf 是根级散落文件（不在 SYNC_DIRS 里）——2026-11-09 加 HTTPS 时发现
 # 它一直没被同步：服务器上是手工放的旧文件，仓库改了端口/证书配置也不会生效。
-SYNC_FILES=(docker-compose.yml nginx.conf)
+SYNC_FILES=(docker-compose.yml docker-compose.asset.yml nginx.conf)
 
 # 是否先拉取 cnb 更新（git fetch + ff-only merge + 推 GitHub）
 PULL_CNB="${DEPLOY_PULL_CNB:-1}"
@@ -560,9 +560,11 @@ compute_services() {
   # backend/ 变更 —— 名单从 compose 推导（所有跑 clip-backend:latest 的容器）
   if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^backend/'; then
     svc="$svc $(backend_rebuild_services)"
+    [ "${ASSET_STACK_ENABLED}" = "1" ] && svc="$svc asset-backend"
   fi
   if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^frontend/'; then
     svc="$svc frontend"
+    [ "${ASSET_STACK_ENABLED}" = "1" ] && svc="$svc asset-frontend"
   fi
   # slice-worker/ 或 engines/ 变更 —— 都会改变 slice-worker 镜像内容
   # （engines/ 由 Dockerfile COPY 进镜像，见 sync-engines-to-worker.sh）
@@ -582,6 +584,10 @@ compute_services() {
   if [ "$changed" = "ALL" ] || printf '%s\n' "$changed" | grep -q '^alembic/'; then
     svc="$svc alembic-migrate"
   fi
+  if [ "${ASSET_STACK_ENABLED}" = "1" ] && [ "$changed" != "ALL" ] && \
+      printf '%s\n' "$changed" | grep -qx 'docker-compose.asset.yml'; then
+    svc="$svc asset-backend asset-frontend nginx"
+  fi
 
   # 去重并输出
   if [ "$changed" = "_none_" ]; then
@@ -598,6 +604,34 @@ log "目标服务器: ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}"
 # 0. 基础连通性
 ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "test -d '$REMOTE_DIR'" \
   || die "服务器部署目录不存在: $REMOTE_DIR"
+
+# 素材库独立栈一旦切流，后续普通部署必须继续带 overlay，否则主 backend 会被打回
+# embedded，独立镜像也不会更新。auto 以主 backend 的实际运行模式为准，不看服务器上
+# 是否仅同步了 overlay 文件（未启用时也会同步）。DEPLOY_ASSET_STACK=0/1 可显式覆盖。
+case "${DEPLOY_ASSET_STACK:-auto}" in
+  1) ASSET_STACK_ENABLED=1 ;;
+  0) ASSET_STACK_ENABLED=0 ;;
+  auto)
+    ASSET_STACK_ENABLED=0
+    if ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" \
+      "docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' clip-backend 2>/dev/null | grep -qx 'ASSET_API_MODE=external'"; then
+      ASSET_STACK_ENABLED=1
+    else
+      ASSET_SIDECAR_RUNNING="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" \
+        "docker inspect -f '{{.State.Running}}' clip-asset-backend 2>/dev/null || true")"
+      if [ "${ASSET_SIDECAR_RUNNING}" = "true" ]; then
+        log "WARN: 检测到素材旁路容器，但主 backend 仍为 embedded；本次不自动切流，旁路镜像需单独更新"
+      fi
+    fi
+    ;;
+  *) die "DEPLOY_ASSET_STACK 只能是 auto、0 或 1" ;;
+esac
+COMPOSE_CMD="docker compose -f docker-compose.yml"
+if [ "${ASSET_STACK_ENABLED}" = "1" ]; then
+  COMPOSE_CMD="${COMPOSE_CMD} -f docker-compose.asset.yml"
+  log "素材库独立栈已启用：本次 compose 将持续使用 asset overlay"
+fi
+log "compose 命令: ${COMPOSE_CMD}"
 
 LAST_FILE="$LOCAL_DIR/.deploy_last_commit"
 PREV=""
@@ -694,9 +728,9 @@ else
     die "根 compose 同步后仍与本地不一致（local=${_lmd5} remote=${_rmd5}），中止部署"
   fi
   log "根 compose 与本地一致（md5=${_lmd5}）"
-  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose config -q" \
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && ${COMPOSE_CMD} config -q" \
     || die "docker compose config 语法校验失败"
-  log "compose 服务清单: $(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose config --services | sort | tr '\n' ' '")"
+  log "compose 服务清单: $(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && ${COMPOSE_CMD} config --services | sort | tr '\n' ' '")"
 fi
 
 # 3.6 回滚镜像标签（P1·评审定稿⑬ ＋ 2026-11-11 运维席 P1 重做）
@@ -722,7 +756,7 @@ tag_last_good() {
   raw="$(ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "
     cd '$REMOTE_DIR' || exit 1
     for svc in $SERVICES; do
-      ref=\$(docker compose images \"\$svc\" --format json 2>/dev/null \\
+      ref=\$(${COMPOSE_CMD} images \"\$svc\" --format json 2>/dev/null \\
             | sed -n 's/.*\"Repository\":\"\([^\"]*\)\",\"Tag\":\"\([^\"]*\)\".*/\1:\2/p' | head -1)
       if [ -z \"\$ref\" ]; then echo \"SKIP|\$svc||\"; continue; fi
       new=\"\${ref%:*}:rollback-pre-${suffix}\"
@@ -755,7 +789,7 @@ print_rollback_howto() {
   printf '%s\n' "$ROLLBACK_TAG_LIST" | awk -F'|' '{print $2" "$3}' | sort -u | while read -r ref new; do
     echo "      docker tag ${new} ${ref}"
   done
-  echo "      cd ${REMOTE_DIR} && docker compose up -d --no-build ${svcs}"
+  echo "      cd ${REMOTE_DIR} && ${COMPOSE_CMD} up -d --no-build ${svcs}"
 }
 
 # 3.7 回滚标签清理（2026-11-11 运维席 P1）：163 上 rollback/lastgood 标签已堆到 57 个，
@@ -816,7 +850,7 @@ if [ -n "$SERVICES" ]; then
 
     log "重建容器: $SERVICES"
     # shellcheck disable=SC2086
-    heavy_run "cd ${REMOTE_DIR} && docker compose up -d --build ${SERVICES}" \
+    heavy_run "cd ${REMOTE_DIR} && ${COMPOSE_CMD} up -d --build ${SERVICES}" \
       || die "docker compose 重建失败（若上一行没有构建输出就直接失败，多半是等 ${BUILD_LOCK_WAIT}s 没抢到 ${BUILD_LOCK_FILE} —— 说明有另一场重建还在跑）"
 
     # 4.2 engines/ 变更且 backend 不在重建名单时：engines 对 clip-backend 是只读
@@ -850,16 +884,16 @@ if [ "$DRY_RUN" = "1" ]; then
 else
   # 4.5 部署后补齐 ORM-DB 列差异（防 cnb 加列但 alembic 迁移链跳过导致接口 500）
   log "补齐数据库缺失列 (db_sync_columns)..."
-  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose cp scripts/db_sync_columns.py backend:/app/db_sync_columns.py && docker compose exec -T backend python /app/db_sync_columns.py" 2>&1 | grep -vE "warning|INFO:|level=" | tail -8
+  ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && ${COMPOSE_CMD} cp scripts/db_sync_columns.py backend:/app/db_sync_columns.py && ${COMPOSE_CMD} exec -T backend python /app/db_sync_columns.py" 2>&1 | grep -vE "warning|INFO:|level=" | tail -8
 
   log "等待容器就绪..."
   sleep 5
   if [ -n "$SERVICES" ]; then
     # shellcheck disable=SC2086
-    ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose ps $SERVICES" 2>&1 | tail -20
+    ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && ${COMPOSE_CMD} ps $SERVICES" 2>&1 | tail -20
     log "校验最近错误日志..."
     # shellcheck disable=SC2086
-    ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && docker compose logs --since 2m $SERVICES 2>&1 | grep -iE 'error|traceback|panic|undefined|exception' | tail -10 || true"
+    ssh $SSH_OPTS "${REMOTE_USER}@${REMOTE_HOST}" "cd '$REMOTE_DIR' && ${COMPOSE_CMD} logs --since 2m $SERVICES 2>&1 | grep -iE 'error|traceback|panic|undefined|exception' | tail -10 || true"
   fi
 
   # 5.5 部署后端到端冒烟（2026-11-11 运维席 P1）。此前的「验证」只看 compose ps ＋
