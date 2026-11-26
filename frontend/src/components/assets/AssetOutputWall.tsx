@@ -738,11 +738,6 @@ const InflightStrip: React.FC<{
                 另有 {data?.failed_older} 张更早的失败没摆在这里
               </Text>
             )}
-            {onGoToProduction && (
-              <Button size="small" type="link" style={{ padding: 0 }} onClick={onGoToProduction}>
-                去生产单处理
-              </Button>
-            )}
           </Space>
           <div style={gridStyle}>
             {failed.map((p) => (
