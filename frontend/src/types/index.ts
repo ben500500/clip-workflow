@@ -19,8 +19,17 @@ export interface Project {
   id: string;
   name: string;
   storage_bytes?: number;
-  // 项目下当前运行中/排队中的切片任务数（列表接口实时返回，0/undefined=无任务）
+  // 项目下当前运行中/排队中的切片任务数（旧版列表接口兼容字段）
   slice_running?: number;
+  run_state?: 'remotion_rendering' | 'selecting' | 'detecting' | 'slicing' | 'idle';
+  run_state_label?: string | null;
+  run_counts?: {
+    selecting: number;
+    detecting: number;
+    slicing: number;
+    remotion_rendering: number;
+    total: number;
+  };
   description: string | null;
   status: string;
   config: Record<string, unknown> | null;
@@ -162,6 +171,7 @@ export interface SliceTask {
   outputs_total?: number | null;
   // 源桶：sliced=源是切片成品（再处理/入库链路），列表据此打「成品再处理」标记
   source_bucket?: string | null;
+  source_file_key?: string | null;
   output_count: number;
   error_message: string | null;
   // 实际执行该任务的 Worker 节点 ID
@@ -173,15 +183,28 @@ export interface SliceTask {
   last_progress_at?: string;
   // ── 该任务实际应用的配置（用于历史列表悬停展示） ──
   dedupe_config?: Record<string, unknown> | null;
+  variant_count?: number | null;
   watermark_config?: Record<string, unknown> | null;
-  badges_config?: Record<string, unknown> | null;
+  badges_config?: Record<string, unknown> | unknown[] | null;
   badge_default_width?: number | null;
   vert2horiz_config?: Record<string, unknown> | null;
   subtitle_config?: Record<string, unknown> | null;
   subtitle_align_mask?: boolean | null;
   subtitle_mask_config?: Record<string, unknown> | null;
   watermark_mask_config?: Record<string, unknown> | null;
-  text_overlays_config?: Record<string, unknown> | null;
+  text_overlays_config?: Record<string, unknown> | unknown[] | null;
+  cover_image_key?: string | null;
+  output_tier?: string | null;
+  hook_video_key?: string | null;
+  hook_video_keys?: string[] | null;
+  outro_video_key?: string | null;
+  hook_mix_mode?: string | null;
+  hook_mix_output_count?: number | null;
+  hook_position?: string | null;
+  dual_mix_config?: string | null;
+  remotion_mix_config?: Record<string, unknown> | null;
+  remotion_output_file_key?: string | null;
+  remotion_status?: string | null;
 }
 
 export interface WorkerNode {

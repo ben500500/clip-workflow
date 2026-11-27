@@ -273,3 +273,42 @@ def test_derived_endpoint_episodes_list_isolated_consistently():
     assert "op 自己的项目" in names        # 自己创建
     assert "他人项目" not in names         # 不越权
     assert ids  # 保持 ids 被使用
+
+
+# ─── 「仅看自己 / 全部项目」切换（2026-11-26 项目列表需求）───────────────
+# 契约：owner 只能在既有 RBAC 可见范围内「收窄」，不能把无主公共项目藏掉，
+# 也不能绕过 scope_filter 越权看到别人创建的项目。
+def _list_projects(username: str, owner: str | None):
+    async def _scenario():
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            token = await _login(client, username)
+            params = {"page": 1, "page_size": 50}
+            if owner is not None:
+                params["owner"] = owner
+            return await client.get("/api/projects", params=params,
+                                    headers={"Authorization": f"Bearer {token}"})
+
+    resp = _run(_scenario())
+    assert resp.status_code == 200, resp.text
+    return {p["name"] for p in resp.json()["items"]}
+
+
+def test_owner_me_keeps_public_projects_for_operator():
+    """operator 的「仅看自己」仍含无主公共项目，且不越权。"""
+    _run(_bootstrap())
+    assert _list_projects(OPERATOR, "me") == {"视频号导入", "op 自己的项目"}
+
+
+def test_owner_default_is_legacy_scope_behaviour():
+    """不传 owner（现网既有调用）＝ owner=all，行为与改造前逐字一致。"""
+    _run(_bootstrap())
+    assert _list_projects(OPERATOR, None) == _list_projects(OPERATOR, "all")
+    assert _list_projects(OPERATOR, None) == {"视频号导入", "op 自己的项目"}
+
+
+def test_owner_me_narrows_admin_but_keeps_public():
+    """admin 的「仅看自己」= 自己创建的 ∪ 无主公共，别人创建的（此处即 op 的）被收窄掉。"""
+    _run(_bootstrap())
+    assert _list_projects(ADMIN, "all") == {"视频号导入", "op 自己的项目", "他人项目"}
+    assert _list_projects(ADMIN, "me") == {"视频号导入", "他人项目"}

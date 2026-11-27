@@ -356,6 +356,9 @@ class SliceTaskResponse(BaseModel):
     progress: float
     # 细粒度进度文案（如「钩子转码 2/3」「成品 5/10 段切割」）
     progress_message: Optional[str] = None
+    # 已出成品数 / 计划成品总数（运行中进度由 Redis 实时覆盖）
+    outputs_done: Optional[int] = None
+    outputs_total: Optional[int] = None
     output_count: int
     error_message: Optional[str] = None
     # 实际执行该任务的 Worker 节点 ID
@@ -369,6 +372,9 @@ class SliceTaskResponse(BaseModel):
     last_progress_at: Optional[str] = None
     # ── 该任务实际应用的配置（用于历史列表悬停展示） ──
     dedupe_config: Optional[dict] = None
+    variant_count: Optional[int] = None
+    source_bucket: Optional[str] = None
+    source_file_key: Optional[str] = None
     watermark_config: Optional[dict] = None
     badges_config: Optional[list] = None
     badge_default_width: Optional[int] = None
@@ -378,15 +384,19 @@ class SliceTaskResponse(BaseModel):
     subtitle_mask_config: Optional[dict] = None
     watermark_mask_config: Optional[dict] = None
     text_overlays_config: Optional[list] = None
+    cover_image_key: Optional[str] = None
     output_tier: Optional[str] = None
     hook_video_key: Optional[str] = None
-    hook_video_keys: Optional[list] = None
+    hook_video_keys: Optional[List[str]] = None
+    outro_video_key: Optional[str] = None
     # 钩子混搭模式（sequential/random/combine，开启时展示）
     hook_mix_mode: Optional[str] = None
     # 钩子混搭输出数量
     hook_mix_output_count: Optional[int] = None
     # 钩子拼接位置（head/tail）
     hook_position: Optional[str] = None
+    # 双批混拼配置快照（ORM Text 中的原始 JSON 字符串，前端安全 parse）
+    dual_mix_config: Optional[str] = None
     # Remotion 混剪增强配置（开启时展示）
     remotion_mix_config: Optional[dict] = None
     # Remotion 混剪增强渲染产物 MinIO key / 渲染状态（P2 回写，前端任务列表展示）
@@ -473,6 +483,7 @@ def _serialize_task(task: SliceTask) -> dict:
         "created_at": utc_iso(task.created_at) if task.created_at else "",
         # 该任务实际应用的配置（用于历史列表悬停展示）
         "dedupe_config": task.dedupe_config,
+        "variant_count": task.variant_count,
         "watermark_config": task.watermark_config,
         "badges_config": task.badges_config,
         "badge_default_width": task.badge_default_width,
@@ -482,7 +493,13 @@ def _serialize_task(task: SliceTask) -> dict:
         "subtitle_mask_config": task.subtitle_mask_config,
         "watermark_mask_config": task.watermark_mask_config,
         "text_overlays_config": task.text_overlays_config,
+        "cover_image_key": task.cover_image_key,
         "output_tier": task.output_tier,
+        "hook_video_key": task.hook_video_key,
+        "hook_video_keys": task.hook_video_keys,
+        "outro_video_key": task.outro_video_key,
+        "hook_mix_mode": task.hook_mix_mode,
+        "dual_mix_config": task.dual_mix_config,
         "remotion_mix_config": task.remotion_mix_config,
         "remotion_output_file_key": task.remotion_output_file_key,
         "remotion_status": task.remotion_status,
@@ -491,6 +508,7 @@ def _serialize_task(task: SliceTask) -> dict:
         # 源桶：sliced=源是切片成品（再处理/入库链路），前端据此打「成品再处理」标记，
         # 避免与 AI 选点直接切片的结果混排误导（2026-11-24 赶海集实锤需求）
         "source_bucket": getattr(task, "source_bucket", None),
+        "source_file_key": task.source_file_key,
     }
 
 

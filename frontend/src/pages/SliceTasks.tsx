@@ -11,7 +11,7 @@ import ErrorHint from '../components/ErrorHint';
 import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
 import SubtitleMarginPicker from '../components/SubtitleMarginPicker';
 import type { SliceOutput, SliceTask } from '../types';
-import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
+import { formatDateTime, formatFileSize, formatTaskDuration, getStatusColor, getStatusLabel } from '../utils/format';
 import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
 import { WATERMARK_STYLE_OPTIONS, WATERMARK_STYLE_LABEL } from '../utils/watermarkStyles';
 import { useDedupePresets } from '../hooks/useDedupePresets';
@@ -410,14 +410,6 @@ const SUBTITLE_MASK_PRESETS = [
 
   const hasRunningTask = runningTasks.length > 0;
 
-  // 统计任务耗时：已结束用 completed_at - started_at；运行中/待处理用 now - started_at（实时刷新）
-  const formatTaskDuration = (t: SliceTask) => {
-    if (!t.started_at) return '-';
-    const end = t.completed_at || new Date().toISOString();
-    const diff = Math.max(0, (new Date(end).getTime() - new Date(t.started_at).getTime()) / 1000);
-    return formatDuration(diff);
-  };
-
   const columns = [
     {
       title: '模式',
@@ -429,7 +421,8 @@ const SUBTITLE_MASK_PRESETS = [
         const label = help?.label || m || '-';
         const tip = help ? `${help.desc}\n\n${buildSliceConfigTooltip(t, label)}` : buildSliceConfigTooltip(t, label);
         return (
-          <Tooltip title={tip}>
+          // 同 EpisodeDetail：放宽 Tooltip 宽度上限，否则 520px 的配置排版被压成 250px
+          <Tooltip title={tip} overlayStyle={{ maxWidth: 560 }} mouseEnterDelay={0.25}>
             <Tag>{label}</Tag>
           </Tooltip>
         );

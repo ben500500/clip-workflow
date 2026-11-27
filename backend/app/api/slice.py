@@ -16,7 +16,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import uuid
 from datetime import datetime
 from typing import Annotated, List, Optional
@@ -43,10 +42,7 @@ from app.models.models import (
 )
 from app.models.material import SystemConfig
 from app.services.data_scope import check_project_access_by_episode
-from app.utils.helpers import (
-    utc_iso, generate_cutlist, build_clip_name, generate_intervals_file, format_time,
-    map_cutlist_output_clip_ids, strip_output_extension,
-)
+from app.utils.helpers import utc_iso, generate_cutlist, build_clip_name, generate_intervals_file, format_time
 from app.services.minio_service import (
     get_presigned_url,
     get_presigned_upload_url,
@@ -88,8 +84,6 @@ from app.api.slice_helpers import (
     _acquire_concurrency_slot,
     _output_prefix,
     _refresh_episode_status,
-    lock_existing_clip_ids,
-    snapshot_candidate_clips,
     refine_clip_boundaries,
     _publish_to_worker,
     _dispatch_celery,
@@ -992,39 +986,11 @@ async def _create_slice_task_record(
     # 保证“同时处理的切片任务数不超过 max_concurrent_tasks”。
     await _acquire_concurrency_slot(db)
 
-    # 固化提交时实际 accepted 候选与 cutlist 的内容关系。后续候选被拒绝、删除或
-    # 改边界都不影响本任务回调；历史任务没有快照时才按旧口径重建。
-    clip_result = await db.execute(
-        select(ClipCandidate)
-        .where(
-            ClipCandidate.episode_id == eid,
-            ClipCandidate.status == "accepted",
-        )
-        .order_by(ClipCandidate.clip_index.asc().nullslast(), ClipCandidate.id.asc())
-    )
-    accepted_clips = clip_result.scalars().all()
-    # auto_accept_min_score 是提交时的实际切片门槛：低于门槛的候选即使仍为
-    # accepted，也不在本次 cutlist 中。快照必须使用同一集合，避免重复时间轴
-    # 被未入选候选干扰，导致已产出内容无法绑定。
-    accepted_clips = snapshot_candidate_clips(
-        accepted_clips, data.auto_accept_all, data.auto_accept_min_score
-    )
-    # no_cut/output_id 的 cutlist 是源片时间轴，不是候选时间轴，不能做内容绑定。
-    output_clip_ids = {}
-    if not data.no_cut and not data.output_id:
-        output_clip_ids = {
-            name: str(clip_id) if clip_id is not None else None
-            for name, clip_id in map_cutlist_output_clip_ids(
-                cutlist, accepted_clips, allow_variant_suffix=False
-            ).items()
-        }
-
     # Create slice task record
     slice_task = SliceTask(
         episode_id=eid,
         mode=data.mode,
         cutlist=cutlist,
-        output_clip_ids=output_clip_ids,
         intervals=intervals_content,
         dedupe_config=data.dedupe_config,
         variant_count=data.variant_count,
@@ -1827,11 +1793,7 @@ async def slice_task_callback(
     if not await _verify_worker_token(task_id, x_worker_token):
         raise HTTPException(status_code=401, detail="无效的 Worker Token")
 
-    # 行锁贯穿取消/回调两种写路径：谁先提交终态，另一方必须在锁内看到它，
-    # 不能用请求开始时的旧快照把 cancelled/completed/failed 覆盖掉。
-    result = await db.execute(
-        select(SliceTask).where(SliceTask.id == tid).with_for_update()
-    )
+    result = await db.execute(select(SliceTask).where(SliceTask.id == tid))
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Slice task not found")
@@ -1878,54 +1840,52 @@ async def slice_task_callback(
         # 若任务已处于终态且输出已落库，直接返回，避免切片输出重复添加。
         if task.status == "completed":
             return {"ok": True, "duplicate": True}
-        # 终态不可逆：已取消/失败任务的迟到回调仍保留完整成品，但不复活任务。
+        # 终态守卫（2026-11-20 评审 SRE P1-1）：用户已取消的任务不允许被迟到回调
+        # 复活（cancelled 意图优先）。但失败保留的成品仍要入库（2026-11-24：
+        # 取消前已完整产出的成品已上传，入库后用户可直接下载复用）。
         if task.status == "cancelled":
-            if data.node_id and not task.node_id:
-                task.node_id = data.node_id
             kept = await _record_kept_outputs()
             return {"ok": True, "suppressed": True, "kept_outputs": kept}
-        if task.status == "failed":
-            if data.node_id and not task.node_id:
-                task.node_id = data.node_id
-            kept = await _record_kept_outputs()
-            return {"ok": True, "suppressed": True, "kept_outputs": kept}
+        if task.status in ("failed", "cancelled") and task.output_count and task.output_count > 0:
+            return {"ok": True, "duplicate": True}
 
-        # 记录实际执行节点；取消分支提前返回而遗漏回填是原 node_id 缺口来源。
+        # 记录执行该任务的节点（用于切片任务列表展示"由哪个节点完成"）
         if data.node_id:
             task.node_id = data.node_id
 
-        # 优先使用创建任务时固化的快照，避免回调时候选现状变化造成错绑。
-        output_clip_ids = task.output_clip_ids
-        if output_clip_ids is None:
-            # 历史任务没有冻结快照时不再按“当前候选”猜绑定：no_cut/output_id
-            # 的源片时间轴尤其可能碰巧与候选重合。宁可保留无关联，也不能制造
-            # 错误元数据；重试新任务会继续携带 NULL，回调同样保持不绑定。
-            output_clip_ids = {}
-
-        # 快照里的候选可能在长任务执行期间被删除。锁定仍存在的候选行，既避免
-        # 回调插入悬空 FK，也与删除/清空候选的写路径形成串行化。
-        existing_clip_ids = await lock_existing_clip_ids(
-            db, (output_clip_ids or {}).values()
+        # 按接受的候选片段顺序映射 clip_id（文件名 clip_XX.mp4 对应片段顺序）
+        clip_result = await db.execute(
+            select(ClipCandidate)
+            .where(
+                ClipCandidate.episode_id == task.episode_id,
+                ClipCandidate.status == "accepted",
+            )
+            .order_by(ClipCandidate.clip_index.asc())
         )
+        accepted_clips = clip_result.scalars().all()
 
+        # 按文件名中的序号或输出顺序关联 clip_id
+        clip_index = 0
         for out in data.outputs:
             fname = out.get("file_name", "")
             file_key = out.get("file_key", "")
-            base = strip_output_extension(fname)
-            clip_id = output_clip_ids.get(base)
-            if clip_id is None and int(task.hook_mix_output_count or 1) > 1 \
-                    and task.hook_mix_mode in ("random", "combine"):
-                clip_id = output_clip_ids.get(re.sub(r"-v\d+$", "", base))
-            if isinstance(clip_id, uuid.UUID) and clip_id not in existing_clip_ids:
-                clip_id = None
-            elif isinstance(clip_id, str):
+            clip_id = None
+            matched = False
+            # 尝试从文件名 clip_{index}.mp4 解析
+            base = os.path.splitext(os.path.basename(fname))[0]
+            if base.startswith("clip_"):
                 try:
-                    clip_id = uuid.UUID(clip_id)
-                except ValueError:
-                    clip_id = None
-                else:
-                    if clip_id not in existing_clip_ids:
-                        clip_id = None
+                    idx = int(base.split("_")[1])
+                    if 1 <= idx <= len(accepted_clips):
+                        clip_id = accepted_clips[idx - 1].id
+                        matched = True
+                except (ValueError, IndexError):
+                    pass
+            if not matched:
+                # 兜底：按输出顺序关联
+                if clip_index < len(accepted_clips):
+                    clip_id = accepted_clips[clip_index].id
+                clip_index += 1
 
             # 同一 file_key 已存在则跳过，避免重复回调/重跑时输出记录叠加
             if file_key:
@@ -1969,18 +1929,16 @@ async def slice_task_callback(
         await _refresh_episode_status(db, task.episode_id)
 
     elif data.status == "progress":
-        # 终态任务的迟到进度不改变已完成/失败/取消的展示状态。
-        if task.status in ("completed", "failed", "cancelled"):
-            return {"ok": True, "suppressed": True}
+        # 进度更新（真实 ffmpeg 进度）
         if data.progress is not None:
             task.progress = max(task.progress or 0, data.progress)
 
     else:  # failed
-        # 终态守卫：已取消/已完成/失败任务不再被迟到失败覆盖。
-        if task.status in ("cancelled", "completed", "failed"):
-            if task.status in ("cancelled", "failed"):
-                if data.node_id and not task.node_id:
-                    task.node_id = data.node_id
+        # 终态守卫：已取消/已完成任务不再翻成 failed（2026-11-21 SRE 复评 P2-3：
+        # 晚到失败回调曾可把 completed 翻成 failed）。取消任务的迟到回调带出的
+        # 失败保留成品仍要入库（2026-11-24：用户取消前已产出的成品不丢弃）。
+        if task.status in ("cancelled", "completed"):
+            if task.status == "cancelled":
                 kept = await _record_kept_outputs()
                 return {"ok": True, "suppressed": True, "kept_outputs": kept}
             return {"ok": True, "suppressed": True}
@@ -2040,17 +1998,12 @@ async def update_slice_progress(
     if not await _verify_worker_token(task_id, x_worker_token):
         raise HTTPException(status_code=401, detail="无效的 Worker Token")
 
-    result = await db.execute(
-        select(SliceTask).where(SliceTask.id == tid).with_for_update()
-    )
+    result = await db.execute(select(SliceTask).where(SliceTask.id == tid))
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Slice task not found")
 
     progress = data.get("progress")
-    # 独立 progress 端点同样受终态守卫约束，避免取消后耗时/进度继续增长。
-    if task.status in ("completed", "failed", "cancelled"):
-        return {"ok": True, "suppressed": True}
     if progress is not None:
         task.progress = max(task.progress or 0, float(progress))
 
@@ -2144,7 +2097,6 @@ async def retry_slice_task(
         hook_position=getattr(task, "hook_position", None),
         remotion_mix_config=getattr(task, "remotion_mix_config", None),
         output_tier=getattr(task, "output_tier", None) or "auto",
-        output_clip_ids=getattr(task, "output_clip_ids", None),
         status="pending",
         progress=0.0,
     )
@@ -2349,10 +2301,7 @@ async def cancel_slice_task(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid task ID format")
 
-    # 取消与回调用同一行锁串行化终态写入，避免取消后仍被迟到 running/failed 覆盖。
-    result = await db.execute(
-        select(SliceTask).where(SliceTask.id == tid).with_for_update()
-    )
+    result = await db.execute(select(SliceTask).where(SliceTask.id == tid))
     task = result.scalar_one_or_none()
     if not task:
         raise HTTPException(status_code=404, detail="Slice task not found")
@@ -2378,9 +2327,6 @@ async def cancel_slice_task(
     # 兼容历史 cancelled 行：前端在缺少 completed_at 时回退最后进度心跳。
     task.completed_at = datetime.utcnow()
     await db.flush()
-    # 取消本身也是终态变化；不能依赖迟到回调刷新，否则最后一条任务取消后
-    # 剧集会永久停留在 slicing。
-    await _refresh_episode_status(db, task.episode_id)
 
     # 写入 Redis，通知 Worker 端强杀任务
     await mark_task_cancelled(task_id)

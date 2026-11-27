@@ -1,16 +1,36 @@
 import React, { useEffect, useState } from 'react';
 import {
   Table, Button, Card, Input, Space, Tag, Modal, Form, Select, message, Popconfirm,
-  Typography, Row, Col, Tooltip,
+  Typography, Row, Col, Tooltip, Segmented,
 } from 'antd';
 import { PlusOutlined, SearchOutlined, DeleteOutlined, EditOutlined, EyeOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
 import type { Project, ProjectFormValues } from '../types';
-import { formatDateTime, getStatusColor, getStatusLabel } from '../utils/format';
+import { formatDateTime } from '../utils/format';
 import { BizGuideEntry, SliceFlowGuide } from '../components/assets/BizGuides';
 
 const { Title } = Typography;
+
+type OwnerView = 'me' | 'all';
+type RunStage = NonNullable<Project['run_state']>;
+type RunCounts = NonNullable<Project['run_counts']>;
+
+// 兜底文案与后端 _RUN_STATE_LABELS（backend/app/api/projects.py）逐字一致：
+// 列表优先用接口返回的 run_state_label，只有旧响应缺该字段时才走这里的映射。
+const RUN_STAGE_LABELS: Record<Exclude<RunStage, 'idle'>, string> = {
+  remotion_rendering: '混剪渲染中',
+  selecting: '选点中',
+  detecting: '区间检测中',
+  slicing: '切片中',
+};
+const RUN_STAGE_COLORS: Record<Exclude<RunStage, 'idle'>, string> = {
+  remotion_rendering: 'purple',
+  selecting: 'blue',
+  detecting: 'cyan',
+  slicing: 'orange',
+};
+const RUN_STAGES = Object.keys(RUN_STAGE_LABELS) as Array<Exclude<RunStage, 'idle'>>;
 
 const Projects: React.FC = () => {
   const navigate = useNavigate();
@@ -20,6 +40,7 @@ const Projects: React.FC = () => {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [search, setSearch] = useState('');
+  const [owner, setOwner] = useState<OwnerView>('me');
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Project | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -30,7 +51,7 @@ const Projects: React.FC = () => {
   const fetchProjects = React.useCallback(async () => {
     setLoading(true);
     try {
-      const res = await projectApi.getList({ page, page_size: pageSize, search: search || undefined });
+      const res = await projectApi.getList({ page, page_size: pageSize, search: search || undefined, owner });
       setProjects(res.items);
       setTotal(res.total);
     } catch (err: unknown) {
@@ -38,7 +59,7 @@ const Projects: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, search]);
+  }, [page, pageSize, search, owner]);
 
   useEffect(() => {
     fetchProjects();
@@ -51,7 +72,7 @@ const Projects: React.FC = () => {
     let timer: number | undefined;
     const tick = async () => {
       try {
-        const res = await projectApi.getList({ page, page_size: pageSize, search: search || undefined });
+        const res = await projectApi.getList({ page, page_size: pageSize, search: search || undefined, owner });
         if (!stopped) {
           setProjects(res.items);
           setTotal(res.total);
@@ -66,7 +87,7 @@ const Projects: React.FC = () => {
       stopped = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [page, pageSize, search]);
+  }, [page, pageSize, search, owner]);
 
   const handleSearch = () => {
     setPage(1);
@@ -126,23 +147,27 @@ const Projects: React.FC = () => {
       title: '项目名称',
       dataIndex: 'name',
       key: 'name',
+      width: 205,
+      ellipsis: { showTitle: false },
       render: (name: string, record: Project) => (
-        <a onClick={() => navigate(`/projects/${record.id}`)}>
-          <FolderOpenOutlined style={{ marginRight: 6 }} />
-          {name}
-        </a>
+        <Tooltip title={name} placement="topLeft">
+          <a onClick={() => navigate(`/projects/${record.id}`)} style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <FolderOpenOutlined style={{ marginRight: 6 }} />
+            {name}
+          </a>
+        </Tooltip>
       ),
     },
     {
       title: '剧集数',
       dataIndex: 'episode_count',
       key: 'episode_count',
-      width: 100,
+      width: 72,
     },
     {
       title: '存储空间',
       key: 'storage',
-      width: 110,
+      width: 90,
       render: (_: unknown, r: Project) => {
         const b = r.storage_bytes || 0;
         const fmt = (n: number) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(2)} GB` : n >= 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`);
@@ -150,37 +175,55 @@ const Projects: React.FC = () => {
       },
     },
     {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 130,
-      render: (status: string, record: Project) =>
-        (record.slice_running ?? 0) > 0 ? (
-          <Tag color="processing" style={{ marginInlineEnd: 0 }}>
-            ● 运行中 ×{record.slice_running}
-          </Tag>
-        ) : (
-          <Tag color={getStatusColor(status)}>{getStatusLabel(status)}</Tag>
-        ),
-    },
-    {
-      title: '描述',
-      dataIndex: 'description',
-      key: 'description',
-      ellipsis: true,
-      render: (text: string) => text || '-',
+      title: '运行状态',
+      dataIndex: 'run_state',
+      key: 'run_state',
+      width: 145,
+      render: (_: unknown, record: Project) => {
+        const legacyCount = record.slice_running ?? 0;
+        const counts: RunCounts = record.run_counts ?? {
+          selecting: 0,
+          detecting: 0,
+          slicing: legacyCount,
+          remotion_rendering: 0,
+          total: legacyCount,
+        };
+        const runState = record.run_state ?? (legacyCount > 0 ? 'slicing' : 'idle');
+        const stage = runState === 'idle' ? null : runState;
+        const stageLabel = stage ? RUN_STAGE_LABELS[stage] : '空闲';
+        const label = record.run_state_label?.trim() || stageLabel;
+        const stageCount = stage ? counts[stage] : 0;
+        const detail = (
+          <div>
+            {RUN_STAGES.filter((key) => counts[key] > 0).map((key) => (
+              <div key={key}>{RUN_STAGE_LABELS[key]}：{counts[key]}</div>
+            ))}
+            <div>总数：{counts.total}</div>
+          </div>
+        );
+        return (
+          <Tooltip title={detail}>
+            <Tag
+              color={stage ? RUN_STAGE_COLORS[stage] : 'default'}
+              style={{ marginInlineEnd: 0, whiteSpace: 'nowrap' }}
+            >
+              {stage && stageCount > 0 ? `${label} ×${stageCount}` : label}
+            </Tag>
+          </Tooltip>
+        );
+      },
     },
     {
       title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
-      width: 170,
-      render: (date: string) => formatDateTime(date),
+      width: 146,
+      render: (date: string) => <span style={{ fontSize: 12 }}>{formatDateTime(date)}</span>,
     },
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 230,
       render: (_: unknown, record: Project) => (
         <Space size="small">
           <Tooltip title="查看详情">
@@ -195,6 +238,20 @@ const Projects: React.FC = () => {
             </Tooltip>
           </Popconfirm>
         </Space>
+      ),
+    },
+    {
+      title: '描述',
+      dataIndex: 'description',
+      key: 'description',
+      width: 195,
+      ellipsis: { showTitle: false },
+      render: (text: string | null) => (
+        <Tooltip title={text || '-'} placement="topLeft">
+          <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {text || '-'}
+          </span>
+        </Tooltip>
       ),
     },
   ];
@@ -221,6 +278,19 @@ const Projects: React.FC = () => {
           <Col>
             <Button type="primary" onClick={handleSearch}>搜索</Button>
           </Col>
+          <Col>
+            <Segmented<OwnerView>
+              value={owner}
+              onChange={(value) => {
+                setOwner(value);
+                setPage(1);
+              }}
+              options={[
+                { label: '仅看自己', value: 'me' },
+                { label: '全部项目', value: 'all' },
+              ]}
+            />
+          </Col>
         </Row>
       </Card>
       <Card size="small">
@@ -229,7 +299,7 @@ const Projects: React.FC = () => {
           columns={columns}
           dataSource={projects}
           loading={loading}
-          scroll={{ x: 1000 }}
+          scroll={{ x: 1083 }}
           pagination={{
             current: page,
             pageSize,

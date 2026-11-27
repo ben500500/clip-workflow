@@ -20,6 +20,32 @@ export function formatDuration(seconds: number | null | undefined): string {
 }
 
 /**
+ * 切片任务耗时：运行中按当前时间累计，终态必须冻结。
+ * 历史 cancelled/failed 行可能没有 completed_at，退回最后进度心跳，避免页面继续涨。
+ */
+export function formatTaskDuration(
+  task: {
+    started_at?: string | null;
+    completed_at?: string | null;
+    last_progress_at?: string | null;
+    status?: string | null;
+  },
+  now: number = Date.now(),
+): string {
+  if (!task.started_at) return '-';
+  const start = parseServerTime(task.started_at);
+  if (!start || !start.isValid()) return '-';
+  const terminal = task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled';
+  const endValue = task.completed_at || (terminal ? task.last_progress_at : null);
+  // 终态若连完成时间/最后心跳都没有，显示 '-'；不能退回 now，否则仍会一直涨。
+  if (terminal && !endValue) return '-';
+  const end = endValue ? parseServerTime(endValue) : null;
+  if (endValue && (!end || !end.isValid())) return '-';
+  const endMs = end ? end.valueOf() : now;
+  return formatDuration(Math.max(0, (endMs - start.valueOf()) / 1000));
+}
+
+/**
  * 解析后端时间字符串为 dayjs 实例（统一 UTC 语义）。
  *
  * 全库时间列是 timestamp without time zone，后端写入 datetime.utcnow()。

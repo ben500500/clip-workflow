@@ -6,6 +6,7 @@ export interface ProjectListParams {
   page_size?: number;
   search?: string;
   status?: string;
+  owner?: 'me' | 'all';
 }
 
 export const projectApi = {
@@ -39,6 +40,9 @@ export const projectApi = {
 
   getEpisode: (episodeId: string) =>
     client.get(`/episodes/${episodeId}`) as Promise<Episode>,
+
+  updateEpisode: (episodeId: string, data: { title?: string; cover_image_key?: string | null }) =>
+    client.put(`/episodes/${episodeId}`, data) as Promise<Episode>,
 
   deleteEpisode: (episodeId: string) =>
     client.delete(`/episodes/${episodeId}`) as Promise<void>,
