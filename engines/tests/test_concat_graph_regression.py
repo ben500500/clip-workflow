@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 
 _ENGINES_DIR = os.path.dirname(os.path.abspath(__file__))
 _ENGINES_DIR = os.path.dirname(_ENGINES_DIR)
@@ -78,6 +79,21 @@ def test_graph_engine(mod):
     record("A5 尾部 concat 声明正确", "concat=n=2:v=1:a=1[v][a]" in g)
     record("A6 输入标签与段数一一对应",
            g.count("[v0][a0][v1][a1]") == 1, "拼接标签顺序")
+
+    # final_video_filter：不传/显式 None 保持原图，传入时只改 concat 后的视频尾链。
+    graph_specs = [
+        {"has_audio": True, "duration": 5.0, "fps": 25.0},
+        {"has_audio": True, "duration": 3.0, "fps": 25.0},
+    ]
+    base_graph = build(graph_specs, 720, 1280)[0]
+    none_graph = build(graph_specs, 720, 1280, final_video_filter=None)[0]
+    final_filter = "drawtext=text='FIXED'"
+    filtered_graph = build(graph_specs, 720, 1280, final_video_filter=final_filter)[0]
+    record("A7 显式 None 保持原图字节级形状", none_graph == base_graph)
+    record("A8 最终滤镜位于 concat 后且视频独立中继",
+           "concat=n=2:v=1:a=1[vconcat][a];[vconcat]" + final_filter + "[v]" in filtered_graph)
+    record("A9 最终滤镜不改变音频输出标签",
+           filtered_graph.endswith(final_filter + "[v]") and "concat=n=2:v=1:a=1[vconcat][a]" in filtered_graph)
 
     # B1 混帧率：目标帧率取首段
     g2, s2, n2 = build(
@@ -165,6 +181,47 @@ def test_cmd_shape(mod):
                 os.unlink(leftover)
 
 
+def test_text_fusion_cmd_shape(mod):
+    """有有效文字时绕过 copy fastpath，concat 与文字只调用一次 ffmpeg。"""
+    calls = []
+    ass_paths = []
+    parts = ["/nope/a.mp4", "/nope/b.mp4"]
+    specs = {"has_audio": True, "duration": 2.0, "fps": 30.0}
+    final_filter = "drawtext=text='FIXED'"
+
+    def build_text(valid, tw, th, ass_path):
+        ass_paths.append(ass_path)
+        return final_filter
+
+    def spy(cmd, **kw):
+        calls.append(list(cmd))
+
+    with tempfile.TemporaryDirectory() as td, \
+         mock.patch.object(mod, "_is_copy_segment", return_value=True), \
+         mock.patch.object(mod, "_av_signature", side_effect=AssertionError("不得探测 copy 签名")), \
+         mock.patch.object(mod, "_concat_demuxer") as copy_concat, \
+         mock.patch.object(mod, "_probe_concat_spec", return_value=specs), \
+         mock.patch.object(mod, "ffprobe_resolution", return_value=(720, 1280)), \
+         mock.patch.object(mod, "_build_text_overlays_video_filter", side_effect=build_text), \
+         mock.patch.object(mod, "apply_text_overlays") as separate_text, \
+         mock.patch.object(mod, "run_ffmpeg", side_effect=spy):
+        result = mod.concat_segments(
+            parts, os.path.join(td, "out.mp4"), threads=3,
+            faststart=True, text_overlays=[{"text": "FIXED"}],
+        )
+
+    joined = " ".join(calls[0]) if calls else ""
+    record("F6 有文字绕过 concat demuxer", not copy_concat.called and "-c copy" not in joined)
+    record("F7 融合路径只调用一次 run_ffmpeg", len(calls) == 1 and result == [], f"calls={len(calls)}")
+    record("F8 文字滤镜接入硬切 concat 尾部",
+           "-map [v] -map [a]" in joined and "[vconcat]" + final_filter + "[v]" in joined)
+    record("F9 编码线程/AAC/faststart 保持",
+           "-threads 3" in joined and "-c:v libx264" in joined
+           and "-c:a aac -b:a 128k" in joined and "+faststart" in joined)
+    record("F10 融合成功不再单独叠加且清理 ASS",
+           not separate_text.called and len(ass_paths) == 1 and not os.path.exists(ass_paths[0]))
+
+
 def test_copy_fastpath_untouched(mod):
     """签名一致时仍走 concat demuxer 流拷贝（新逻辑不得把它挤成重编码）。"""
     if not (_have("ffmpeg") and _have("ffprobe")):
@@ -237,6 +294,7 @@ def main():
     test_graph_engine(mod)
     test_probe_defaults(mod)
     test_cmd_shape(mod)
+    test_text_fusion_cmd_shape(mod)
     test_copy_fastpath_untouched(mod)
     test_probe_accuracy(mod)
 

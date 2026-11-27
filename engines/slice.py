@@ -1035,7 +1035,7 @@ def _probe_concat_spec(path: str) -> dict:
     }
 
 
-def build_concat_filtergraph(specs, tw, th):
+def build_concat_filtergraph(specs, tw, th, final_video_filter=None):
     """按各段实测规格生成 concat 滤镜图（纯函数，不起子进程，单测直接喂 dict）。
 
     返回 `(filter_complex, 要追加的 lavfi 静音输入个数, 给人看的说明)`。
@@ -1076,7 +1076,13 @@ def build_concat_filtergraph(specs, tw, th):
         else:
             chains.append(f"[{i}:a]{aformat}[a{i}]")
     concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(n))
-    filter_complex = ";".join(chains) + ";" + concat_inputs + f"concat=n={n}:v=1:a=1[v][a]"
+    filter_complex = ";".join(chains) + ";" + concat_inputs + f"concat=n={n}:v=1:a=1"
+    if final_video_filter:
+        # concat 的音轨仍直接输出 [a]；视频先走独立中间标签，避免与最终输出重名。
+        filter_complex += f"[vconcat][a];[vconcat]{final_video_filter}[v]"
+    else:
+        # 未传最终滤镜时保持原有输出字节级形状不变。
+        filter_complex += "[v][a]"
     return filter_complex, len(silent_idx), notes
 
 
@@ -1152,8 +1158,11 @@ def _head_subtitle_lead_offset(applied, head_seam, hook_duration):
     return transition["offset"] if transition else hook_duration
 
 
-def build_transition_concat_filtergraph(specs, tw, th, plans, fps=None):
-    """拼接各段，只在 plans 指定的外部素材接缝使用 xfade/acrossfade。"""
+def build_transition_concat_filtergraph(specs, tw, th, plans, fps=None, final_video_filter=None):
+    """拼接各段，只在 plans 指定的外部素材接缝使用 xfade/acrossfade。
+
+    final_video_filter 非空时，在转场/硬切全部完成、输出 [vout] 前统一应用。
+    """
     n = len(specs)
     fps_values = [float(s.get("fps") or 0.0) for s in specs]
     target_fps = float(fps or next((v for v in fps_values if v > 0), 25.0))
@@ -1217,7 +1226,11 @@ def build_transition_concat_filtergraph(specs, tw, th, plans, fps=None):
             current_v, current_a = next_v, next_a
             current_dur += durations[i]
 
-    chains.append(f"[{current_v}]null[vout]")
+    if final_video_filter:
+        chains.append(f"[{current_v}]{final_video_filter}[vfinal]")
+        chains.append("[vfinal]null[vout]")
+    else:
+        chains.append(f"[{current_v}]null[vout]")
     chains.append(f"[{current_a}]anull[aout]")
     notes = []
     if silent_idx:
@@ -1283,10 +1296,28 @@ def _detect_aac_preroll(path: str) -> dict | None:
     }
 
 
+def _valid_text_overlays(text_overlays) -> list:
+    """返回带有效固定文字的配置；供融合门控与两条编码路径共用。"""
+    return [
+        ov for ov in (text_overlays or [])
+        if isinstance(ov, dict) and (ov.get("text") or "").strip()
+    ]
+
+
 def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=True,
-                    faststart=False, transition_seams=None):
-    """多段拼一条；transition_seams 中的接缝使用随机 xfade/acrossfade。"""
+                    faststart=False, transition_seams=None, text_overlays=None):
+    """多段拼一条；transition_seams 中的接缝使用随机 xfade/acrossfade。
+
+    有效固定文字融合进同一次 concat 编码；融合失败时保留原来的硬切 concat +
+    apply_text_overlays 两遍路径。返回值始终只描述实际成功的拼接尝试。
+    """
+    valid_texts = _valid_text_overlays(text_overlays)
+    has_text_overlays = bool(valid_texts)
     if len(parts) == 1:
+        if has_text_overlays:
+            # 单段也必须经过一次文字叠加编码，不能 move 后丢失文字。
+            apply_text_overlays(parts[0], out, valid_texts, threads=threads, encoder=encoder)
+            return []
         # 单段时无需重新编码（水印/角标已在源片预叠加阶段完成）。
         # ⚠️ move 会**搬走输入文件**：切片线传的是临时 parts，本来就要清理；
         # 调用方若传的是缓存原片/已入库产物，必须自己保证段数 ≥2（素材库适配层
@@ -1294,8 +1325,8 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
         shutil.move(parts[0], out)
         return []
     seams = sorted({int(s) for s in (transition_seams or []) if 0 <= int(s) < len(parts) - 1})
-    # 带转场必须重编码；无外部素材接缝时保留既有流拷贝快速通道。
-    if copy_if_possible and not seams and all(_is_copy_segment(p) for p in parts):
+    # 带转场或带固定文字必须重编码；无外部素材接缝且无文字时保留既有流拷贝快速通道。
+    if copy_if_possible and not seams and not has_text_overlays and all(_is_copy_segment(p) for p in parts):
         sigs = [_av_signature(p) for p in parts]
         uniform = bool(sigs) and all(x is not None for x in sigs) and len(set(sigs)) == 1
         if not uniform:
@@ -1357,74 +1388,151 @@ def concat_segments(parts, out, threads=1, encoder="libx264", copy_if_possible=T
     except Exception:
         pass
     specs = [_probe_concat_spec(p) for p in parts]
-    plans = {}
-    applied = []
-    if seams:
-        for seam in seams:
-            score = _hook_seam_score(parts[seam], parts[seam + 1], specs[seam].get("duration") or 0.0)
-            plans[seam] = _pick_hook_transition(score, specs[seam].get("fps") or 0.0)
-        filter_complex, silent_inputs, notes, applied = build_transition_concat_filtergraph(
-            specs, TW, TH, plans
-        )
-    else:
-        filter_complex, silent_inputs, notes = build_concat_filtergraph(specs, TW, TH)
-    for note in notes:
-        print(f"[concat] {note}", file=sys.stderr)
-    for item in applied:
-        print(
-            f"[transition] seam={item['seam']} left={parts[item['seam']]} "
-            f"right={parts[item['seam'] + 1]} effect={item['transition']} "
-            f"duration={item['duration']:.3f}s scene={item['scene_score']}",
-            file=sys.stderr,
-        )
 
-    def build_command(graph, silent_count, transition_graph):
-        cmd = ["ffmpeg", "-y", "-threads", str(threads)]
-        for part in parts:
-            cmd += ["-i", part]
-        for _ in range(silent_count):
-            cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
-        cmd += [
-            "-filter_complex", graph,
-            "-map", "[vout]" if transition_graph else "[v]",
-            "-map", "[aout]" if transition_graph else "[a]",
-        ]
-        cmd += build_encoder_args(encoder, threads)
-        cmd += ["-c:a", "aac", "-b:a", "128k"]
-        if transition_graph:
-            cmd += ["-ar", "44100", "-ac", "2"]
-        if faststart:
-            cmd += ["-movflags", "+faststart"]
-        cmd.append(out)
-        return cmd
-
-    attempts = [(filter_complex, silent_inputs, bool(seams),
-                 f"成品拼接重编码（{len(parts)} 段，{len(applied)} 处转场）" if seams
-                 else f"成品拼接重编码（{len(parts)} 段）", applied)]
-    if seams:
-        fallback_graph, fallback_silent, fallback_notes, _ = build_transition_concat_filtergraph(
-            specs, TW, TH, {}
-        )
-        for note in fallback_notes:
-            print(f"[concat-fallback] {note}", file=sys.stderr)
-        attempts.append((fallback_graph, fallback_silent, True,
-                         f"成品拼接重编码（{len(parts)} 段）", []))
-    for attempt_no, (graph, silent_count, transition_graph, stage_text, attempt_applied) in enumerate(attempts, 1):
-        cmd = build_command(graph, silent_count, transition_graph)
-        _stage(stage_text)
-        # 角标由源片预叠加阶段统一完成；成品级 apply_badges 仅兜底。
-        print(f"[SLICE-DEBUG] concat cmd: filter_complex={graph[:500]}", file=sys.stderr)
-        print(f"[SLICE-DEBUG] concat parts: {parts}", file=sys.stderr)
+    # 固定文字只构建一次，同一滤镜同时用于转场图和硬切图。ASS 文件由本函数
+    # 持有并在所有成功/失败出口清理，不能把临时文件生命周期泄漏给 ffmpeg。
+    fused_video_filter = ""
+    fused_ass_path = None
+    if has_text_overlays:
         try:
-            run_ffmpeg(cmd, threads=threads)
-            return attempt_applied
+            fd, fused_ass_path = tempfile.mkstemp(
+                prefix=".text-overlays-", suffix=".ass",
+                dir=os.path.dirname(os.path.abspath(out)),
+            )
+            os.close(fd)
+            fused_video_filter = _build_text_overlays_video_filter(
+                valid_texts, TW, TH, fused_ass_path,
+            )
         except Exception as e:  # noqa: BLE001
-            if attempt_no >= len(attempts):
-                raise
-            print(f"[transition] 接缝转场渲染失败，降级硬切拼接: {e}", file=sys.stderr)
+            print(f"[text-overlay] 固定文字滤镜构建失败，转两遍回退: {e}", file=sys.stderr)
+            fused_video_filter = ""
+        if not fused_video_filter:
+            print("[text-overlay] 无法融合固定文字，转两遍回退", file=sys.stderr)
+
+    def build_hardcut_graph(final_filter=None):
+        if seams:
+            return build_transition_concat_filtergraph(
+                specs, TW, TH, {}, final_video_filter=final_filter,
+            )
+        graph, silent, notes = build_concat_filtergraph(
+            specs, TW, TH, final_video_filter=final_filter,
+        )
+        return graph, silent, notes, []
+
+    try:
+        plans = {}
+        applied = []
+        # 文字滤镜构建失败时不再尝试转场，直接走最终硬切两遍回退。
+        if seams and (not has_text_overlays or fused_video_filter):
+            for seam in seams:
+                score = _hook_seam_score(parts[seam], parts[seam + 1], specs[seam].get("duration") or 0.0)
+                plans[seam] = _pick_hook_transition(score, specs[seam].get("fps") or 0.0)
+            filter_complex, silent_inputs, notes, applied = build_transition_concat_filtergraph(
+                specs, TW, TH, plans, final_video_filter=fused_video_filter or None,
+            )
+        else:
+            filter_complex, silent_inputs, notes, applied = build_hardcut_graph(
+                fused_video_filter or None,
+            )
+        for note in notes:
+            print(f"[concat] {note}", file=sys.stderr)
+        for item in applied:
+            print(
+                f"[transition] seam={item['seam']} left={parts[item['seam']]} "
+                f"right={parts[item['seam'] + 1]} effect={item['transition']} "
+                f"duration={item['duration']:.3f}s scene={item['scene_score']}",
+                file=sys.stderr,
+            )
+
+        def build_command(graph, silent_count, transition_graph):
+            cmd = ["ffmpeg", "-y", "-threads", str(threads)]
+            for part in parts:
+                cmd += ["-i", part]
+            for _ in range(silent_count):
+                cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+            cmd += [
+                "-filter_complex", graph,
+                "-map", "[vout]" if transition_graph else "[v]",
+                "-map", "[aout]" if transition_graph else "[a]",
+            ]
+            cmd += build_encoder_args(encoder, threads)
+            cmd += ["-c:a", "aac", "-b:a", "128k"]
+            if transition_graph:
+                cmd += ["-ar", "44100", "-ac", "2"]
+            if faststart:
+                cmd += ["-movflags", "+faststart"]
+            cmd.append(out)
+            return cmd
+
+        # 每项末尾标记是否需要在硬切 concat 成功后单独叠加文字。
+        attempts = [(
+            filter_complex, silent_inputs, bool(seams),
+            f"成品拼接重编码（{len(parts)} 段，{len(applied)} 处转场）" if seams
+            else f"成品拼接重编码（{len(parts)} 段）",
+            applied, has_text_overlays and not fused_video_filter,
+        )]
+        if has_text_overlays and fused_video_filter:
+            if seams:
+                fallback_graph, fallback_silent, fallback_notes, _ = build_hardcut_graph(fused_video_filter)
+                for note in fallback_notes:
+                    print(f"[concat-fallback] {note}", file=sys.stderr)
+                # 先尝试带文字的硬切融合；仍失败才进入原来的两遍路径。
+                attempts.append((fallback_graph, fallback_silent, True,
+                                 f"成品拼接重编码（{len(parts)} 段）", [], False))
+            final_graph, final_silent, _, _ = build_hardcut_graph()
+            attempts.append((final_graph, final_silent, bool(seams),
+                             f"成品拼接重编码（{len(parts)} 段）", [], True))
+        elif seams:
+            fallback_graph, fallback_silent, fallback_notes, _ = build_hardcut_graph()
+            for note in fallback_notes:
+                print(f"[concat-fallback] {note}", file=sys.stderr)
+            # 有文字时重试仍必须走 separate-text；绝不能把无文字 concat
+            # 当成成功终态。无文字场景保持原来的硬切重试行为。
+            attempts.append((fallback_graph, fallback_silent, True,
+                             f"成品拼接重编码（{len(parts)} 段）", [], has_text_overlays))
+
+        for attempt_no, (graph, silent_count, transition_graph, stage_text,
+                         attempt_applied, needs_separate_text) in enumerate(attempts, 1):
+            cmd = build_command(graph, silent_count, transition_graph)
+            _stage(stage_text)
+            # 角标由源片预叠加阶段统一完成；成品级 apply_badges 仅兜底。
+            print(f"[SLICE-DEBUG] concat cmd: filter_complex={graph[:500]}", file=sys.stderr)
+            print(f"[SLICE-DEBUG] concat parts: {parts}", file=sys.stderr)
             try:
-                if os.path.exists(out):
-                    os.unlink(out)
+                run_ffmpeg(cmd, threads=threads)
+            except Exception as e:  # noqa: BLE001
+                if attempt_no >= len(attempts):
+                    raise
+                if has_text_overlays and attempts[attempt_no][5]:
+                    print(f"[text-overlay] 融合渲染失败，硬切后单独叠加文字: {e}", file=sys.stderr)
+                elif has_text_overlays:
+                    print(f"[text-overlay] 转场融合渲染失败，降级硬切融合拼接: {e}", file=sys.stderr)
+                else:
+                    print(f"[transition] 接缝转场渲染失败，降级硬切拼接: {e}", file=sys.stderr)
+                try:
+                    if os.path.exists(out):
+                        os.unlink(out)
+                except OSError:
+                    pass
+                continue
+
+            if needs_separate_text:
+                text_out = out + ".textov.mp4"
+                try:
+                    apply_text_overlays(out, text_out, valid_texts,
+                                        threads=threads, encoder=encoder)
+                    os.replace(text_out, out)
+                finally:
+                    try:
+                        if os.path.exists(text_out):
+                            os.unlink(text_out)
+                    except OSError:
+                        pass
+            return attempt_applied
+    finally:
+        if fused_ass_path:
+            try:
+                os.unlink(fused_ass_path)
             except OSError:
                 pass
 
@@ -2055,18 +2163,24 @@ _TEXT_POS_TO_ASS_ALIGN = {
 }
 
 
-def _build_text_overlays_ass(valid, src, ass_path) -> None:
+def _build_text_overlays_ass(valid, src, ass_path, width=None, height=None) -> None:
     """把固定文字叠加生成为 ASS 字幕文件（libass 渲染）。
 
     2026-11-22：替代 drawtext 路线——本地自编译 ffmpeg 的 drawtext 对多字节
     文本存在截断/缺字缺陷（跨字体、跨构建复现，实测热门短剧本故事纯属虚构
     只渲染前 3-5 字），而 libass（字幕烧录同款滤镜）渲染完全正常。
     位置：drawtext 七位 → ASS Alignment + Margin 映射；竖排=逐字 \\N 换行。
+
+    width/height 同时显式传入时不探测 src；融合 concat 的场景由此直接使用
+    目标 TW/TH，避免依赖尚不存在的中间视频。旧的三参数调用仍自动探测 src。
     """
-    try:
-        w, h = ffprobe_size(src)
-    except Exception:
-        w, h = 1280, 720
+    if width is not None and height is not None:
+        w, h = int(width), int(height)
+    else:
+        try:
+            w, h = ffprobe_size(src)
+        except Exception:
+            w, h = 1280, 720
     header = (
         "[Script Info]\n"
         f"ScriptType: v4.00+\n"
@@ -2118,6 +2232,49 @@ def _build_text_overlays_ass(valid, src, ass_path) -> None:
         fh.write(content)
 
 
+def _build_text_overlays_video_filter(text_overlays, tw, th, ass_path) -> str:
+    """构建可直接插入 concat 图的固定文字滤镜。
+
+    ass_path 由调用方提供并负责清理；ASS 使用显式目标尺寸，不探测中间视频。
+    无法生成 ASS 时回退现有 drawtext 链；两者都无法构建时返回空串。
+    """
+    valid = _valid_text_overlays(text_overlays)
+    if not valid:
+        return ""
+    try:
+        tw, th = int(tw), int(th)
+    except (TypeError, ValueError):
+        return ""
+    if tw <= 0 or th <= 0:
+        return ""
+    try:
+        _build_text_overlays_ass(valid, None, ass_path, width=tw, height=th)
+    except Exception:
+        # 生成失败可能留下半截 ASS，不能让它污染随后的 drawtext 回退。
+        try:
+            os.unlink(ass_path)
+        except OSError:
+            pass
+    if os.path.isfile(ass_path):
+        return f"ass={ass_path}:fontsdir=/usr/share/fonts/opentype/noto"
+    try:
+        return _build_text_overlays_filter(valid)
+    except Exception:
+        return ""
+
+
+def _should_fuse_text_overlays(text_overlays, subtitle_mask=None, subtitle=None,
+                               watermark_mask=None, badges=None,
+                               badges_preapplied=False) -> bool:
+    """纯函数门控：文字与 concat 之间不存在其他成品级处理时才允许融合。"""
+    return bool(_valid_text_overlays(text_overlays)) and not (
+        subtitle_mask
+        or subtitle
+        or watermark_mask
+        or (badges and not badges_preapplied)
+    )
+
+
 def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264"):
     """对成品视频执行一次固定文字叠加，产出新文件。
 
@@ -2125,33 +2282,35 @@ def apply_text_overlays(src, out, text_overlays, threads=1, encoder="libx264"):
     2026-11-22：渲染改为 ASS/libass 路线（drawtext 在本地自编译 ffmpeg 上
     对多字节文本有截断缺陷），生成失败时回退 drawtext。
     """
-    valid = [o for o in (text_overlays or []) if o and (o.get("text") or "").strip()]
+    valid = _valid_text_overlays(text_overlays)
     if not valid:
         shutil.copy(src, out)
         return
     ass_path = out + ".overlays.ass"
-    vf = ""
     try:
-        _build_text_overlays_ass(valid, src, ass_path)
-        if os.path.isfile(ass_path):
-            vf = f"ass={ass_path}:fontsdir=/usr/share/fonts/opentype/noto"
-    except Exception:
         vf = ""
-    if not vf:
-        vf = _build_text_overlays_filter(valid)
-    cmd = [
-        "ffmpeg", "-y", "-threads", str(threads), "-i", src,
-        "-vf", vf,
-        "-map", "0:v:0", "-map", "0:a:0?",
-    ]
-    cmd += build_encoder_args(encoder, threads)
-    cmd += ["-c:a", "aac", "-b:a", "128k", out]
-    run_ffmpeg(cmd, timeout=3600, threads=threads)
-    if os.path.isfile(ass_path):
         try:
-            os.remove(ass_path)
-        except OSError:
-            pass
+            _build_text_overlays_ass(valid, src, ass_path)
+            if os.path.isfile(ass_path):
+                vf = f"ass={ass_path}:fontsdir=/usr/share/fonts/opentype/noto"
+        except Exception:
+            vf = ""
+        if not vf:
+            vf = _build_text_overlays_filter(valid)
+        cmd = [
+            "ffmpeg", "-y", "-threads", str(threads), "-i", src,
+            "-vf", vf,
+            "-map", "0:v:0", "-map", "0:a:0?",
+        ]
+        cmd += build_encoder_args(encoder, threads)
+        cmd += ["-c:a", "aac", "-b:a", "128k", out]
+        run_ffmpeg(cmd, timeout=3600, threads=threads)
+    finally:
+        if os.path.isfile(ass_path):
+            try:
+                os.remove(ass_path)
+            except OSError:
+                pass
 
 
 def build_watermark_filter(wm: dict) -> str:
@@ -5525,6 +5684,10 @@ def main():
             transition_seams = []
             head_hook_index = None
             tail_hook_part = None
+            # _process_one 内任何对 hook_dur 的赋值都会让 Python 将其视为局部变量；
+            # 无钩子路径也必须先初始化，否则 concat 后的字幕前置量计算会抛
+            # UnboundLocalError（2026-11-26 112 节点真实无钩子重剪验收命中）。
+            hook_dur = 0.0
             with tempfile.TemporaryDirectory() as tmp:
                 part_offset = 0
                 hook_injected = False
@@ -5658,9 +5821,19 @@ def main():
                     transition_seams.append(len(parts) - 1)
                     parts.append(outro_part)
                 # 仅外部素材接缝加转场；正片内部仍按原顺序硬切。
+                # 只有 concat 与文字叠加之间没有其他成品级处理时，才融合为一次编码。
+                fuse_text_overlays = _should_fuse_text_overlays(
+                    text_overlays,
+                    subtitle_mask=subtitle_mask,
+                    subtitle=args.subtitle,
+                    watermark_mask=watermark_mask,
+                    badges=badges,
+                    badges_preapplied=badges_preapplied,
+                )
                 applied_transitions = concat_segments(
                     parts, out_path, threads=p_threads, encoder=encoder,
                     copy_if_possible=True, transition_seams=transition_seams,
+                    text_overlays=text_overlays if fuse_text_overlays else None,
                 )
                 subtitle_lead_offset = _head_subtitle_lead_offset(
                     applied_transitions, head_hook_index, hook_dur,
@@ -5781,14 +5954,16 @@ def main():
                 os.replace(badge_out, out_path)
                 # 角标叠加完成 → 阶段 tick
                 print(f"PROGRESS:{min(99, int((_completed() + 0.88) * 100 / total))}")
-            # 固定文字角标：在图片角标之后再叠加文字（文字常叠在角标之上层）
+            # 固定文字角标：在图片角标之后再叠加文字（文字常叠在角标之上层）。
+            # 已融合（含 concat 内两遍回退）时跳过编码，但保留原阶段进度。
             if text_overlays:
-                txt_out = out_path + ".textov.mp4"
-                apply_text_overlays(
-                    out_path, txt_out, text_overlays,
-                    threads=p_threads, encoder=encoder,
-                )
-                os.replace(txt_out, out_path)
+                if not fuse_text_overlays:
+                    txt_out = out_path + ".textov.mp4"
+                    apply_text_overlays(
+                        out_path, txt_out, text_overlays,
+                        threads=p_threads, encoder=encoder,
+                    )
+                    os.replace(txt_out, out_path)
                 # 固定文字角标完成 → 阶段 tick
                 print(f"PROGRESS:{min(99, int((_completed() + 0.91) * 100 / total))}")
             # 视频封面：将封面叠加到成品第一帧作为视频首帧

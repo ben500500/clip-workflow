@@ -96,6 +96,26 @@ class TransitionGraphTests(unittest.TestCase):
         self.assertEqual(graph.count("atrim=duration=1.000000"), 4)
         self.assertEqual(applied[0]["offset"], 0.7)
 
+    def test_final_video_filter_is_applied_after_transitions(self):
+        base_graph, _, _, base_applied = _slice.build_transition_concat_filtergraph(
+            self.specs, 720, 1280, self.plans
+        )
+        none_graph, _, _, _ = _slice.build_transition_concat_filtergraph(
+            self.specs, 720, 1280, self.plans, final_video_filter=None
+        )
+        final_filter = "drawtext=text='FIXED'"
+        graph, _, _, applied = _slice.build_transition_concat_filtergraph(
+            self.specs, 720, 1280, self.plans, final_video_filter=final_filter
+        )
+        self.assertEqual(base_graph, none_graph)
+        self.assertEqual(applied, base_applied)
+        self.assertIn(
+            "[vx3]" + final_filter + "[vfinal];[vfinal]null[vout]",
+            graph,
+        )
+        self.assertGreater(graph.index(final_filter), graph.rindex("xfade="))
+        self.assertTrue(graph.endswith("[ax3]anull[aout]"))
+
     def test_short_seam_falls_back_to_hard_cut(self):
         specs = [
             {"has_audio": True, "duration": 0.10, "fps": 30.0},
@@ -160,6 +180,260 @@ class ConcatTransitionCommandTests(unittest.TestCase):
         self.assertIn("-map [vout] -map [aout]", " ".join(calls[1]))
 
 
+class TextOverlayFusionTests(unittest.TestCase):
+    def setUp(self):
+        self.overlays = [{"text": "FIXED", "position": "top-right"}]
+
+    def test_safety_gate_blocks_each_intermediate_pass(self):
+        self.assertTrue(_slice._should_fuse_text_overlays(self.overlays))
+        blockers = [
+            {"subtitle_mask": {"x": 0, "y": 0}},
+            {"subtitle": "/tmp/subtitle.srt"},
+            {"watermark_mask": {"x": 0, "y": 0}},
+            {"badges": [{"path": "/tmp/badge.png"}]},
+        ]
+        for kwargs in blockers:
+            with self.subTest(kwargs=kwargs):
+                self.assertFalse(_slice._should_fuse_text_overlays(self.overlays, **kwargs))
+        # 预叠角标已完成于源片，不构成 concat→文字之间的新处理。
+        self.assertTrue(_slice._should_fuse_text_overlays(
+            self.overlays, badges=[{"path": "/tmp/badge.png"}],
+            badges_preapplied=True,
+        ))
+        self.assertFalse(_slice._should_fuse_text_overlays(
+            self.overlays, badges=[{"path": "/tmp/badge.png"}],
+            badges_preapplied=True, subtitle_mask={"x": 0, "y": 0},
+        ))
+        # args.cover 在文字之后执行，不是融合门控的阻断项。
+        self.assertTrue(_slice._should_fuse_text_overlays(self.overlays))
+
+    def test_safety_gate_requires_valid_text(self):
+        for overlays in (None, [], [{}], [{"text": "   "}]):
+            with self.subTest(overlays=overlays):
+                self.assertFalse(_slice._should_fuse_text_overlays(overlays))
+
+    def test_ass_explicit_size_does_not_probe_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "overlays.ass")
+            with mock.patch.object(_slice, "ffprobe_size") as probe:
+                _slice._build_text_overlays_ass(
+                    self.overlays, "/not/a/real/intermediate.mp4", ass_path,
+                    width=720, height=1280,
+                )
+            probe.assert_not_called()
+            with open(ass_path, encoding="utf-8") as fh:
+                content = fh.read()
+            self.assertIn("PlayResX: 720", content)
+            self.assertIn("PlayResY: 1280", content)
+
+    def test_video_filter_falls_back_to_drawtext_without_probe(self):
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "overlays.ass")
+            with mock.patch.object(_slice, "_build_text_overlays_ass", side_effect=RuntimeError("ASS failed")), \
+                 mock.patch.object(_slice, "_build_text_overlays_filter", return_value="drawtext=text='FIXED'") as fallback, \
+                 mock.patch.object(_slice, "ffprobe_size") as probe:
+                result = _slice._build_text_overlays_video_filter(
+                    self.overlays, 720, 1280, ass_path,
+                )
+            self.assertEqual(result, "drawtext=text='FIXED'")
+            fallback.assert_called_once_with(self.overlays)
+            probe.assert_not_called()
+
+    def test_single_segment_applies_text_once_instead_of_move(self):
+        with mock.patch.object(_slice, "apply_text_overlays") as apply_text, \
+             mock.patch.object(_slice.shutil, "move") as move:
+            result = _slice.concat_segments(
+                ["/tmp/one.mp4"], "/tmp/out.mp4", text_overlays=self.overlays,
+            )
+        self.assertEqual(result, [])
+        move.assert_not_called()
+        apply_text.assert_called_once_with(
+            "/tmp/one.mp4", "/tmp/out.mp4", self.overlays,
+            threads=1, encoder="libx264",
+        )
+
+
+class ConcatTextCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.parts = ["/tmp/hook.mp4", "/tmp/body.mp4", "/tmp/outro.mp4"]
+        self.specs = [
+            {"has_audio": True, "duration": 2.0, "fps": 30.0},
+            {"has_audio": True, "duration": 3.0, "fps": 30.0},
+            {"has_audio": False, "duration": 2.0, "fps": 30.0},
+        ]
+        self.overlays = [{"text": "FIXED"}]
+        self.final_filter = "drawtext=text='FIXED'"
+
+    def test_transition_and_text_fuse_in_one_encode(self):
+        calls = []
+        ass_paths = []
+
+        def build_text(valid, tw, th, ass_path):
+            ass_paths.append(ass_path)
+            return self.final_filter
+
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(_slice, "_probe_concat_spec", side_effect=lambda p: self.specs[self.parts.index(p)]), \
+             mock.patch.object(_slice, "ffprobe_resolution", return_value=(720, 1280)), \
+             mock.patch.object(_slice, "_hook_seam_score", return_value=0.40), \
+             mock.patch.object(_slice, "_pick_hook_transition", return_value={
+                 "transition": "dissolve", "duration": 0.30, "scene_score": 0.40}), \
+             mock.patch.object(_slice, "_build_text_overlays_video_filter", side_effect=build_text), \
+             mock.patch.object(_slice, "apply_text_overlays") as separate_text, \
+             mock.patch.object(_slice, "run_ffmpeg", side_effect=lambda cmd, **kw: calls.append(cmd)):
+            result = _slice.concat_segments(
+                self.parts, os.path.join(td, "out.mp4"), transition_seams=[0],
+                text_overlays=self.overlays,
+            )
+
+        self.assertEqual([item["seam"] for item in result], [0])
+        self.assertEqual(len(calls), 1)
+        joined = " ".join(calls[0])
+        self.assertIn("xfade=transition=dissolve", joined)
+        self.assertIn(self.final_filter + "[vfinal];[vfinal]null[vout]", joined)
+        self.assertIn("-map [vout] -map [aout]", joined)
+        separate_text.assert_not_called()
+        self.assertEqual(len(ass_paths), 1)
+        self.assertFalse(os.path.exists(ass_paths[0]))
+
+    def test_transition_failure_retries_hardcut_with_same_text(self):
+        calls = []
+
+        def flaky(cmd, **kw):
+            calls.append(cmd)
+            if len(calls) == 1:
+                raise RuntimeError("xfade failed")
+
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(_slice, "_probe_concat_spec", side_effect=lambda p: self.specs[self.parts.index(p)]), \
+             mock.patch.object(_slice, "ffprobe_resolution", return_value=(720, 1280)), \
+             mock.patch.object(_slice, "_hook_seam_score", return_value=0.40), \
+             mock.patch.object(_slice, "_pick_hook_transition", return_value={
+                 "transition": "dissolve", "duration": 0.30, "scene_score": 0.40}), \
+             mock.patch.object(_slice, "_build_text_overlays_video_filter", return_value=self.final_filter), \
+             mock.patch.object(_slice, "apply_text_overlays") as separate_text, \
+             mock.patch.object(_slice, "run_ffmpeg", side_effect=flaky):
+            result = _slice.concat_segments(
+                self.parts, os.path.join(td, "out.mp4"), transition_seams=[0],
+                text_overlays=self.overlays,
+            )
+
+        self.assertEqual(result, [])
+        self.assertEqual(len(calls), 2)
+        self.assertIn("xfade=", " ".join(calls[0]))
+        self.assertNotIn("xfade=", " ".join(calls[1]))
+        self.assertIn(self.final_filter, " ".join(calls[0]))
+        self.assertIn(self.final_filter, " ".join(calls[1]))
+        separate_text.assert_not_called()
+
+    def test_all_fused_attempts_fail_uses_separate_text_fallback(self):
+        calls = []
+        ass_paths = []
+
+        def build_text(valid, tw, th, ass_path):
+            ass_paths.append(ass_path)
+            return self.final_filter
+
+        def flaky(cmd, **kw):
+            calls.append(cmd)
+            if len(calls) <= 2:
+                raise RuntimeError("fused render failed")
+
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "out.mp4")
+            with mock.patch.object(_slice, "_probe_concat_spec", side_effect=lambda p: self.specs[self.parts.index(p)]), \
+                 mock.patch.object(_slice, "ffprobe_resolution", return_value=(720, 1280)), \
+                 mock.patch.object(_slice, "_hook_seam_score", return_value=0.40), \
+                 mock.patch.object(_slice, "_pick_hook_transition", return_value={
+                     "transition": "dissolve", "duration": 0.30, "scene_score": 0.40}), \
+                 mock.patch.object(_slice, "_build_text_overlays_video_filter", side_effect=build_text), \
+                 mock.patch.object(_slice, "apply_text_overlays") as separate_text, \
+                 mock.patch.object(_slice.os, "replace") as replace, \
+                 mock.patch.object(_slice, "run_ffmpeg", side_effect=flaky):
+                result = _slice.concat_segments(
+                    self.parts, out, transition_seams=[0], text_overlays=self.overlays,
+                )
+
+            self.assertEqual(result, [])
+            self.assertEqual(len(calls), 3)
+            self.assertIn(self.final_filter, " ".join(calls[0]))
+            self.assertIn(self.final_filter, " ".join(calls[1]))
+            self.assertNotIn(self.final_filter, " ".join(calls[2]))
+            self.assertNotIn("xfade=", " ".join(calls[2]))
+            text_out = out + ".textov.mp4"
+            separate_text.assert_called_once_with(
+                out, text_out, self.overlays, threads=1, encoder="libx264",
+            )
+            replace.assert_called_once_with(text_out, out)
+            self.assertEqual(len(ass_paths), 1)
+            self.assertFalse(os.path.exists(ass_paths[0]))
+
+    def test_text_filter_build_failure_uses_hardcut_then_separate(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "out.mp4")
+            with mock.patch.object(_slice, "_probe_concat_spec", side_effect=lambda p: self.specs[self.parts.index(p)]), \
+                 mock.patch.object(_slice, "ffprobe_resolution", return_value=(720, 1280)), \
+                 mock.patch.object(_slice, "_hook_seam_score") as seam_score, \
+                 mock.patch.object(_slice, "_build_text_overlays_video_filter", return_value=""), \
+                 mock.patch.object(_slice, "apply_text_overlays") as separate_text, \
+                 mock.patch.object(_slice.os, "replace") as replace, \
+                 mock.patch.object(_slice, "run_ffmpeg", side_effect=lambda cmd, **kw: calls.append(cmd)):
+                result = _slice.concat_segments(
+                    self.parts, out, transition_seams=[0], text_overlays=self.overlays,
+                )
+            self.assertEqual(result, [])
+            self.assertEqual(len(calls), 1)
+            self.assertNotIn("xfade=", " ".join(calls[0]))
+            seam_score.assert_not_called()
+            separate_text.assert_called_once()
+            replace.assert_called_once_with(out + ".textov.mp4", out)
+
+    def test_text_filter_failure_never_retries_without_text(self):
+        calls = []
+
+        def flaky(cmd, **kw):
+            calls.append(cmd)
+            if len(calls) == 1:
+                raise RuntimeError("hardcut failed")
+
+        with tempfile.TemporaryDirectory() as td:
+            out = os.path.join(td, "out.mp4")
+            with mock.patch.object(_slice, "_probe_concat_spec", side_effect=lambda p: self.specs[self.parts.index(p)]), \
+                 mock.patch.object(_slice, "ffprobe_resolution", return_value=(720, 1280)), \
+                 mock.patch.object(_slice, "_hook_seam_score") as seam_score, \
+                 mock.patch.object(_slice, "_build_text_overlays_video_filter", return_value=""), \
+                 mock.patch.object(_slice, "apply_text_overlays") as separate_text, \
+                 mock.patch.object(_slice.os, "replace") as replace, \
+                 mock.patch.object(_slice, "run_ffmpeg", side_effect=flaky):
+                result = _slice.concat_segments(
+                    self.parts, out, transition_seams=[0], text_overlays=self.overlays,
+                )
+            self.assertEqual(result, [])
+            self.assertEqual(len(calls), 2)
+            # 唯一 concat 尝试失败后必须直接走带文字的两遍兜底；
+            # 重试可以再拼一次，但成功后只能经 separate-text 返回成品。
+            separate_text.assert_called_once_with(
+                out, out + ".textov.mp4", self.overlays, threads=1, encoder="libx264",
+            )
+            replace.assert_called_once_with(out + ".textov.mp4", out)
+            seam_score.assert_not_called()
+
+
+def _ffmpeg_has_filter(name):
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-filters"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return any(
+        name in line.split()[:2]
+        for line in (proc.stdout or "").splitlines()
+    )
+
+
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "缺少 ffmpeg/ffprobe")
 class TransitionE2ETests(unittest.TestCase):
     @staticmethod
@@ -204,6 +478,35 @@ class TransitionE2ETests(unittest.TestCase):
             ], capture_output=True, text=True)
             self.assertEqual(decoded.returncode, 0, decoded.stderr)
 
+
+    @unittest.skipUnless(_ffmpeg_has_filter("ass"), "本地 ffmpeg 缺 libass（ass 滤镜）")
+    def test_transition_and_fixed_text_use_one_encode(self):
+        with tempfile.TemporaryDirectory() as td:
+            parts = [os.path.join(td, name) for name in ("a.mp4", "b.mp4")]
+            out = os.path.join(td, "out.mp4")
+            for path in parts:
+                self._synth(path, 1.0)
+            real_run = _slice.run_ffmpeg
+            with mock.patch.object(_slice, "_hook_seam_score", return_value=0.40), \
+                 mock.patch.object(_slice, "_pick_hook_transition", return_value={
+                     "transition": "dissolve", "duration": 0.30, "scene_score": 0.40}), \
+                 mock.patch.object(_slice, "run_ffmpeg", side_effect=real_run) as run:
+                applied = _slice.concat_segments(
+                    parts, out, transition_seams=[0],
+                    text_overlays=[{"text": "FIXED"}],
+                )
+            self.assertEqual([item["seam"] for item in applied], [0])
+            self.assertEqual(run.call_count, 1)
+            cmd = run.call_args.args[0]
+            graph = cmd[cmd.index("-filter_complex") + 1]
+            self.assertIn("xfade=transition=dissolve", graph)
+            self.assertIn("ass=", graph)
+            meta = self._probe(out)
+            self.assertAlmostEqual(float(meta["format"]["duration"]), 1.7, delta=0.08)
+            decoded = subprocess.run([
+                "ffmpeg", "-v", "error", "-i", out, "-f", "null", "-"
+            ], capture_output=True, text=True)
+            self.assertEqual(decoded.returncode, 0, decoded.stderr)
 
     def test_long_audio_does_not_push_xfade_past_video_end(self):
         with tempfile.TemporaryDirectory() as td:
