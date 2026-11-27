@@ -56,6 +56,74 @@ def build_clip_name(episode_title: Optional[str], index: int) -> str:
     return f"{title}_{mmdd}_{index:03d}"
 
 
+def strip_output_extension(name: str) -> str:
+    """去掉成品实际的 .mp4 后缀，保留剧集名中的点。
+
+    不能用 splitext：合法剧集名可含点（如 S01.E02），无扩展名的 cutlist
+    名称会被误截成 S01.E02。引擎成品只输出 .mp4，因此只剥离这一后缀。
+    """
+    base = os.path.basename(name or "")
+    return base[:-4] if base.lower().endswith(".mp4") else base
+
+
+def map_cutlist_output_clip_ids(
+    cutlist: Optional[str],
+    clips: List[ClipCandidate],
+    allow_variant_suffix: bool = True,
+) -> dict:
+    """按任务实际持久化的 cutlist，把单段成品唯一绑定到候选。
+
+    cutlist 可能经过随机/评分排序、时长裁剪和混剪分组，因此候选的当前
+    clip_index 或 accepted 查询顺序都不能代表成品内容。这里只使用
+    cutlist 中的输出名与源时间轴：同一输出名只有一段且起点唯一匹配时
+    才返回候选 id；混剪、重复时间轴或无法唯一匹配一律返回 None。
+
+    键为去扩展名的输出名，兼容引擎输出文件名附加的 -vN 变体后缀。
+    """
+    groups: dict[str, list[tuple[float, float]]] = {}
+    for line in (cutlist or "").splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            start, end = parse_time(parts[0]), parse_time(parts[1])
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        name = strip_output_extension(parts[2])
+        groups.setdefault(name, []).append((start, end))
+
+    candidates = []
+    for clip in clips:
+        start = clip.adjusted_start if clip.adjusted_start is not None else clip.start_time
+        end = clip.adjusted_end if clip.adjusted_end is not None else clip.end_time
+        if start is None or end is None or end <= start:
+            continue
+        candidates.append((float(start), float(end), clip.id))
+
+    result = {}
+    for name, segments in groups.items():
+        clip_id = None
+        # 混剪成品由多段组成，不能绑定到单一候选。
+        if len(segments) == 1:
+            start, end = segments[0]
+            # 0.0011 秒容差覆盖 HH:MM:SS.mmm 格式化误差。
+            matches = [
+                cid for cstart, cend, cid in candidates
+                if abs(cstart - start) <= 0.0011 and end <= cend + 0.0011
+            ]
+            # 同一时间轴被多个候选复用时不能按顺序猜。
+            if len(matches) == 1 and matches[0] is not None:
+                clip_id = matches[0]
+        result[name] = clip_id
+        # 去重变体 -v1/-v2 与原成品来自同一源段。
+        base_name = re.sub(r"-v\d+$", "", name)
+        if allow_variant_suffix and base_name != name:
+            result.setdefault(base_name, clip_id)
+    return result
+
+
 def generate_cutlist(clips: List[ClipCandidate], episode_title: Optional[str] = None,
                     highlight_mix: bool = False,
                     max_duration: Optional[float] = None,
@@ -345,4 +413,12 @@ def utc_iso(dt) -> str:
         return ""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+def board_local_iso(dt, tz_offset_hours: int = 8) -> str:
+    """企微任务板的 board_date 存的是板面本地 naive 时间，不按 UTC 解读。"""
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone(timedelta(hours=int(tz_offset_hours or 0))))
     return dt.isoformat()
