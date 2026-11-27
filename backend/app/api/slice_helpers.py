@@ -1104,11 +1104,15 @@ async def _acquire_concurrency_slot(db: AsyncSession) -> None:
     适用于多用户/多剧集同时发起切片，保证重任务不会无限堆积抢占资源。
     """
     max_concurrent = await _get_max_concurrent_tasks(db)
+    # 真分片口径（2026-11-28，docs/1128-工程方案-v2 §1）：按「逻辑任务」计数——
+    # 分片行（parent_task_id 非空）豁免，父行/普通行（parent_task_id IS NULL）各计 1。
+    # 否则 k=3 任务独占默认上限 4，其他用户全 429。
     running_count = (
         await db.execute(
             select(func.count(SliceTask.id)).where(
                 SliceTask.status.in_(["running", "pending"]),
                 _not_detect_task(),
+                SliceTask.parent_task_id.is_(None),
             )
         )
     ).scalar() or 0
@@ -1168,6 +1172,60 @@ async def lock_existing_clip_ids(db: AsyncSession, clip_ids) -> set[uuid.UUID]:
     return set(result.scalars().all())
 
 
+async def recalc_parent_task_status(db: AsyncSession, parent_task_id) -> None:
+    """真分片聚合（docs/1128-v2 §4.2）：父行终态=分片集合的纯函数重算。
+
+    调用方必须已在「分片终态写入的同一事务」内持有父行行锁（FOR UPDATE）——
+    本函数只做重算与赋值，不自行 commit；并发回调以行锁串行化，天然幂等。
+    """
+    from app.models.material import SliceTask as _ST
+
+    shards = (
+        await db.execute(
+            select(_ST).where(_ST.parent_task_id == parent_task_id).with_for_update()
+        )
+    ).scalars().all()
+    if not shards:
+        return
+    parent = (
+        await db.execute(select(_ST).where(_ST.id == parent_task_id).with_for_update())
+    ).scalar_one_or_none()
+    if parent is None:
+        return
+    statuses = {t.status for t in shards}
+    non_terminal = statuses & {"running", "pending", "processing"}
+    done = sum(1 for t in shards if t.status == "completed")
+    if non_terminal:
+        parent.status = "running"
+        parent.progress = sum(t.progress or 0.0 for t in shards) / len(shards)
+        parent.output_count = sum(t.output_count or 0 for t in shards)
+        return
+    if statuses <= {"completed"}:
+        parent.status = "completed"
+        parent.error_message = None
+    elif statuses & {"completed"}:
+        # 混合态口径（拍板：completed 保留全部成品 + partial 标注）
+        failed_n = sum(1 for t in shards if t.status in ("failed", "cancelled"))
+        parent.status = "completed"
+        # 注意：slice_tasks 无 progress_message 列（那是 Redis hash 字段）——
+        # partial 标注先落 error_message（completed 态前端不展示，无副作用）；
+        # 父行 Redis hash 聚合写入落地后同步写 progress_message。
+        parent.error_message = (
+            f"部分分片未完成（{failed_n}/{len(shards)} 片失败或取消），已保留 {done} 片成品"
+        )
+    else:
+        parent.status = "failed"
+        parent.error_message = (
+            "全部分片失败：" + "; ".join(
+                (t.error_message or "")[:120] for t in shards if t.status == "failed"
+            )[:400]
+        )
+    parent.output_count = sum(t.output_count or 0 for t in shards)
+    if parent.completed_at is None:
+        from datetime import datetime as _dt
+        parent.completed_at = _dt.utcnow()
+
+
 async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
     """根据该剧集下所有切片任务的实际状态刷新剧集状态。
 
@@ -1197,7 +1255,9 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
             _not_detect_task(),
         )
     )
-    all_tasks = tasks_res.scalars().all()
+    # 真分片口径（2026-11-28）：分片行由其父行代表参与状态判定，防止
+    # 「父行 running + 分片行 running」双重计数与父行卡 running 污染。
+    all_tasks = [t for t in tasks_res.scalars().all() if t.parent_task_id is None]
     if not all_tasks:
         # 切片任务已全部删除：选点/切片相关状态均回滚（选点历史删光时
         # 片段候选会被一并清空，此时应回到 uploaded 而非停留在

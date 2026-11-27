@@ -13,7 +13,8 @@ from typing import List, Optional
 from celery import Celery
 from celery.schedules import crontab
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy.orm import aliased
 
 from app.config import settings
 from app.database import async_session_factory
@@ -259,13 +260,33 @@ def slice_stuck_sweep_task():
         cutoff = datetime.utcnow() - timedelta(seconds=threshold_seconds)
         swept: List[str] = []
         async with async_session_factory() as db:
+            # 真分片（2026-11-28，docs/1128-工程方案-v2 §4.2）：
+            # ① 父行豁免——父行无 worker 租约，若进本巡检会满阈值后被当失联误杀
+            #   （子行还在跑）。父行由分片回调重算 + watchdog 口径覆盖，这里用
+            #   相关子查询排除「被任何分片行引用」的行。
+            # ② 分片行阈值收紧 max(3×预期分片时长, 45min)——7h 主阈值对 30min 级
+            #   分片=漏杀（父任务挂 7h 才有人收尸）。
+            shard_cutoff = datetime.utcnow() - timedelta(seconds=min(threshold_seconds, 2700))
+            _shard = aliased(SliceTask)
+            _not_parent = ~exists(
+                select(_shard.id).where(_shard.parent_task_id == SliceTask.id)
+            )
+            _age = func.coalesce(SliceTask.started_at, SliceTask.created_at)
             rows = (
                 await db.execute(
                     select(SliceTask).where(
                         SliceTask.status.in_(("running", "pending")),
-                        # slice_tasks 表没有 updated_at 列（勿改）：pending 用 created_at，
-                        # running 用 started_at（从未起跑的 running 行回退 created_at）
-                        func.coalesce(SliceTask.started_at, SliceTask.created_at) < cutoff,
+                        _not_parent,
+                        or_(
+                            and_(
+                                SliceTask.parent_task_id.is_(None),
+                                _age < cutoff,
+                            ),
+                            and_(
+                                SliceTask.parent_task_id.is_not(None),
+                                _age < shard_cutoff,
+                            ),
+                        ),
                     )
                 )
             ).scalars().all()
@@ -304,6 +325,20 @@ def slice_stuck_sweep_task():
                     pass
                 swept.append(str(task.id))
             if swept:
+                await db.commit()
+            # 真分片：收尸分片行后联动父行重算终态（重算式聚合，禁增量累加）
+            if swept:
+                from app.api.slice_helpers import recalc_parent_task_status
+                parent_ids = (
+                    (await db.execute(
+                        select(SliceTask.parent_task_id).where(SliceTask.id.in_([__import__("uuid").UUID(x) for x in swept]))
+                    )).scalars().all()
+                )
+                for pid in {p for p in parent_ids if p is not None}:
+                    try:
+                        await recalc_parent_task_status(db, pid)
+                    except Exception as e:  # noqa: BLE001 - 重算失败不阻断 sweep
+                        logger.warning("分片回收后父任务重算失败 parent=%s: %s", pid, e)
                 await db.commit()
         return swept
 

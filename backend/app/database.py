@@ -439,6 +439,12 @@ async def _apply_compat_migrations():
         # 可空不回填，NULL＝不是矩阵产物（手工两段拼／回收自动拼照旧不写）。
         # 新表 asset_overlay_presets 由 create_all 建（163 迁移容器跑 init_db），这里只管老表补列。
         ("asset_outputs", "compose_meta", "JSON"),
+        # 任务内真分片（2026-11-28，docs/1128-工程方案-v2）：分片行指向聚合父行，
+        # 父行与历史行 NULL 天然兼容；shard_index/shard_total 非分片行 = NULL。
+        # 部分索引在下方单独建（create_all 不给已存在表补索引）。
+        ("slice_tasks", "parent_task_id", "UUID"),
+        ("slice_tasks", "shard_index", "INTEGER"),
+        ("slice_tasks", "shard_total", "INTEGER"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
@@ -456,6 +462,16 @@ async def _apply_compat_migrations():
                     logger.info("Added column %s.%s", table, column)
                 except Exception as e:
                     logger.warning("Failed to add column %s.%s: %s", table, column, e)
+
+        # 真分片（2026-11-28）：父行聚合查询走部分索引；create_all 不给已存在表补索引，这里手工建。
+        if conn.dialect.name == "postgresql":
+            try:
+                await conn.execute(sqlalchemy.text(
+                    "CREATE INDEX IF NOT EXISTS ix_slice_tasks_parent "
+                    "ON slice_tasks(parent_task_id) WHERE parent_task_id IS NOT NULL"
+                ))
+            except Exception as e:
+                logger.warning("Failed to create ix_slice_tasks_parent: %s", e)
 
         # 0081：存量库也必须在 init_db 链路把 clip_id FK 改成 SET NULL。
         # 生产只 stamp head、不跑 alembic upgrade；若这里不改，passive_deletes

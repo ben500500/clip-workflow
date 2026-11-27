@@ -251,6 +251,13 @@ class SliceTask(Base):
     remotion_output_file_key = Column(String(500), nullable=True)
     # Remotion 混剪增强渲染状态（pending/rendering/done/failed；未启用时为 None）
     remotion_status = Column(String(20), nullable=True)
+    # ── 任务内真分片（2026-11-28，docs/1128-工程方案-v2）─────────────────
+    # 父任务 id：分片行指向聚合父行；父行与全部历史行 = NULL。父行自身不派发、
+    # 由分片回调事务内 FOR UPDATE 重算聚合终态（禁增量累加）。
+    parent_task_id = Column("parent_task_id", UUID(as_uuid=True), nullable=True)
+    # 分片序号/总数（1..shard_total）；非分片行 = NULL
+    shard_index = Column(Integer, nullable=True)
+    shard_total = Column(Integer, nullable=True)
     status = Column(String(50), nullable=True)
     progress = Column(Float, default=0.0)
     output_count = Column(Integer, default=0)
