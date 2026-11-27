@@ -31,7 +31,7 @@ from app.models.models import (
     AutoClipProject,
 )
 from app.services.autoclip_service import generate_subtitle
-from app.utils.helpers import utc_iso, generate_cutlist, generate_intervals_file, format_time
+from app.utils.helpers import utc_iso, generate_cutlist, generate_intervals_file, format_time, parse_time, strip_output_extension
 from app.services.minio_service import (
     get_presigned_url,
     get_presigned_upload_url,
@@ -1172,13 +1172,182 @@ async def lock_existing_clip_ids(db: AsyncSession, clip_ids) -> set[uuid.UUID]:
     return set(result.scalars().all())
 
 
+# ── 任务内真分片（2026-11-28，docs/1128-工程方案-v2评审修订版）─────────────────
+# 旋钮/常数/切分/校验。一期范围：fast/dedupe、无钩子、无 remotion、k≤3、
+# 30 成品/分片；分片全走公共流（subtitle 隔离随配置自动继承）。
+SHARD_MAX_OUTPUTS = 30   # 单分片饱和成品数（一期常数，验收中校准）
+SHARD_MAX_K = 3          # 分片数上限
+
+# SystemConfig 运行时旋钮（默认关）：只在创建任务时检查——关=不再产生新分片，
+# 在飞父/子行不受影响（聚合代码仍在跑）。
+SLICE_SHARDING_KNOB = "slice_sharding_enabled"
+
+
+async def get_slice_sharding_enabled(db):
+    """读取真分片功能旋钮（SystemConfig，默认关闭）。"""
+    try:
+        result = await db.execute(
+            select(SystemConfig).where(SystemConfig.key == SLICE_SHARDING_KNOB)
+        )
+        cfg = result.scalar_one_or_none()
+        if cfg is not None:
+            return str(cfg.value).strip().lower() in ("1", "true", "yes", "on")
+    except Exception:  # noqa: BLE001 - 配置读取失败按关闭处理
+        pass
+    return False
+
+
+def parse_cutlist_groups(cutlist):
+    """按输出名把 cutlist 行归组（与引擎 read_cutlist 同规则：逐行 split，<3 token 或
+    坏时间戳行按引擎口径丢弃——切分器认的行引擎必认）。
+
+    返回 {输出名: [原始行, ...]}，保持出现顺序（generate_cutlist 的编号即序）。
+    """
+    groups = {}
+    for line in (cutlist or "").splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            start, end = parse_time(parts[0]), parse_time(parts[1])
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        name = strip_output_extension(parts[2])
+        groups.setdefault(name, []).append(line)
+    return groups
+
+
+def split_cutlist_groups(cutlist, k):
+    """把 cutlist 按「输出名组」连续切 k 片（组不可跨片撕裂——同名多行=混剪组）。
+
+    组按出现顺序连续切块：各分片成品名保持全局编号顺序；k ≥ 组数时钳到组数
+    （不允许空分片）。
+    """
+    groups = list(parse_cutlist_groups(cutlist).items())
+    k = max(1, min(k, len(groups)))
+    base, extra = divmod(len(groups), k)
+    shards = []
+    idx = 0
+    for i in range(k):
+        take = base + (1 if i < extra else 0)
+        chunk = groups[idx:idx + take]
+        idx += take
+        lines = []
+        for _name, ls in chunk:
+            lines.extend(ls)
+        shards.append("\n".join(lines))
+    return shards
+
+
+def validate_shard_cutlists(full_cutlist, shard_cutlists):
+    """分片 cutlist 校验器（v2 §6 V1-V8 阻断闸门）：违规抛 ValueError。
+
+    - V2 组跨片撕裂 / V3 跨片重名 / V4 并集完备性（防静默丢成品）
+    - V5 行数守恒（parse 与引擎 read_cutlist 同规则，切分行数必须守恒）
+    - V8 变体后缀归组（-v2 后缀归属 base 组，strip_output_extension 已处理）
+    """
+    full_groups = parse_cutlist_groups(full_cutlist)
+    seen_names = {}
+    total_lines = 0
+    for i, sc in enumerate(shard_cutlists, 1):
+        sg = parse_cutlist_groups(sc)
+        total_lines += sum(len(v) for v in sg.values())
+        for name, lines in sg.items():
+            if name in seen_names:
+                raise ValueError(
+                    "V3 跨片重名：输出 %s 同时出现在分片 %d 与 %d" % (name, seen_names[name], i)
+                )
+            seen_names[name] = i
+            if len(lines) != len(full_groups.get(name, [])):
+                raise ValueError("V2 组跨片撕裂：输出 %s 的行被拆散（组不可跨片）" % name)
+    missing = set(full_groups) - set(seen_names)
+    if missing:
+        raise ValueError("V4 并集不完备：%s 未被任何分片覆盖" % sorted(missing)[:5])
+    extra = set(seen_names) - set(full_groups)
+    if extra:
+        raise ValueError("分片出现全集之外的输出：%s" % sorted(extra)[:5])
+    full_lines = sum(len(v) for v in full_groups.values())
+    if total_lines != full_lines:
+        raise ValueError("V5 行数守恒失败：全集 %d 行 vs 分片合计 %d 行" % (full_lines, total_lines))
+
+
+def plan_shards_if_eligible(*, sharding_enabled, engine, data, remotion_mix_config, cutlist):
+    """真分片准入判定：返回分片 cutlist 列表（k≥2），不合格返回 None。
+
+    一期排除（v2 §2）：no_cut / output_id 源 / 指定节点直投 / 钩子·片尾·双批混拼 /
+    remotion。k = min(SHARD_MAX_K, ceil(组数/SHARD_MAX_OUTPUTS))，k≥2 才分片。
+    """
+    if not sharding_enabled or engine != "worker":
+        return None
+    if data.target_node_id or data.no_cut or data.output_id:
+        return None
+    if data.hook_video_key or data.hook_video_keys or data.outro_video_key             or data.hook_mix_mode or data.dual_mix_enabled:
+        return None
+    if remotion_mix_config:
+        return None
+    n_groups = len(parse_cutlist_groups(cutlist))
+    if n_groups < 2:
+        return None
+    k = min(SHARD_MAX_K, -(-n_groups // SHARD_MAX_OUTPUTS))
+    if k < 2:
+        return None
+    shards = split_cutlist_groups(cutlist, k)
+    validate_shard_cutlists(cutlist, shards)
+    return shards
+
+
+def compute_parent_aggregate(shards) -> dict:
+    """真分片聚合纯函数（docs/1128-v2 §4.2）：由分片行集合计算父行聚合字段。
+
+    status 口径（拍板）：全 completed→completed；混合→completed+partial 标注
+    （保留全部成品）；全 failed/cancelled→failed；有非终态→running。
+    调用方（回调事务/巡检联动）在行锁内把结果赋回父行，天然幂等。
+    """
+    statuses = {t.status for t in shards}
+    non_terminal = statuses & {"running", "pending", "processing"}
+    done = sum(1 for t in shards if t.status == "completed")
+    out = {
+        "progress": sum(t.progress or 0.0 for t in shards) / len(shards),
+        "output_count": sum(t.output_count or 0 for t in shards),
+        "error_message": None,
+        "completed": False,
+    }
+    if non_terminal:
+        out["status"] = "running"
+        return out
+    if statuses <= {"completed"}:
+        out["status"] = "completed"
+    elif statuses & {"completed"}:
+        failed_n = sum(1 for t in shards if t.status in ("failed", "cancelled"))
+        kept_outputs = sum(t.output_count or 0 for t in shards if t.status == "completed")
+        out["status"] = "completed"
+        # 注意：slice_tasks 无 progress_message 列（那是 Redis hash 字段）——
+        # partial 标注先落 error_message（completed 态前端不展示，无副作用）；
+        # 父行 Redis hash 聚合写入落地后同步写 progress_message。
+        out["error_message"] = (
+            f"部分分片未完成（{failed_n}/{len(shards)} 片失败或取消），"
+            f"已完成分片产出 {kept_outputs} 条成品"
+        )
+    else:
+        out["status"] = "failed"
+        out["error_message"] = (
+            "全部分片失败："
+            + "; ".join((t.error_message or "")[:120] for t in shards if t.status == "failed")[:400]
+        )
+    out["completed"] = out["status"] in ("completed", "failed")
+    return out
+
+
 async def recalc_parent_task_status(db: AsyncSession, parent_task_id) -> None:
     """真分片聚合（docs/1128-v2 §4.2）：父行终态=分片集合的纯函数重算。
 
-    调用方必须已在「分片终态写入的同一事务」内持有父行行锁（FOR UPDATE）——
+    调用方必须已在「分片终态写入的同一事务」内持有分片行锁（FOR UPDATE）——
     本函数只做重算与赋值，不自行 commit；并发回调以行锁串行化，天然幂等。
     """
     from app.models.material import SliceTask as _ST
+    from datetime import datetime as _dt
 
     shards = (
         await db.execute(
@@ -1192,37 +1361,12 @@ async def recalc_parent_task_status(db: AsyncSession, parent_task_id) -> None:
     ).scalar_one_or_none()
     if parent is None:
         return
-    statuses = {t.status for t in shards}
-    non_terminal = statuses & {"running", "pending", "processing"}
-    done = sum(1 for t in shards if t.status == "completed")
-    if non_terminal:
-        parent.status = "running"
-        parent.progress = sum(t.progress or 0.0 for t in shards) / len(shards)
-        parent.output_count = sum(t.output_count or 0 for t in shards)
-        return
-    if statuses <= {"completed"}:
-        parent.status = "completed"
-        parent.error_message = None
-    elif statuses & {"completed"}:
-        # 混合态口径（拍板：completed 保留全部成品 + partial 标注）
-        failed_n = sum(1 for t in shards if t.status in ("failed", "cancelled"))
-        parent.status = "completed"
-        # 注意：slice_tasks 无 progress_message 列（那是 Redis hash 字段）——
-        # partial 标注先落 error_message（completed 态前端不展示，无副作用）；
-        # 父行 Redis hash 聚合写入落地后同步写 progress_message。
-        parent.error_message = (
-            f"部分分片未完成（{failed_n}/{len(shards)} 片失败或取消），已保留 {done} 片成品"
-        )
-    else:
-        parent.status = "failed"
-        parent.error_message = (
-            "全部分片失败：" + "; ".join(
-                (t.error_message or "")[:120] for t in shards if t.status == "failed"
-            )[:400]
-        )
-    parent.output_count = sum(t.output_count or 0 for t in shards)
-    if parent.completed_at is None:
-        from datetime import datetime as _dt
+    agg = compute_parent_aggregate(shards)
+    parent.status = agg["status"]
+    parent.progress = agg["progress"]
+    parent.output_count = agg["output_count"]
+    parent.error_message = agg["error_message"]
+    if agg["completed"] and parent.completed_at is None:
         parent.completed_at = _dt.utcnow()
 
 

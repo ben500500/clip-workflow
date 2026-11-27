@@ -64,6 +64,10 @@ from app.services.redis_stream import (
 from app.api.slice_helpers import (
     BadgeItem,
     TextOverlayItem,
+    get_slice_sharding_enabled,
+    plan_shards_if_eligible,
+    recalc_parent_task_status,
+
     SliceRunRequest,
     SliceRunResponse,
     SliceTaskResponse,
@@ -1152,6 +1156,150 @@ async def _create_slice_task_record(
     return slice_task, configs
 
 
+async def _dispatch_sharded_task(
+    db: AsyncSession,
+    episode: Episode,
+    parent_task: SliceTask,
+    data: SliceRunRequest,
+    source_file_key: Optional[str],
+    source_bucket: str,
+    full_cutlist: str,
+    intervals_content: str,
+    configs: dict,
+    shard_cutlists: list,
+) -> SliceRunResponse:
+    """真分片派发（docs/1128-v2 §4.1/§4.3）。
+
+    父行（已含全集 cutlist 与全集绑定快照）不派发，作为聚合行存在；
+    每个分片行携带子 cutlist + 从全集快照派生的绑定子集（V3/V4 保证子集
+    不重不漏，绑定为全集快照的精确子集——分片回调按自己的快照绑定），
+    经同一 _publish_to_worker 发布（内部逐片 commit，Issue #355 契约）。
+    全部发布成功后父行置 running；任一片失败则整体失败（不留半套分片）。
+    """
+    full_snapshot = parent_task.output_clip_ids or {}
+    k = len(shard_cutlists)
+    shards: list = []
+    try:
+        for i, shard_cutlist in enumerate(shard_cutlists, 1):
+            shard_names = set(parse_cutlist_groups_local(shard_cutlist).keys())
+            # 绑定子集 = 全集快照的精确子集（校验器已保证不重不漏）
+            shard_clip_ids = {name: full_snapshot[name] for name in shard_names if name in full_snapshot}
+            shard = SliceTask(
+                episode_id=parent_task.episode_id,
+                mode=parent_task.mode,
+                cutlist=shard_cutlist,
+                output_clip_ids=shard_clip_ids,
+                intervals=None,  # intervals 仅 scrub 模式使用；一期分片不含 scrub
+                dedupe_config=parent_task.dedupe_config,
+                variant_count=parent_task.variant_count,
+                source_bucket=parent_task.source_bucket,
+                source_file_key=parent_task.source_file_key,
+                subtitle_align_mask=parent_task.subtitle_align_mask,
+                vert2horiz_config=parent_task.vert2horiz_config,
+                watermark_config=parent_task.watermark_config,
+                badges_config=parent_task.badges_config,
+                badge_default_width=parent_task.badge_default_width,
+                subtitle_config=parent_task.subtitle_config,
+                subtitle_mask_config=parent_task.subtitle_mask_config,
+                text_overlays_config=parent_task.text_overlays_config,
+                watermark_mask_config=parent_task.watermark_mask_config,
+                remotion_mix_config=None,
+                cover_image_key=parent_task.cover_image_key,
+                hook_video_key=None,
+                hook_video_keys=None,
+                outro_video_key=None,
+                hook_mix_mode=None,
+                hook_mix_output_count=None,
+                hook_position=None,
+                dual_mix_config=None,
+                output_tier=parent_task.output_tier,
+                parent_task_id=parent_task.id,
+                shard_index=i,
+                shard_total=k,
+                status="pending",
+                progress=0.0,
+            )
+            db.add(shard)
+            shards.append(shard)
+        await db.flush()
+    except Exception as e:  # noqa: BLE001 - 建片失败：父行置 failed，无半套分片
+        parent_task.status = "failed"
+        parent_task.error_message = f"分片创建失败: {e}"[:500]
+        parent_task.completed_at = datetime.utcnow()
+        await db.commit()
+        raise HTTPException(status_code=500, detail="分片创建失败")
+
+    # 逐片发布（_publish_to_worker 内部逐片 commit；分片行+父行对 worker 可见）
+    published_shards: list = []
+    for shard in shards:
+        ok = await _publish_to_worker(
+            db,
+            shard,
+            episode,
+            shard.cutlist,
+            None,  # intervals 仅 scrub 使用
+            source_file_key,
+            data.dedupe_config,
+            configs["watermark"],
+            data.encoder,
+            configs["vert2horiz"],
+            configs["badges"],
+            data.badge_default_width,
+            source_bucket,
+            configs["subtitle"],
+            configs["text_overlays"],
+            configs["subtitle_mask"],
+            configs["watermark_mask"],
+            data.subtitle_align_mask,
+            data.cover_image_key,
+            data.output_tier,
+            None,  # hook_video_key
+            None,  # hook_video_keys
+            None,  # outro_video_key
+            None,  # hook_mix_mode
+            None,  # hook_mix_output_count
+            None,  # hook_position
+            data.priority,
+            None,  # target_node_id：分片全走公共流（v2 §2）
+        )
+        if not ok:
+            break
+        published_shards.append(shard)
+
+    if len(published_shards) != k:
+        failed_msg = f"分片发布失败（{len(published_shards)}/{k} 片成功），已整体置失败"
+        for shard in shards:
+            shard.status = "failed"
+            shard.error_message = failed_msg
+            shard.completed_at = datetime.utcnow()
+        parent_task.status = "failed"
+        parent_task.error_message = failed_msg
+        parent_task.completed_at = datetime.utcnow()
+        await db.commit()
+        raise HTTPException(status_code=500, detail="分片任务发布失败，请检查 Redis 连接")
+
+    # 全部发布成功：父行置 running（终态由分片回调事务内重算推进）
+    parent_task.status = "running"
+    parent_task.progress = 0.0
+    await db.commit()
+    logger.info(
+        "Sharded slice task %s dispatched: %d shards, outputs=%s",
+        parent_task.id, k, len((parent_task.output_clip_ids or {})),
+    )
+    return SliceRunResponse(
+        task_id=str(parent_task.id),
+        engine="worker",
+        message=f"切片任务已按 {k} 个分片并行派发（父任务 {parent_task.id}），完成后自动聚合",
+        fallback_whole_video=False,
+    )
+
+
+def parse_cutlist_groups_local(cutlist: str) -> dict:
+    """薄封装：切片模块内复用 slice_helpers 的组解析（避免循环导入敏感面）。"""
+    from app.api.slice_helpers import parse_cutlist_groups
+    return parse_cutlist_groups(cutlist)
+
+
 async def _dispatch_slice_task(
     db: AsyncSession,
     engine: str,
@@ -1517,6 +1665,30 @@ async def run_slice(
             message="Remotion 增强混剪已启动：高光片段将由 Remotion 渲染拼接（片头/转场/字幕/片尾），完成后可在成品列表查看",
             fallback_whole_video=False,
         )
+
+    # ── 任务内真分片（docs/1128-工程方案-v2 §4.1/§4.3）─────────────────────
+    # 旋钮开启且任务符合一期准入（worker 引擎/无钩子/remotion/直投/no_cut）时，
+    # 按「输出名组」把整表 cutlist 切 k 片：父行=聚合行（不派发，由分片回调
+    # 事务内重算终态），k 个分片行各自携带子 cutlist 与按全集快照派生的绑定
+    # 子集，逐片走同一 _publish_to_worker（公共流，subtitle 隔离随配置继承）。
+    # 任一片发布失败 → 全体（含父行）置 failed，不留半套分片。
+    if engine == "worker" and cutlist and cutlist.strip():
+        try:
+            sharding_enabled = await get_slice_sharding_enabled(db)
+        except Exception:  # noqa: BLE001
+            sharding_enabled = False
+        shard_cutlists = plan_shards_if_eligible(
+            sharding_enabled=sharding_enabled,
+            engine=engine,
+            data=data,
+            remotion_mix_config=slice_task.remotion_mix_config,
+            cutlist=cutlist,
+        )
+        if shard_cutlists and len(shard_cutlists) > 1:
+            return await _dispatch_sharded_task(
+                db, episode, slice_task, data, source_file_key, source_bucket,
+                cutlist, intervals_content, configs, shard_cutlists,
+            )
 
     return await _dispatch_slice_task(
         db, engine, episode, slice_task, data, source_file_key, source_bucket,
@@ -1956,6 +2128,9 @@ async def slice_task_callback(
         task.completed_at = now
         task.error_message = None
         logger.info("Slice task %s completed with %d outputs", task_id, task.output_count)
+        # 真分片聚合：分片行终态写入的同一事务内重算父行（FOR UPDATE 行锁+纯函数重算）
+        if task.parent_task_id:
+            await recalc_parent_task_status(db, task.parent_task_id)
 
         # 完成时清理 Redis hash 里的 error 字段：任务成功但 error 残留会误导
         # 查状态（"completed 但 error 还在"）。失败路径由 worker 写 error，成功路径在此清掉。
@@ -1974,6 +2149,9 @@ async def slice_task_callback(
             return {"ok": True, "suppressed": True}
         if data.progress is not None:
             task.progress = max(task.progress or 0, data.progress)
+        # 真分片聚合：进度回调同样重算父行（k≤3 重算成本可忽略，父进度实时爬动）
+        if task.parent_task_id:
+            await recalc_parent_task_status(db, task.parent_task_id)
 
     else:  # failed
         # 终态守卫：已取消/已完成/失败任务不再被迟到失败覆盖。
@@ -1997,6 +2175,9 @@ async def slice_task_callback(
 
         # 任务失败也刷新剧集状态（保证不是"最近一条未完成就永远切片中"）
         await _refresh_episode_status(db, task.episode_id)
+        # 真分片聚合：分片行失败同一事务内重算父行（部分失败口径见 recalc）
+        if task.parent_task_id:
+            await recalc_parent_task_status(db, task.parent_task_id)
 
     await db.flush()
 
@@ -2052,6 +2233,10 @@ async def update_slice_progress(
     if task.status in ("completed", "failed", "cancelled"):
         return {"ok": True, "suppressed": True}
     if progress is not None:
+        task.progress = max(task.progress or 0, progress)
+    # 真分片聚合：独立进度端点同口径重算父行
+    if task.parent_task_id:
+        await recalc_parent_task_status(db, task.parent_task_id)
         task.progress = max(task.progress or 0, float(progress))
 
     await db.flush()
