@@ -155,6 +155,7 @@ async def _bootstrap() -> dict:
     project_id, episode_id = uuid.uuid4(), uuid.uuid4()
     slice_task_id, output_id = uuid.uuid4(), uuid.uuid4()
     confirm_task_id, requeue_task_id = uuid.uuid4(), uuid.uuid4()
+    original_snapshot = {"ep1": str(uuid.uuid4())}
 
     async with dbmod.async_session_factory() as s:
         s.add(
@@ -193,6 +194,7 @@ async def _bootstrap() -> dict:
                 intervals="",
                 source_file_key="raw/ep1.mp4",
                 source_bucket="raw-footage",
+                output_clip_ids=original_snapshot,
             )
         )
         s.add(
@@ -220,6 +222,7 @@ async def _bootstrap() -> dict:
         "episode_id": episode_id,
         "slice_task_id": slice_task_id,
         "output_id": output_id,
+        "original_snapshot": original_snapshot,
         "confirm_task_id": confirm_task_id,
         "requeue_task_id": requeue_task_id,
     }
@@ -252,10 +255,12 @@ async def _read_slice_task(task_id) -> dict:
             return {"_missing": True}
         return {
             "_missing": False,
+            "task_id": str(row.id),
             "status": row.status,
             "error_message": row.error_message,
             "started_at": row.started_at,
             "completed_at": row.completed_at,
+            "output_clip_ids": row.output_clip_ids,
         }
 
 
@@ -529,6 +534,8 @@ def test_publish_to_worker_retry_entry_slice_task_visible_at_dispatch_time():
 
     async def _case():
         ids = await _bootstrap()
+        seen["original_task_id"] = str(ids["slice_task_id"])
+        seen["original_snapshot"] = ids["original_snapshot"]
         from app.api import slice as slice_module
         from app.api import slice_helpers
 
@@ -561,10 +568,12 @@ def test_publish_to_worker_retry_entry_slice_task_visible_at_dispatch_time():
     assert seen["status"] == "pending", (
         f"投递瞬间 status 对独立连接为 {seen['status']!r}（应为 'pending'）"
     )
+    assert seen["task_id"] != seen["original_task_id"], "重试必须新建任务 ID"
+    assert seen["output_clip_ids"] == seen["original_snapshot"], (
+        "重试新任务必须继承原任务的冻结候选快照"
+    )
 
 
-# ─────────────────────────────────────────────────────────────
-# 用例 4：投递失败分支不留悬挂行
 # ─────────────────────────────────────────────────────────────
 def test_dispatch_failure_marks_slice_task_failed_no_orphan():
     """publish_slice_task() 返回空 msg_id（Redis 不可用）时：
