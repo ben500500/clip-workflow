@@ -1521,27 +1521,33 @@ async def list_slice_tasks(
 
     # 最后进度心跳（2026-11-20 评审 UX/SRE）：slice_tasks 表没有 updated_at 列，
     # 活任务的「最后活动」以 Redis 任务 hash 的 lease 为准（worker 每条进度行续约）。
+    # 历史终态行若缺少 completed_at，也读取一次 Redis lease 供前端冻结耗时；
+    # 没有心跳的旧行由前端显示 '-'，不会退回当前时间一直增长。
     # 顺带把 hash 里的实时进度同步回 DB（前端轮询本列表端点刷进度条；worker 只在
-    # 终态回调写 DB，进度此前长期停在 0）。仅对 running/pending 行查 Redis。
+    # 终态回调写 DB，进度此前长期停在 0）。进度回写只针对运行中任务。
     # 2026-11-21 架构复评：hgetall 走 pipeline（活跃任务多时省 RTT）；进度回写的
     # commit 失败不让列表 500（回滚后仍返回 payload，下轮轮询再写）。
     payloads = []
     _redis = None
     pipe = None
     from app.services.redis_stream import get_redis as _get_redis
-    active_tasks = [t for t in tasks if t.status in ("running", "pending")]
-    if active_tasks:
+    heartbeat_tasks = [
+        t for t in tasks
+        if t.status in ("running", "pending")
+        or (t.status in ("cancelled", "completed", "failed") and not t.completed_at)
+    ]
+    if heartbeat_tasks:
         try:
             _redis = await _get_redis()
             pipe = _redis.pipeline(transaction=False)
-            for t in active_tasks:
+            for t in heartbeat_tasks:
                 pipe.hgetall(f"slice:task:{t.id}")
             hash_rows = await pipe.execute()
         except Exception:  # noqa: BLE001 - Redis 不可达时退化为纯 DB 视图
-            hash_rows = [dict() for _ in active_tasks]
+            hash_rows = [dict() for _ in heartbeat_tasks]
     else:
         hash_rows = []
-    hash_map = {str(t.id): (data or {}) for t, data in zip(active_tasks, hash_rows)}
+    hash_map = {str(t.id): (data or {}) for t, data in zip(heartbeat_tasks, hash_rows)}
     for t in tasks:
         d = _serialize_task(t)
         data = hash_map.get(str(t.id)) or {}
@@ -1550,7 +1556,7 @@ async def list_slice_tasks(
             if lease:
                 d["last_progress_at"] = utc_iso(datetime.utcfromtimestamp(float(lease)))
             rs_prog = data.get("progress")
-            if rs_prog:
+            if rs_prog and t.status in ("running", "pending"):
                 p = float(rs_prog)
                 if p > (t.progress or 0):
                     t.progress = p
@@ -2041,6 +2047,7 @@ async def retry_slice_task(
     if task.status == "processing":
         task.status = "cancelled"
         task.error_message = "用户手动重试：原任务放弃重切"
+        task.completed_at = datetime.utcnow()
 
     episode = await db.execute(select(Episode).where(Episode.id == task.episode_id))
     ep = episode.scalar_one_or_none()
@@ -2316,6 +2323,9 @@ async def cancel_slice_task(
         )
 
     task.status = "cancelled"
+    # 取消即终态：写入完成时间，前端耗时才会停在取消时刻，而不是一直累计到现在。
+    # 兼容历史 cancelled 行：前端在缺少 completed_at 时回退最后进度心跳。
+    task.completed_at = datetime.utcnow()
     await db.flush()
 
     # 写入 Redis，通知 Worker 端强杀任务

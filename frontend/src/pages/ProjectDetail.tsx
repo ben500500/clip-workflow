@@ -3,7 +3,7 @@ import {
   Card, Table, Button, Tag, Space, Typography, Spin, Alert, Row, Col,
   message, Upload, Breadcrumb, Descriptions, Progress, Modal, Checkbox, Popconfirm, Input, Tabs, Switch, Select, Divider, InputNumber, Collapse, Tooltip,
 } from 'antd';
-import { ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, ThunderboltOutlined, ReloadOutlined, DownloadOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, VideoCameraOutlined, DeleteOutlined, InboxOutlined, MergeCellsOutlined, EyeOutlined, ThunderboltOutlined, ReloadOutlined, DownloadOutlined, FolderOpenOutlined, EditOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { projectApi } from '../api/projects';
 import client from '../api/client';
@@ -94,6 +94,9 @@ const ProjectDetail: React.FC = () => {
   // 替代手工维护的项目状态展示
   const [sliceRunning, setSliceRunning] = useState<{ running: number; tasks: { id: string; episode_title: string | null; status: string; progress: number }[] }>({ running: 0, tasks: [] });
   const [episodes, setEpisodes] = useState<Episode[]>([]);
+  const [editingEpisodeId, setEditingEpisodeId] = useState<string | null>(null);
+  const [editingEpisodeTitle, setEditingEpisodeTitle] = useState('');
+  const [savingEpisodeTitle, setSavingEpisodeTitle] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -674,6 +677,48 @@ const ProjectDetail: React.FC = () => {
     void fetchData(true);
   };
 
+  const startEpisodeTitleEdit = (episode: Episode) => {
+    if (savingEpisodeTitle) return;
+    setEditingEpisodeId(episode.id);
+    setEditingEpisodeTitle(episode.title || '');
+  };
+
+  const cancelEpisodeTitleEdit = () => {
+    if (savingEpisodeTitle) return;
+    setEditingEpisodeId(null);
+    setEditingEpisodeTitle('');
+  };
+
+  const saveEpisodeTitle = async (episode: Episode) => {
+    if (savingEpisodeTitle) return;
+    const title = editingEpisodeTitle.trim();
+    if (!title) {
+      message.warning('剧集标题不能为空');
+      return;
+    }
+    if (title === episode.title) {
+      cancelEpisodeTitleEdit();
+      return;
+    }
+    setSavingEpisodeTitle(episode.id);
+    try {
+      const updated = await projectApi.updateEpisode(episode.id, { title });
+      if (!mountedRef.current) return;
+      setEpisodes((prev) => prev.map((item) => item.id === episode.id ? { ...item, ...updated, title } : item));
+      setEditingEpisodeId(null);
+      setEditingEpisodeTitle('');
+      message.success('剧集标题已更新');
+    } catch (err: unknown) {
+      if (mountedRef.current) {
+        setEditingEpisodeId(null);
+        setEditingEpisodeTitle('');
+        message.error(err instanceof Error ? err.message : '剧集标题更新失败');
+      }
+    } finally {
+      if (mountedRef.current) setSavingEpisodeTitle(null);
+    }
+  };
+
   if (loading) {
     return <Spin size="large" style={{ display: 'block', margin: '120px auto' }} />;
   }
@@ -696,21 +741,84 @@ const ProjectDetail: React.FC = () => {
       key: 'title',
       width: 300,
       ellipsis: { showTitle: false },
-      render: (title: string, record: Episode) => (
-        <Tooltip title={title || '(未命名)'} placement="topLeft">
-          <Link to={`/episodes/${record.id}`} style={{ display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>
-            <VideoCameraOutlined style={{ marginRight: 6 }} />
-            {title || '(未命名)'}
-          </Link>
-        </Tooltip>
-      ),
+      render: (title: string | null, record: Episode) => {
+        if (editingEpisodeId === record.id) {
+          return (
+            <Space.Compact style={{ width: '100%', maxWidth: 280 }}>
+              <Input
+                autoFocus
+                size="small"
+                value={editingEpisodeTitle}
+                onChange={(event) => setEditingEpisodeTitle(event.target.value)}
+                onPressEnter={(event) => {
+                  if (event.nativeEvent.isComposing) return;
+                  event.preventDefault();
+                  void saveEpisodeTitle(record);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    cancelEpisodeTitleEdit();
+                  }
+                }}
+                aria-label="编辑剧集标题"
+              />
+              <Button
+                type="primary"
+                size="small"
+                icon={<CheckOutlined />}
+                loading={savingEpisodeTitle === record.id}
+                onClick={() => void saveEpisodeTitle(record)}
+                aria-label="保存剧集标题"
+                title="保存"
+              />
+              <Button
+                size="small"
+                icon={<CloseOutlined />}
+                disabled={savingEpisodeTitle === record.id}
+                onClick={cancelEpisodeTitleEdit}
+                aria-label="取消修改剧集标题"
+                title="取消"
+              />
+            </Space.Compact>
+          );
+        }
+        return (
+          <Space size={2} style={{ maxWidth: '100%' }}>
+            <Tooltip title={title || '(未命名)'} placement="topLeft">
+              <Link to={`/episodes/${record.id}`} style={{ display: 'inline-block', maxWidth: 'calc(100% - 30px)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>
+                <VideoCameraOutlined style={{ marginRight: 6 }} />
+                {title || '(未命名)'}
+              </Link>
+            </Tooltip>
+            <Tooltip title="修改标题">
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                disabled={savingEpisodeTitle !== null}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  startEpisodeTitleEdit(record);
+                }}
+                aria-label={`修改剧集标题：${title || '(未命名)'}`}
+              />
+            </Tooltip>
+          </Space>
+        );
+      },
     },
     {
       title: '时长',
       dataIndex: 'duration',
       key: 'duration',
-      width: 84,
-      render: (d: number) => formatDuration(d),
+      width: 96,
+      onCell: () => ({ style: { whiteSpace: 'nowrap' } }),
+      render: (d: number | null) => (
+        <Tooltip title={d == null ? '未获取到时长' : formatDuration(d)}>
+          <span>{d == null ? '-' : formatDuration(d)}</span>
+        </Tooltip>
+      ),
     },
     {
       title: '规格',
@@ -752,24 +860,28 @@ const ProjectDetail: React.FC = () => {
     {
       title: '原片降档',
       key: 'src_norm',
-      width: 126,
+      width: 220,
       render: (_: unknown, record: Episode) => {
         const st = srcNorm[record.id];
         const busy = st?.status === 'running';
         return (
-          <Space size={4} direction="vertical" style={{ display: 'flex' }}>
-            {st?.status === 'running' && <Tag color="processing">处理中…</Tag>}
-            {st?.status === 'completed' && <Tag color="success">已降档</Tag>}
-            {st?.status === 'compliant' && <Tag>已是 ≤720P@30</Tag>}
-            {st?.status === 'failed' && (
-              <Tooltip title={st.message}>
-                <Tag color="error">失败</Tag>
-              </Tooltip>
+          <Space size={4} direction="vertical" style={{ display: 'flex', width: '100%' }}>
+            {(busy || st?.status === 'completed' || st?.status === 'compliant' || st?.status === 'failed') && (
+              <Space size={4} wrap>
+                {busy && <Tag color="processing">处理中…</Tag>}
+                {st?.status === 'completed' && <Tag color="success">已降档</Tag>}
+                {st?.status === 'compliant' && <Tag>已是 ≤720P@30</Tag>}
+                {st?.status === 'failed' && (
+                  <Tooltip title={st.message}>
+                    <Tag color="error">失败</Tag>
+                  </Tooltip>
+                )}
+              </Space>
             )}
-            <Space size={2} align="center">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
               <Select
                 size="small"
-                style={{ width: 80 }}
+                style={{ width: 110, flex: '0 0 110px' }}
                 value={srcTier[record.id] || '720p'}
                 onChange={(v) => setSrcTier((p) => ({ ...p, [record.id]: v as string }))}
                 disabled={busy}
@@ -786,17 +898,20 @@ const ProjectDetail: React.FC = () => {
                 size="small"
                 icon={<ThunderboltOutlined />}
                 loading={busy}
+                style={{ flexShrink: 0, paddingInline: 4 }}
                 onClick={() => void startSrcNorm(record.id, srcTier[record.id] || '720p')}
               >
                 转换
               </Button>
-            </Space>
-            {st?.status === 'running' && (
-              <Progress percent={st.progress ?? 5} size="small" status="active" style={{ width: 96, margin: 0 }} />
+            </div>
+            {busy && (
+              <Progress percent={st.progress ?? 5} size="small" status="active" style={{ width: '100%', margin: 0 }} />
             )}
-            {st?.message && st.status !== 'running' && (
-              <Tooltip title={st.message}>
-                <Text type="secondary" style={{ fontSize: 11, display: 'block', maxWidth: 108 }} ellipsis>{st.message}</Text>
+            {st?.message && !busy && (
+              <Tooltip title={st.message} placement="topLeft">
+                <div style={{ width: '100%', overflow: 'hidden' }}>
+                  <Text type="secondary" style={{ fontSize: 11, display: 'block' }} ellipsis>{st.message}</Text>
+                </div>
               </Tooltip>
             )}
           </Space>
@@ -984,7 +1099,7 @@ const ProjectDetail: React.FC = () => {
                     dataSource={episodes}
                     pagination={false}
                     size="small"
-                    scroll={{ x: 1180 }}
+                    scroll={{ x: 1500 }}
                     rowSelection={{
                       selectedRowKeys,
                       onChange: setSelectedRowKeys,

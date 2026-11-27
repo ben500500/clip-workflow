@@ -176,12 +176,23 @@ async def _upload_and_create_episode(item: BatchSliceItem, project_id) -> str:
         raise RuntimeError(f"上传源视频到 MinIO 失败: {file_name}")
 
     async with async_session_factory() as session:
+        # 时长/帧率随源文件本地探测落库（剧集列表要显示时长）
+        from app.utils.source_media import probe_media
+
+        _pr = probe_media(path)
         episode = Episode(
             project_id=project_id,
             title=item.title or file_name,
             episode_no=item.seq,
             source_file_key=object_key,
             file_size=file_size,
+            duration=(_pr or {}).get("duration") or None,
+            fps=round(_pr["fps"], 2) if _pr else None,
+            resolution=(
+                f"{_pr['width']}x{_pr['height']}"
+                if _pr and _pr.get("width")
+                else None
+            ),
             status="uploaded",
         )
         session.add(episode)

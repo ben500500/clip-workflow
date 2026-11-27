@@ -7,7 +7,7 @@ import {
 import {
   ArrowLeftOutlined, ThunderboltOutlined, RadarChartOutlined, ScissorOutlined,
   CheckCircleOutlined, ClockCircleOutlined, InfoCircleOutlined, PlayCircleOutlined,
-  UploadOutlined, VideoCameraOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined, StopOutlined, PictureOutlined,
+  UploadOutlined, VideoCameraOutlined, DeleteOutlined as DelIcon, PlusOutlined, SettingOutlined, StopOutlined, PictureOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { projectApi } from '../api/projects';
@@ -19,7 +19,7 @@ import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/
 import SubtitleMarginPicker from '../components/SubtitleMarginPicker';
 import { useDedupePresets } from '../hooks/useDedupePresets';
 import type { AutoClipRunRecord, Episode, IntervalHistoryItem, SliceTask } from '../types';
-import { formatDateTime, formatDuration, formatFileSize, getStatusColor, getStatusLabel } from '../utils/format';
+import { formatDateTime, formatDuration, formatFileSize, formatTaskDuration, getStatusColor, getStatusLabel } from '../utils/format';
 import { buildSliceConfigTooltip } from '../utils/sliceConfigTooltip';
 import { WATERMARK_STYLE_OPTIONS, WATERMARK_STYLE_LABEL } from '../utils/watermarkStyles';
 import { DEFAULT_SLICE_PRESET, SLICE_ACTIVE_PRESET_KEY, SLICE_PRESET_STORAGE_KEY, VERT2HORIZON_OUTPUT_SIZES, loadPresetList, persistPresets, type SlicePreset } from '../utils/slicePresets';
@@ -193,6 +193,16 @@ const DETECT_MODE_LABELS: Record<string, string> = {
   static: '静止画面',
   watermark: '水印',
 };
+
+// ─── 历史表格里窄列的时间：日期/时刻分两行，避免把表格撑出横向滚动 ───
+function TimeCell({ value }: { value: string | null | undefined }) {
+  const parts = formatDateTime(value).split(' ');
+  return (
+    <Text style={{ fontSize: 11, lineHeight: '15px', whiteSpace: 'pre-line' }}>
+      {parts.join('\n')}
+    </Text>
+  );
+}
 
 // ─── 图片角标位置选项（七位，含最左侧） ─────────────
 const BADGE_POSITIONS = [
@@ -535,6 +545,8 @@ const EpisodeDetail: React.FC = () => {
   const [sliceProgress, setSliceProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
   // 快速转换（跳过 AI 选点/区间检测，整片应用下方配置直接出片，位于「开始切片」旁）
   const [quickConverting, setQuickConverting] = useState(false);
+  // 确认框打开时收起按钮上的说明气泡，避免两层浮层叠在一起挡住正文
+  const [quickConvertAsk, setQuickConvertAsk] = useState(false);
   const [quickProgress, setQuickProgress] = useState<{ status: string; progress: number; message: string; error_message?: string | null } | null>(null);
   // ── 选点 LLM 快捷配置（2026-11-23 用户需求：选点界面直接配置 LLM）──
   // preset: system=跟随系统设置；mimo=小米 MiMo；qwen=通义 qwen-plus；custom=自定义
@@ -668,6 +680,8 @@ const EpisodeDetail: React.FC = () => {
   const [autoclipHistory, setAutoclipHistory] = useState<AutoClipRunRecord[]>([]);
   const [intervalHistory, setIntervalHistory] = useState<IntervalHistoryItem[]>([]);
   const [sliceHistory, setSliceHistory] = useState<SliceTask[]>([]);
+  const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
+  const retryingTaskRef = useRef(false);
 
   const fetchHistories = async () => {
     if (!episodeId) return;
@@ -734,14 +748,6 @@ const EpisodeDetail: React.FC = () => {
     } catch {
       // 忽略
     }
-  };
-
-  // 统计任务耗时：已结束用 completed_at - started_at；运行中/待处理用 now - started_at（实时刷新）
-  const formatTaskDuration = (t: SliceTask) => {
-    if (!t.started_at) return '-';
-    const end = t.completed_at || new Date().toISOString();
-    const diff = Math.max(0, (new Date(end).getTime() - new Date(t.started_at).getTime()) / 1000);
-    return formatDuration(diff);
   };
 
   // ── 一键切片配置预设：加载 / 保存 / 应用（C2 收敛到 utils/slicePresets.ts） ──
@@ -1252,10 +1258,11 @@ const EpisodeDetail: React.FC = () => {
     setAutoclipProgress({ status: 'pending', progress: 0, message: '正在启动选点任务…' });
     try {
       const res = await autoclipApi.run(episodeId, {
-        max_clips: maxClips,
-        min_score_threshold: minScoreThreshold ?? undefined,
-        min_duration: minClipDuration ?? undefined,
-        max_duration: maxClipDuration ?? undefined,
+        // 高光识别使用独立短高光规则，普通选点配置不再随请求下发（系统默认值仍可能兜底）。
+        max_clips: highlightMode ? undefined : maxClips,
+        min_score_threshold: highlightMode ? undefined : (minScoreThreshold ?? undefined),
+        min_duration: highlightMode ? undefined : (minClipDuration ?? undefined),
+        max_duration: highlightMode ? undefined : (maxClipDuration ?? undefined),
         frame_analysis: frameAnalysis,
         frame_analysis_provider: frameAnalysisProvider,
         highlight_mode: highlightMode,
@@ -1515,13 +1522,14 @@ const EpisodeDetail: React.FC = () => {
     };
     if (selected && selected.config) {
       const c = selected.config as Record<string, unknown>;
+      const selectedHighlightMode = c.highlight_mode === true;
       return {
         ...llmExtra(),
         dual_profile: dualProfile || undefined,
-        max_clips: c.max_clips != null ? Number(c.max_clips) : undefined,
-        min_score_threshold: c.min_score_threshold != null ? Number(c.min_score_threshold) : undefined,
-        min_duration: c.min_duration != null ? Number(c.min_duration) : undefined,
-        max_duration: c.max_duration != null ? Number(c.max_duration) : undefined,
+        max_clips: selectedHighlightMode ? undefined : (c.max_clips != null ? Number(c.max_clips) : undefined),
+        min_score_threshold: selectedHighlightMode ? undefined : (c.min_score_threshold != null ? Number(c.min_score_threshold) : undefined),
+        min_duration: selectedHighlightMode ? undefined : (c.min_duration != null ? Number(c.min_duration) : undefined),
+        max_duration: selectedHighlightMode ? undefined : (c.max_duration != null ? Number(c.max_duration) : undefined),
         frame_analysis: typeof c.frame_analysis === 'boolean' ? c.frame_analysis : undefined,
         frame_analysis_provider: typeof c.frame_analysis_provider === 'string' ? c.frame_analysis_provider : undefined,
         highlight_mode: typeof c.highlight_mode === 'boolean' ? c.highlight_mode : undefined,
@@ -1531,10 +1539,10 @@ const EpisodeDetail: React.FC = () => {
     return {
       ...llmExtra(),
       dual_profile: dualProfile || undefined,
-      max_clips: maxClips,
-      min_score_threshold: minScoreThreshold ?? undefined,
-      min_duration: minClipDuration ?? undefined,
-      max_duration: maxClipDuration ?? undefined,
+      max_clips: highlightMode ? undefined : maxClips,
+      min_score_threshold: highlightMode ? undefined : (minScoreThreshold ?? undefined),
+      min_duration: highlightMode ? undefined : (minClipDuration ?? undefined),
+      max_duration: highlightMode ? undefined : (maxClipDuration ?? undefined),
       frame_analysis: frameAnalysis,
       frame_analysis_provider: frameAnalysisProvider,
       highlight_mode: highlightMode,
@@ -1554,7 +1562,11 @@ const EpisodeDetail: React.FC = () => {
     noCut?: boolean;
     autoAcceptAll?: boolean;
     dedupeOn: boolean;
-  }) => ({
+  }) => {
+    // 高光混剪走独立混剪线，不消费普通钩子/片尾；界面已禁用对应配置，payload 也显式剔除，
+    // 避免“界面置灰但请求仍带旧值”造成审计快照与实际执行语义不一致。
+    const hooksUsable = args.hooksActive && !highlightMixEnabled && !remotionMixEnabled;
+    return {
     no_cut: args.noCut || undefined,
     auto_accept_all: args.autoAcceptAll || undefined,
     // 无候选片段时自动补一轮 AI 选点（复用所选选点历史参数）
@@ -1563,14 +1575,14 @@ const EpisodeDetail: React.FC = () => {
     // 视频封面（首帧）：选择图片作为成品视频首帧
     cover_image_key: coverImageKey || undefined,
     // 钩子视频：作为片头/片尾拼接（[封面][钩子][本体] 或 [封面][本体][钩子]）
-    hook_video_keys: args.hooksActive ? args.hookKeys : undefined,
+    hook_video_keys: hooksUsable ? args.hookKeys : undefined,
     // 片尾视频：拼接到每个成品末尾（与钩子独立）
-    outro_video_key: outroKey || undefined,
-    hook_video_key: args.hooksActive && args.hookKeys.length === 1 ? args.hookKeys[0] : undefined,
+    outro_video_key: !highlightMixEnabled && !remotionMixEnabled ? (outroKey || undefined) : undefined,
+    hook_video_key: hooksUsable && args.hookKeys.length === 1 ? args.hookKeys[0] : undefined,
     // 钩子混搭模式：多钩子时生效（sequential/random/combine）
-    hook_mix_mode: args.hooksActive ? (hookMixMode || 'sequential') : undefined,
+    hook_mix_mode: hooksUsable ? (hookMixMode || 'sequential') : undefined,
     // 钩子拼接位置（head=片头默认 / tail=片尾）
-    hook_position: args.hooksActive ? hookPosition : undefined,
+    hook_position: hooksUsable ? hookPosition : undefined,
     // 钩子混搭输出数量：random/combine 模式；高光混剪有自己的输出个数（cutlist 组数），
     // 两者并存会按组相乘导致输出爆炸 → 高光混剪开启时忽略
     hook_mix_output_count: args.hooksActive && !highlightMixEnabled && (hookMixMode === 'random' || hookMixMode === 'combine') && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
@@ -1677,7 +1689,8 @@ const EpisodeDetail: React.FC = () => {
           ...(t.offset != null ? { offset: t.offset } : {}),
         }))
       : undefined,
-  });
+    };
+  };
 
   // 一键切片模式弹窗（2026-11-23 用户简化：双配+双批混拼收进一键切片，
   // 只需配两套时长范围，其余全默认：高光×2+正片×1、高光在前、条数自动、钩子照旧）
@@ -1966,7 +1979,7 @@ const EpisodeDetail: React.FC = () => {
   const renderHookPickerCore = () => {
     const pending = hookPendingFiles.length > 0;
     const count = pending ? hookPendingFiles.length : hookVideoKeys.length;
-    const disabled = hookUploading || remotionMixEnabled;
+    const disabled = hookUploading || remotionMixEnabled || highlightMixEnabled;
     const names = pending ? hookPendingNames : hookVideoNames;
     const listContent = (
       <div style={{ maxHeight: 240, overflowY: 'auto', maxWidth: 380, paddingRight: 4 }}>
@@ -2008,12 +2021,12 @@ const EpisodeDetail: React.FC = () => {
         {count > 0 && (
           <>
             {pending ? (
-              <Tag closable onClose={clearHookSelection} color="orange">
+              <Tag closable={!disabled} onClose={clearHookSelection} color="orange">
                 钩子×{count}（待上传，开始切片时上传）
               </Tag>
             ) : (
               <FileHoverPreview fileKeys={hookVideoKeys} kind="video">
-                <Tag closable onClose={clearHookSelection}>钩子×{count}</Tag>
+                <Tag closable={!disabled} onClose={clearHookSelection}>钩子×{count}</Tag>
               </FileHoverPreview>
             )}
             <Popover trigger="click" title={`钩子文件列表（${count} 个）`} content={listContent}>
@@ -2023,8 +2036,15 @@ const EpisodeDetail: React.FC = () => {
         )}
         {remotionMixEnabled && (
           <Text type="warning" style={{ fontSize: 12 }}>
-            Remotion 增强模式下钩子不生效（渲染管线暂不消费钩子），可改用普通切片或高光混剪
+            Remotion 增强模式下钩子不生效（渲染管线暂不消费钩子）；如需钩子，请关闭 Remotion 增强后使用普通切片。
           </Text>
+        )}
+        {highlightMixEnabled && !remotionMixEnabled && (
+          <Tooltip title="高光混剪会按「混剪配置」直接把入选高光段拼成成品，不经过普通切片的钩子拼接流程。">
+            <Text type="warning" style={{ fontSize: 12, cursor: 'help' }}>
+              高光混剪已开启：钩子配置不生效，已选钩子会保留但本次不下发；关闭高光混剪后恢复。
+            </Text>
+          </Tooltip>
         )}
       </Space>
     );
@@ -2035,29 +2055,36 @@ const EpisodeDetail: React.FC = () => {
     const pending = hookPendingFiles.length > 0;
     const count = pending ? hookPendingFiles.length : hookVideoKeys.length;
     if (count === 0 || remotionMixEnabled) return null;
+    const disabled = highlightMixEnabled || hookUploading;
     return (
       <Space wrap align="center" size={8} style={{ marginTop: 6 }}>
-        <Select
-          size="small"
-          style={{ width: 140 }}
-          value={hookMixMode}
-          onChange={(v) => setHookMixMode(v as 'sequential' | 'random' | 'combine')}
-          options={[
-            { value: 'sequential', label: '顺序循环' },
-            { value: 'random', label: '随机混搭' },
-            { value: 'combine', label: '拼接组合' },
-          ]}
-        />
-        <Select
-          size="small"
-          style={{ width: 110 }}
-          value={hookPosition}
-          onChange={(v) => setHookPosition(v as 'head' | 'tail')}
-          options={[
-            { value: 'head', label: '放在片头' },
-            { value: 'tail', label: '放在片尾' },
-          ]}
-        />
+        <Tooltip title={highlightMixEnabled ? '高光混剪不消费普通钩子，关闭高光混剪后才可调整' : undefined}>
+          <Select
+            size="small"
+            style={{ width: 140 }}
+            disabled={disabled}
+            value={hookMixMode}
+            onChange={(v) => setHookMixMode(v as 'sequential' | 'random' | 'combine')}
+            options={[
+              { value: 'sequential', label: '顺序循环' },
+              { value: 'random', label: '随机混搭' },
+              { value: 'combine', label: '拼接组合' },
+            ]}
+          />
+        </Tooltip>
+        <Tooltip title={highlightMixEnabled ? '高光混剪不消费普通钩子，关闭高光混剪后才可调整' : undefined}>
+          <Select
+            size="small"
+            style={{ width: 110 }}
+            disabled={disabled}
+            value={hookPosition}
+            onChange={(v) => setHookPosition(v as 'head' | 'tail')}
+            options={[
+              { value: 'head', label: '放在片头' },
+              { value: 'tail', label: '放在片尾' },
+            ]}
+          />
+        </Tooltip>
         {/* 钩子混搭输出数量：高光混剪有自己的输出个数（混剪配置），两者并存会按组相乘
             导致输出爆炸 → 高光混剪开启时不下发该数量（仍常驻显示、置灰提示）。
             2026-11-21 修正：数量框曾只在 random/combine 模式渲染，顺序模式整块消失，
@@ -2071,7 +2098,7 @@ const EpisodeDetail: React.FC = () => {
             min={1}
             max={999}
             style={{ width: 100 }}
-            disabled={hookMixMode === 'sequential' || highlightMixEnabled}
+            disabled={hookMixMode === 'sequential' || highlightMixEnabled || hookUploading}
             value={hookMixOutputCount}
             onChange={(v) => setHookMixOutputCount(v ?? 1)}
           />
@@ -2127,6 +2154,9 @@ const EpisodeDetail: React.FC = () => {
     if (clips != null) parts.push(`个数 ${clips}`);
     if (score != null) parts.push(`评分 ${score}`);
     if (frame != null) parts.push(`画面理解 ${frame ? '开' : '关'}${c.frame_analysis_provider === 'llm' ? '·在线' : '·本地'}`);
+    if (c.highlight_mode === true) {
+      parts.push(`高光识别 开 · 单段≤${c.highlight_max_duration ?? 10}s`);
+    }
     if (parts.length === 0) return <Text type="secondary" style={{ fontSize: 12 }}>默认</Text>;
     return (
       <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'pre-line' }}>
@@ -2174,6 +2204,14 @@ const EpisodeDetail: React.FC = () => {
       title: '🎬 选片线 · AI 智能选点',
       node: (
         <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          {highlightMode && (
+            <Alert
+              type="warning"
+              showIcon
+              message="高光识别使用独立规则"
+              description="普通选点的数量、评分和时长配置已停用；本次使用下方「高光单段上限」。画面理解与选点模型仍然生效，关闭高光识别后恢复普通参数。"
+            />
+          )}
           <Space wrap>
             <Button type="primary" icon={<ThunderboltOutlined />} loading={autoclipRunning} onClick={runAutoClip}>
               启动选点
@@ -2185,6 +2223,7 @@ const EpisodeDetail: React.FC = () => {
                   size="small"
                   min={1}
                   max={100}
+                  disabled={highlightMode}
                   placeholder="10"
                   value={maxClips}
                   onChange={(v) => setMaxClips(v ?? 10)}
@@ -2199,6 +2238,7 @@ const EpisodeDetail: React.FC = () => {
                   size="small"
                   min={0}
                   max={100}
+                  disabled={highlightMode}
                   placeholder="50"
                   value={minScoreThreshold}
                   onChange={(v) => setMinScoreThreshold(v ?? null)}
@@ -2216,6 +2256,7 @@ const EpisodeDetail: React.FC = () => {
                   size="small"
                   min={1}
                   max={86400}
+                  disabled={highlightMode}
                   placeholder="20"
                   value={minClipDuration}
                   onChange={(v) => setMinClipDuration(v ?? null)}
@@ -2231,6 +2272,7 @@ const EpisodeDetail: React.FC = () => {
                   size="small"
                   min={1}
                   max={86400}
+                  disabled={highlightMode}
                   placeholder="70"
                   value={maxClipDuration}
                   onChange={(v) => setMaxClipDuration(v ?? null)}
@@ -2328,54 +2370,63 @@ const EpisodeDetail: React.FC = () => {
               size="small"
               pagination={false}
               dataSource={autoclipHistory}
-              scroll={{ x: 640, y: 260 }}
+              scroll={{ y: 260 }}
               columns={[
                 {
                   title: '状态',
                   dataIndex: 'status',
                   key: 'status',
-                  width: 74,
+                  width: 66,
                   render: (s: string) => <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>,
                 },
                 {
+                  // 结果列不截断：失败原因（生产实测最长 75 字）在本列换行完整展示；
+                  // 仅当 error_message 与 message 不同（另有堆栈/详情）才补悬停图标。
                   title: '结果',
                   dataIndex: 'message',
                   key: 'message',
-                  ellipsis: true,
-                  render: (m: string | null, r: AutoClipRunRecord) =>
-                    r.status === 'failed' && r.error_message ? (
-                      <ErrorHint error={r.error_message} />
-                    ) : r.status === 'completed' ? (
-                      <Text style={{ fontSize: 12 }}>{m || '已完成'}</Text>
-                    ) : r.status === 'running' || r.status === 'pending' ? (
-                      <Text style={{ fontSize: 12 }}>{(r.progress || 0).toFixed(0)}% {m || ''}</Text>
-                    ) : (
-                      <Text style={{ fontSize: 12 }}>{m || '-'}</Text>
-                    ),
+                  render: (m: string | null, r: AutoClipRunRecord) => {
+                    const failed = r.status === 'failed';
+                    const text = m
+                      || (failed ? (r.error_message || '选点失败') : r.status === 'completed' ? '已完成' : '-');
+                    const running = r.status === 'running' || r.status === 'pending';
+                    const prefix = running ? `${(r.progress || 0).toFixed(0)}% ` : '';
+                    const extra = failed && r.error_message && r.error_message !== m ? r.error_message : '';
+                    return (
+                      <Space size={4} align="start" style={{ maxWidth: '100%' }}>
+                        {extra !== '' && <ErrorHint error={extra} title={extra} />}
+                        <Text
+                          type={failed ? 'danger' : undefined}
+                          style={{ fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+                        >
+                          {prefix}
+                          {text}
+                        </Text>
+                      </Space>
+                    );
+                  },
                 },
                 {
                   title: '选点参数',
                   dataIndex: 'config',
                   key: 'config',
-                  width: 200,
+                  width: 142,
                   render: (_: unknown, r: AutoClipRunRecord) => renderAutoclipParams(r),
                 },
                 {
                   title: '时间',
                   dataIndex: 'created_at',
                   key: 'created_at',
-                  width: 130,
-                  render: (d: string) => (
-                    <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>
-                  ),
+                  width: 78,
+                  render: (d: string) => <TimeCell value={d} />,
                 },
                 {
                   title: '操作',
                   key: 'action',
-                  width: 80,
+                  width: 52,
                   render: (_: unknown, r: AutoClipRunRecord) =>
                     r.status === 'running' || r.status === 'pending' ? (
-                      <Text type="secondary" style={{ fontSize: 12 }}>运行中</Text>
+                      <Text type="secondary" style={{ fontSize: 11 }}>—</Text>
                     ) : (
                       <Popconfirm
                         title="确定删除该条选点执行记录？"
@@ -2385,7 +2436,9 @@ const EpisodeDetail: React.FC = () => {
                         okButtonProps={{ danger: true }}
                         onConfirm={() => handleDeleteAutoclipHistory(r.id)}
                       >
-                        <Button size="small" danger type="text" icon={<DelIcon />}>删除</Button>
+                        <Tooltip title="删除该条选点记录">
+                          <Button size="small" danger type="text" shape="circle" icon={<DelIcon />} />
+                        </Tooltip>
                       </Popconfirm>
                     ),
                 },
@@ -2630,44 +2683,54 @@ const EpisodeDetail: React.FC = () => {
             )}
           </Space>
           {/* 视频结尾：拼接到每个成品末尾（可上传新视频或从已保存库选择） */}
-          <Space wrap align="center" size={8}>
-            <Text strong style={{ fontSize: 13 }}>视频结尾（片尾）</Text>
-            <Select
-              size="small"
-              style={{ minWidth: 200 }}
-              allowClear
-              placeholder="不拼接片尾"
-              value={outroKey ?? undefined}
-              onChange={(v) => setOutroKeyPersist((v as string) || null)}
-              options={outroList.map((o) => ({ value: o.file_key, label: o.file_name }))}
-            />
-            <Upload
-              accept="video/mp4,video/avi,video/mov,video/mkv,video/webm"
-              showUploadList={false}
-              beforeUpload={(file) => {
-                setOutroUploading(true);
-                sliceApi.outroUpload(file as File)
-                  .then((r) => {
-                    setOutroKeyPersist(r.file_key);
-                    setOutroList((prev) => [{ file_key: r.file_key, file_name: r.file_name, file_size: r.file_size }, ...prev.filter((x) => x.file_key !== r.file_key)]);
-                    message.success(`片尾视频已上传：${r.file_name}`);
-                  })
-                  .catch((err: unknown) => message.error(err instanceof Error ? err.message : '片尾上传失败'))
-                  .finally(() => setOutroUploading(false));
-                return false;
-              }}
-              disabled={outroUploading}
-            >
-              <Button size="small" icon={<VideoCameraOutlined />} loading={outroUploading}>上传片尾视频</Button>
-            </Upload>
-            {outroKey && (
-              <Tag closable onClose={() => setOutroKeyPersist(null)}>
-                片尾：{outroList.find((x) => x.file_key === outroKey)?.file_name || '已选择'}
-              </Tag>
+          <Space direction="vertical" size={6} style={{ width: '100%' }}>
+            <Space wrap align="center" size={8}>
+              <Text strong style={{ fontSize: 13 }}>视频结尾（片尾）</Text>
+              <Select
+                size="small"
+                style={{ minWidth: 200 }}
+                allowClear
+                disabled={outroUploading || highlightMixEnabled || remotionMixEnabled}
+                placeholder="不拼接片尾"
+                value={outroKey ?? undefined}
+                onChange={(v) => setOutroKeyPersist((v as string) || null)}
+                options={outroList.map((o) => ({ value: o.file_key, label: o.file_name }))}
+              />
+              <Upload
+                accept="video/mp4,video/avi,video/mov,video/mkv,video/webm"
+                showUploadList={false}
+                beforeUpload={(file) => {
+                  setOutroUploading(true);
+                  sliceApi.outroUpload(file as File)
+                    .then((r) => {
+                      setOutroKeyPersist(r.file_key);
+                      setOutroList((prev) => [{ file_key: r.file_key, file_name: r.file_name, file_size: r.file_size }, ...prev.filter((x) => x.file_key !== r.file_key)]);
+                      message.success(`片尾视频已上传：${r.file_name}`);
+                    })
+                    .catch((err: unknown) => message.error(err instanceof Error ? err.message : '片尾上传失败'))
+                    .finally(() => setOutroUploading(false));
+                  return false;
+                }}
+                disabled={outroUploading || highlightMixEnabled || remotionMixEnabled}
+              >
+                <Button size="small" icon={<VideoCameraOutlined />} loading={outroUploading} disabled={highlightMixEnabled || remotionMixEnabled}>上传片尾视频</Button>
+              </Upload>
+              {outroKey && (
+                <Tag closable={!highlightMixEnabled && !remotionMixEnabled} onClose={() => setOutroKeyPersist(null)}>
+                  片尾：{outroList.find((x) => x.file_key === outroKey)?.file_name || '已选择'}
+                </Tag>
+              )}
+              <Tooltip title="选中的小视频会拼接到每个成品视频的末尾（[...][本体][片尾]），与钩子独立；上传后进入已保存库可跨剧集复用。">
+                <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
+              </Tooltip>
+            </Space>
+            {(highlightMixEnabled || remotionMixEnabled) && (
+              <Tooltip title={remotionMixEnabled ? 'Remotion 渲染使用自己的片头/片尾配置，不消费普通片尾视频。' : '高光混剪按混剪配置直接生成成品，不消费普通片尾视频。'}>
+                <Text type="warning" style={{ fontSize: 12, cursor: 'help' }}>
+                  {remotionMixEnabled ? 'Remotion 增强已开启' : '高光混剪已开启'}：普通片尾视频不生效；已选片尾会保留，关闭对应模式后恢复。
+                </Text>
+              </Tooltip>
             )}
-            <Tooltip title="选中的小视频会拼接到每个成品视频的末尾（[...][本体][片尾]），与钩子独立；上传后进入已保存库可跨剧集复用。">
-              <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
-            </Tooltip>
           </Space>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 8, alignItems: 'start' }}>
             {/* ── 竖屏转横屏智能裁切开关 ── */}
@@ -2808,7 +2871,7 @@ const EpisodeDetail: React.FC = () => {
                             style={{ width: 80 }}
                           />
                         </Tooltip>
-                        <Tooltip title="到视频边缘的偏移量（px），默认 10">
+                        <Tooltip title="到视频边缘的偏移量（px）。留空默认 10px；填 0 表示贴边，0 现在会被原样执行，不再回落成 10。">
                           <InputNumber
                             size="small"
                             min={0}
@@ -2982,9 +3045,23 @@ const EpisodeDetail: React.FC = () => {
           {/* 开始切片 / 快速转换按钮（位于切片模式选择下方） */}
           <Space wrap>
             <Button icon={<ScissorOutlined />} loading={sliceRunning} disabled={quickConverting} onClick={() => runSlice(false)}>开始切片</Button>
-            <Tooltip title="跳过 AI 选点和区间检测，直接整段视频应用下方配置（竖屏转横屏/水印/角标/字幕/固定文字等）转换输出">
-              <Button icon={<ThunderboltOutlined />} loading={quickConverting} disabled={sliceRunning} onClick={() => runSlice(true)}>快速转换</Button>
-            </Tooltip>
+            <Popconfirm
+              title="确认进行快速转换？"
+              description="将跳过 AI 选点和区间检测，把整段源视频作为一条成品直接转换。若源片较长，生成时间与文件体积都会明显增加。"
+              okText="确认转换"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              open={quickConvertAsk}
+              onOpenChange={setQuickConvertAsk}
+              onConfirm={() => runSlice(true)}
+            >
+              <Tooltip
+                title="跳过 AI 选点和区间检测，直接整段视频应用下方配置（竖屏转横屏/水印/角标/字幕/固定文字等）转换输出"
+                open={quickConvertAsk ? false : undefined}
+              >
+                <Button icon={<ThunderboltOutlined />} loading={quickConverting} disabled={sliceRunning}>快速转换</Button>
+              </Tooltip>
+            </Popconfirm>
           </Space>
 
           {/* 去重高级配置弹窗：手动逐项配置各去重手段 */}
@@ -3757,35 +3834,22 @@ const EpisodeDetail: React.FC = () => {
               size="small"
               pagination={false}
               dataSource={sliceHistory.slice(0, 8)}
-              scroll={{ x: 620 }}
+              scroll={{ y: 260 }}
               columns={[
                 {
-                  title: '名称',
-                  key: 'name',
-                  width: 170,
-                  render: (_: unknown, t: SliceTask) =>
-                    t.status === 'completed' ? (
-                      <a
-                        style={{ fontSize: 12 }}
-                        title="点击跳转成片预览"
-                        onClick={(e) => { e.stopPropagation(); navigate(`/episodes/${episodeId}/preview?task=${t.id}`); }}
-                      >
-                        {SLICE_MODE_HELP[t.mode || '']?.label || t.mode || '切片任务'} · {formatDateTime(t.created_at)}
-                      </a>
-                    ) : (
-                      <Text style={{ fontSize: 12 }}>{SLICE_MODE_HELP[t.mode || '']?.label || t.mode || '切片任务'} · {formatDateTime(t.created_at)}</Text>
-                    ),
-                },
-                {
+                  // 「名称」列（模式 · 时间）与下面的模式/时间两列完全重复，
+                  // 且是撑破容器宽度的主因，2026-11-27 起去掉；跳成片的链接挪到「结果」列。
                   title: '模式',
                   dataIndex: 'mode',
                   key: 'mode',
-                  width: 120,
+                  width: 104,
                   render: (m: string | null, t: SliceTask) => {
                     const label = SLICE_MODE_HELP[m || '']?.label || m || '-';
                     const tip = buildSliceConfigTooltip(t, label);
                     return (
-                      <Tooltip title={tip}>
+                      // overlayStyle 必须显式放宽：antd Tooltip 默认 max-width 会把内容里
+                      // 520px 的排版压成 250px，90 行配置挤成一列根本读不完。
+                      <Tooltip title={tip} overlayStyle={{ maxWidth: 560 }} mouseEnterDelay={0.25}>
                         <Tag>{label}</Tag>
                       </Tooltip>
                     );
@@ -3795,16 +3859,17 @@ const EpisodeDetail: React.FC = () => {
                   title: '状态',
                   dataIndex: 'status',
                   key: 'status',
-                  width: 74,
+                  width: 66,
                   render: (s: string) => <Tag color={getStatusColor(s)}>{getStatusLabel(s)}</Tag>,
                 },
                 {
                   title: '结果',
                   key: 'result',
-                  ellipsis: true,
                   render: (_: unknown, t: SliceTask) =>
                     t.status === 'failed' && t.error_message ? (
-                      <ErrorHint error={t.error_message} />
+                      <Text type="danger" style={{ fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {t.error_message}
+                      </Text>
                     ) : t.status === 'completed' ? (
                       <a
                         style={{ fontSize: 12 }}
@@ -3822,61 +3887,22 @@ const EpisodeDetail: React.FC = () => {
                   title: '时间',
                   dataIndex: 'created_at',
                   key: 'created_at',
-                  width: 130,
-                  render: (d: string) => (
-                    <Text style={{ fontSize: 12 }}>{formatDateTime(d)}</Text>
-                  ),
+                  width: 78,
+                  render: (d: string) => <TimeCell value={d} />,
                 },
                 {
                   title: '耗时',
                   key: 'duration',
-                  width: 80,
+                  width: 50,
                   render: (_: unknown, t: SliceTask) => (
-                    <Text style={{ fontSize: 12 }}>{formatTaskDuration(t)}</Text>
+                    <Text style={{ fontSize: 11 }}>{formatTaskDuration(t)}</Text>
                   ),
                 },
                 {
                   title: '操作',
                   key: 'action',
-                  width: 90,
-                  render: (_: unknown, t: SliceTask) =>
-                    t.status === 'running' || t.status === 'pending' ? (
-                      <Popconfirm
-                        title="确定停止该任务？"
-                        description="将终止引擎进程并释放资源，已产出成品不会保留"
-                        onConfirm={async () => {
-                          try {
-                            await sliceApi.cancel(t.id);
-                            message.success('任务已停止');
-                            fetchSliceHistory();
-                          } catch (err: unknown) {
-                            message.error(err instanceof Error ? err.message : '停止失败');
-                          }
-                        }}
-                      >
-                        <Button size="small" danger icon={<StopOutlined />}>停止</Button>
-                      </Popconfirm>
-                    ) : (
-                      <Popconfirm
-                        title="确定删除该条切片记录？"
-                        description="将删除该任务及其全部成品文件，不可恢复"
-                        okText="删除"
-                        cancelText="取消"
-                        okButtonProps={{ danger: true }}
-                        onConfirm={async () => {
-                          try {
-                            await sliceApi.delete(t.id);
-                            message.success('切片记录已删除');
-                            fetchSliceHistory();
-                            fetchHistories();
-                          } catch (err: unknown) {
-                            message.error(err instanceof Error ? err.message : '删除失败');
-                          }
-                        }}
-                      >
-                        <Button size="small" danger type="text" icon={<DelIcon />}>删除</Button>
-                      </Popconfirm>
-                    ),
+                  width: 64,
+                  render: (_: unknown, t: SliceTask) => renderSliceTaskActions(t),
                 },
               ]}
             />
@@ -3885,6 +3911,105 @@ const EpisodeDetail: React.FC = () => {
       ),
     },
   ];
+
+  const retrySliceTask = async (taskId: string) => {
+    if (retryingTaskRef.current) return;
+    retryingTaskRef.current = true;
+    setRetryingTaskId(taskId);
+    try {
+      await sliceApi.retry(taskId);
+      message.success('已重新调度');
+      await fetchSliceHistory();
+    } catch (err: unknown) {
+      message.error(err instanceof Error ? err.message : '重试失败');
+    } finally {
+      retryingTaskRef.current = false;
+      setRetryingTaskId(null);
+    }
+  };
+
+  const renderSliceTaskActions = (task: SliceTask) => {
+    const active = task.status === 'running' || task.status === 'pending';
+    const retrying = retryingTaskId === task.id;
+    return (
+      <Space size={4}>
+        {active ? (
+          <Popconfirm
+            title="确定停止该任务？"
+            description="将终止引擎进程并释放资源，已产出成品不会保留"
+            onConfirm={async () => {
+              try {
+                await sliceApi.cancel(task.id);
+                message.success('任务已停止');
+                fetchSliceHistory();
+              } catch (err: unknown) {
+                message.error(err instanceof Error ? err.message : '停止失败');
+              }
+            }}
+          >
+            <Tooltip title="停止该任务">
+              <Button size="small" danger shape="circle" icon={<StopOutlined />} />
+            </Tooltip>
+          </Popconfirm>
+        ) : (
+          <>
+            {task.status === 'failed' && (
+              <Popconfirm
+                title="确定重试该任务？"
+                description="将按原切片配置创建一条新任务"
+                okText="重试"
+                cancelText="取消"
+                disabled={retryingTaskId !== null}
+                onConfirm={() => retrySliceTask(task.id)}
+              >
+                <Tooltip title={retryingTaskId !== null ? '已有重试在跑' : '按原配置重试'}>
+                  <Button
+                    size="small"
+                    type="text"
+                    shape="circle"
+                    icon={<ReloadOutlined />}
+                    loading={retrying}
+                    disabled={retryingTaskId !== null}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </Tooltip>
+              </Popconfirm>
+            )}
+            <Popconfirm
+              title="确定删除该条切片记录？"
+              description="将删除该任务及其全部成品文件，不可恢复"
+              okText="删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              disabled={retryingTaskId !== null}
+              onConfirm={async () => {
+                try {
+                  await sliceApi.delete(task.id);
+                  message.success('切片记录已删除');
+                  fetchSliceHistory();
+                  fetchHistories();
+                } catch (err: unknown) {
+                  message.error(err instanceof Error ? err.message : '删除失败');
+                }
+              }}
+            >
+              <Tooltip title="删除该条记录及其全部成品">
+                <Button
+                  size="small"
+                  danger
+                  type="text"
+                  shape="circle"
+                  icon={<DelIcon />}
+                  disabled={retryingTaskId !== null}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </Tooltip>
+            </Popconfirm>
+          </>
+        )}
+      </Space>
+    );
+  };
 
   return (
     <div>
@@ -4041,17 +4166,26 @@ const EpisodeDetail: React.FC = () => {
               <Text strong style={{ fontSize: 13 }}>AI 智能选点</Text>
               <Text type="secondary" style={{ fontSize: 12 }}>一键切片自动补选点时按此参数生成候选片段（与主页「AI 智能选点」参数同步）</Text>
             </Space>
+            {highlightMode && (
+              <Alert
+                type="warning"
+                showIcon
+                message="高光识别已开启"
+                description="下方普通选点数量、评分与时长配置已停用；补选点只使用高光单段上限。画面理解与选点模型仍生效。"
+                style={{ marginBottom: 8 }}
+              />
+            )}
             <Space wrap align="center" size={8}>
               <Text style={{ fontSize: 12 }}>选点上限</Text>
-              <InputNumber size="small" min={1} max={20} style={{ width: 70 }} value={maxClips} onChange={(v) => setMaxClips(v ?? 10)} />
+              <InputNumber size="small" min={1} max={20} disabled={highlightMode} style={{ width: 70 }} value={maxClips} onChange={(v) => setMaxClips(v ?? 10)} />
               <Text style={{ fontSize: 12 }}>最短时长</Text>
-              <InputNumber size="small" min={0} style={{ width: 70 }} placeholder="不限" value={minClipDuration ?? undefined} onChange={(v) => setMinClipDuration(v ?? null)} />
+              <InputNumber size="small" min={0} disabled={highlightMode} style={{ width: 70 }} placeholder="不限" value={minClipDuration ?? undefined} onChange={(v) => setMinClipDuration(v ?? null)} />
               <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
               <Text style={{ fontSize: 12 }}>最长时长</Text>
-              <InputNumber size="small" min={1} style={{ width: 70 }} placeholder="不限" value={maxClipDuration ?? undefined} onChange={(v) => setMaxClipDuration(v ?? null)} />
+              <InputNumber size="small" min={1} disabled={highlightMode} style={{ width: 70 }} placeholder="不限" value={maxClipDuration ?? undefined} onChange={(v) => setMaxClipDuration(v ?? null)} />
               <Text type="secondary" style={{ fontSize: 12 }}>秒</Text>
               <Text style={{ fontSize: 12 }}>最低分数</Text>
-              <InputNumber size="small" min={0} max={100} style={{ width: 70 }} placeholder="不限" value={minScoreThreshold ?? undefined} onChange={(v) => setMinScoreThreshold(v ?? null)} />
+              <InputNumber size="small" min={0} max={100} disabled={highlightMode} style={{ width: 70 }} placeholder="不限" value={minScoreThreshold ?? undefined} onChange={(v) => setMinScoreThreshold(v ?? null)} />
             </Space>
             <Space wrap align="center" size={8} style={{ marginTop: 8 }}>
               <Switch size="small" checked={frameAnalysis} onChange={setFrameAnalysis} />

@@ -36,9 +36,10 @@ import os
 import sys
 import tempfile
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 try:  # 允许在未安装 pytest 的环境下直接 python 运行本文件
     import pytest  # noqa: F401
@@ -253,6 +254,8 @@ async def _read_slice_task(task_id) -> dict:
             "_missing": False,
             "status": row.status,
             "error_message": row.error_message,
+            "started_at": row.started_at,
+            "completed_at": row.completed_at,
         }
 
 
@@ -646,6 +649,100 @@ def test_explicit_commit_tail_commit_is_idempotent_noop():
     row = _run(_case())
     assert row["status"] == "publishing"
     assert row["celery_task_id"] == "stub-celery-id"
+
+
+# ─────────────────────────────────────────────────────────────
+# 用例 6：取消是终态，completed_at 必须落库（前端耗时冻结）
+# ─────────────────────────────────────────────────────────────
+def test_cancel_slice_task_records_completed_at():
+    """修复前：cancel 只写 status=cancelled，completed_at 仍为 None，页面耗时一直涨。"""
+    started_at = datetime.utcnow() - timedelta(minutes=3)
+
+    async def _case():
+        ids = await _bootstrap()
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(SliceTask, ids["slice_task_id"])
+            row.status = "running"
+            row.started_at = started_at
+            row.completed_at = None
+            row.last_progress_at = started_at + timedelta(minutes=1)
+            await s.commit()
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = await _auth_headers(client)
+            with patch(
+                "app.api.slice.mark_task_cancelled", AsyncMock()
+            ), patch(
+                "app.services.slice_service.kill_slice_proc",
+                AsyncMock(return_value=False),
+            ):
+                resp = await client.post(
+                    f"/api/slice-tasks/{ids['slice_task_id']}/cancel",
+                    headers=headers,
+                )
+            assert resp.status_code == 200, resp.text
+        return await _read_slice_task(ids["slice_task_id"])
+
+    row = _run(_case())
+    assert row["status"] == "cancelled", row
+    assert row["completed_at"] is not None, (
+        "取消后 completed_at 仍为 None：前端只能继续用当前时间计算耗时"
+    )
+    assert row["completed_at"] >= started_at, row
+    assert row["completed_at"] <= datetime.utcnow(), row
+
+
+def test_list_slice_tasks_exposes_legacy_terminal_heartbeat():
+    """历史 cancelled 行没有 completed_at 时，列表端点仍应回传 Redis lease 供前端冻结耗时。"""
+    started_at = datetime.utcnow() - timedelta(minutes=4)
+    lease_at = started_at + timedelta(minutes=2)
+    lease = str(int(lease_at.replace(tzinfo=timezone.utc).timestamp()))
+
+    class _Pipeline:
+        def __init__(self):
+            self.rows = []
+
+        def hgetall(self, key):
+            self.rows.append({"lease": lease, "status": "cancelled", "progress": "18.5"})
+            return self
+
+        async def execute(self):
+            return self.rows
+
+    class _Redis:
+        def pipeline(self, transaction=False):
+            return _Pipeline()
+
+    async def _case():
+        ids = await _bootstrap()
+        async with dbmod.async_session_factory() as s:
+            row = await s.get(SliceTask, ids["slice_task_id"])
+            row.status = "cancelled"
+            row.started_at = started_at
+            row.completed_at = None
+            await s.commit()
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = await _auth_headers(client)
+            with patch(
+                "app.services.redis_stream.get_redis", AsyncMock(return_value=_Redis())
+            ):
+                resp = await client.get(
+                    f"/api/episodes/{ids['episode_id']}/slice/tasks",
+                    headers=headers,
+                )
+            assert resp.status_code == 200, resp.text
+            return resp.json()
+
+    rows = _run(_case())
+    row = rows[0]
+    assert row["status"] == "cancelled", row
+    assert row["completed_at"] is None, row
+    assert row.get("last_progress_at") == lease_at.replace(
+        microsecond=0, tzinfo=timezone.utc
+    ).isoformat(), row
 
 
 if __name__ == "__main__":

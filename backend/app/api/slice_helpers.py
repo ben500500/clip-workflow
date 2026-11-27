@@ -356,6 +356,9 @@ class SliceTaskResponse(BaseModel):
     progress: float
     # 细粒度进度文案（如「钩子转码 2/3」「成品 5/10 段切割」）
     progress_message: Optional[str] = None
+    # 已出成品数 / 计划成品总数（运行中进度由 Redis 实时覆盖）
+    outputs_done: Optional[int] = None
+    outputs_total: Optional[int] = None
     output_count: int
     error_message: Optional[str] = None
     # 实际执行该任务的 Worker 节点 ID
@@ -369,6 +372,9 @@ class SliceTaskResponse(BaseModel):
     last_progress_at: Optional[str] = None
     # ── 该任务实际应用的配置（用于历史列表悬停展示） ──
     dedupe_config: Optional[dict] = None
+    variant_count: Optional[int] = None
+    source_bucket: Optional[str] = None
+    source_file_key: Optional[str] = None
     watermark_config: Optional[dict] = None
     badges_config: Optional[list] = None
     badge_default_width: Optional[int] = None
@@ -378,15 +384,19 @@ class SliceTaskResponse(BaseModel):
     subtitle_mask_config: Optional[dict] = None
     watermark_mask_config: Optional[dict] = None
     text_overlays_config: Optional[list] = None
+    cover_image_key: Optional[str] = None
     output_tier: Optional[str] = None
     hook_video_key: Optional[str] = None
-    hook_video_keys: Optional[list] = None
+    hook_video_keys: Optional[List[str]] = None
+    outro_video_key: Optional[str] = None
     # 钩子混搭模式（sequential/random/combine，开启时展示）
     hook_mix_mode: Optional[str] = None
     # 钩子混搭输出数量
     hook_mix_output_count: Optional[int] = None
     # 钩子拼接位置（head/tail）
     hook_position: Optional[str] = None
+    # 双批混拼配置快照（ORM Text 中的原始 JSON 字符串，前端安全 parse）
+    dual_mix_config: Optional[str] = None
     # Remotion 混剪增强配置（开启时展示）
     remotion_mix_config: Optional[dict] = None
     # Remotion 混剪增强渲染产物 MinIO key / 渲染状态（P2 回写，前端任务列表展示）
@@ -473,6 +483,7 @@ def _serialize_task(task: SliceTask) -> dict:
         "created_at": utc_iso(task.created_at) if task.created_at else "",
         # 该任务实际应用的配置（用于历史列表悬停展示）
         "dedupe_config": task.dedupe_config,
+        "variant_count": task.variant_count,
         "watermark_config": task.watermark_config,
         "badges_config": task.badges_config,
         "badge_default_width": task.badge_default_width,
@@ -482,7 +493,13 @@ def _serialize_task(task: SliceTask) -> dict:
         "subtitle_mask_config": task.subtitle_mask_config,
         "watermark_mask_config": task.watermark_mask_config,
         "text_overlays_config": task.text_overlays_config,
+        "cover_image_key": task.cover_image_key,
         "output_tier": task.output_tier,
+        "hook_video_key": task.hook_video_key,
+        "hook_video_keys": task.hook_video_keys,
+        "outro_video_key": task.outro_video_key,
+        "hook_mix_mode": task.hook_mix_mode,
+        "dual_mix_config": task.dual_mix_config,
         "remotion_mix_config": task.remotion_mix_config,
         "remotion_output_file_key": task.remotion_output_file_key,
         "remotion_status": task.remotion_status,
@@ -491,6 +508,7 @@ def _serialize_task(task: SliceTask) -> dict:
         # 源桶：sliced=源是切片成品（再处理/入库链路），前端据此打「成品再处理」标记，
         # 避免与 AI 选点直接切片的结果混排误导（2026-11-24 赶海集实锤需求）
         "source_bucket": getattr(task, "source_bucket", None),
+        "source_file_key": task.source_file_key,
     }
 
 
@@ -1112,6 +1130,44 @@ def _output_prefix(slice_task: SliceTask) -> str:
     return f"slices/{str(slice_task.episode_id)}/{str(slice_task.id)}/"
 
 
+def snapshot_candidate_clips(
+    clips: List[ClipCandidate],
+    auto_accept_all: bool,
+    min_score: Optional[float],
+) -> List[ClipCandidate]:
+    """返回提交时真正参与 cutlist 的候选集合，用于冻结输出绑定。"""
+    if auto_accept_all and min_score is not None:
+        return [
+            clip for clip in clips
+            if clip.score is not None and clip.score >= min_score
+        ]
+    return list(clips)
+
+
+async def lock_existing_clip_ids(db: AsyncSession, clip_ids) -> set[uuid.UUID]:
+    """锁定仍存在的候选行，供回调安全建立 clip_id 外键。
+
+    删除/清空候选的写路径会等待这些行锁；回调提交后，数据库 ON DELETE SET NULL
+    负责解除引用。已删除的候选不会进入返回集合，回调将其输出留空绑定。
+    """
+    normalized = set()
+    for value in clip_ids or []:
+        if not value:
+            continue
+        try:
+            normalized.add(uuid.UUID(str(value)))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    if not normalized:
+        return set()
+    result = await db.execute(
+        select(ClipCandidate.id)
+        .where(ClipCandidate.id.in_(normalized))
+        .with_for_update()
+    )
+    return set(result.scalars().all())
+
+
 async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
     """根据该剧集下所有切片任务的实际状态刷新剧集状态。
 
@@ -1128,7 +1184,9 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
     except ValueError:
         return
 
-    ep_res = await db.execute(select(Episode).where(Episode.id == eid))
+    # 同剧集多个终态回调可能并发进入；锁剧集行串行化“读全部任务→写状态”，
+    # 避免两个回调都看到对方仍 running，最终把剧集永久留在 slicing。
+    ep_res = await db.execute(select(Episode).where(Episode.id == eid).with_for_update())
     episode = ep_res.scalar_one_or_none()
     if not episode:
         return
@@ -1156,7 +1214,7 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
             episode.status = "clips_detected" if has_candidates else "uploaded"
         return
 
-    has_running = any(t.status in ("running", "pending") for t in all_tasks)
+    has_running = any(t.status in ("running", "pending", "processing") for t in all_tasks)
     has_completed = any(t.status == "completed" for t in all_tasks)
     has_failed = any(t.status in ("failed", "cancelled") for t in all_tasks)
 
@@ -1521,9 +1579,9 @@ async def _dispatch_local(
     from sqlalchemy import select as _select
     async with async_session_factory() as _sess:
         _row = (await _sess.execute(
-            _select(SliceTask).where(SliceTask.id == slice_task.id)
+            _select(SliceTask).where(SliceTask.id == slice_task.id).with_for_update()
         )).scalar_one_or_none()
-        if _row:
+        if _row and _row.status in ("pending", "processing"):
             _row.status = "running"
             _row.started_at = datetime.utcnow()
             await _sess.commit()

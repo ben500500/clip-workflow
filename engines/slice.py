@@ -1735,8 +1735,9 @@ def build_badges_overlay_args(
         if position not in BADGE_POSITIONS:
             position = "top-left"
         x_template, y_template = BADGE_POSITIONS[position]
+        raw_offset = valid[i].get("offset")
         try:
-            offset = int(valid[i].get("offset") or BADGE_DEFAULT_OFFSET)
+            offset = BADGE_DEFAULT_OFFSET if raw_offset is None else int(raw_offset)
         except (TypeError, ValueError):
             offset = BADGE_DEFAULT_OFFSET
         offset = max(0, offset)

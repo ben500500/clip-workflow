@@ -136,14 +136,15 @@ async def _store_uploaded_file(
             detail=f"上传被拦截（音画校验未通过）：{sync['msg']}。请使用系统「多视频合并」重新合并后再上传。",
         )
 
-    # 规格探测（tus 续传入口）：分辨率+帧率落库
-    res_w = res_fps = None
+    # 规格探测（tus 续传入口）：分辨率+帧率+时长落库
+    res_w = res_fps = res_dur = None
     try:
         from app.utils.source_media import probe_media as _pm
         _pr = _pm(result_path)
         if _pr:
             res_w = f"{_pr['width']}x{_pr['height']}"
             res_fps = round(_pr["fps"], 2)
+            res_dur = _pr.get("duration") or None
     except Exception:
         pass
 
@@ -160,6 +161,7 @@ async def _store_uploaded_file(
         file_size=file_size,
         resolution=res_w,
         fps=res_fps,
+        duration=res_dur,
         status="uploaded",
     )
     db.add(episode)
@@ -342,14 +344,15 @@ async def upload_single(
             detail=f"上传被拦截（音画校验未通过）：{sync['msg']}。请使用系统「多视频合并」重新合并后再上传。",
         )
 
-    # 规格探测（2026-11-23 用户需求）：分辨率+帧率落库，剧集列表直接显示
-    res_w = res_fps = None
+    # 规格探测（2026-11-23 用户需求）：分辨率+帧率+时长落库，剧集列表直接显示
+    res_w = res_fps = res_dur = None
     try:
         from app.utils.source_media import probe_media
         _pr = probe_media(local_path)
         if _pr:
             res_w = f"{_pr['width']}x{_pr['height']}"
             res_fps = round(_pr["fps"], 2)
+            res_dur = _pr.get("duration") or None
     except Exception:
         pass
 
@@ -368,6 +371,7 @@ async def upload_single(
         file_size=size,
         resolution=res_w,
         fps=res_fps,
+        duration=res_dur,
         status="uploaded",
     )
     db.add(episode)
@@ -558,6 +562,7 @@ async def upload_multi(
                 _pr2 = _pm2(p)
                 if _pr2:
                     episode.fps = round(_pr2["fps"], 2)
+                    episode.duration = _pr2.get("duration") or None
             except Exception:
                 pass
             db.add(episode)

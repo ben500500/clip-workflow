@@ -4,11 +4,11 @@ import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select, delete, func
+from sqlalchemy import case, or_, select, delete, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,7 @@ from app.models.models import (
     Episode,
     User,
     AutoClipProject,
+    AutoClipRun,
     SliceTask,
     SliceOutput,
     user_can_access_all_materials,
@@ -158,6 +159,52 @@ def _serialize_project(project: Project) -> dict:
     }
 
 
+_RUN_STATE_LABELS = {
+    "remotion_rendering": "混剪渲染中",
+    "selecting": "选点中",
+    "detecting": "区间检测中",
+    "slicing": "切片中",
+    "idle": "空闲",
+}
+_RUN_STATE_PRIORITY = (
+    "remotion_rendering",
+    "selecting",
+    "detecting",
+    "slicing",
+)
+
+
+def _project_runtime_state(
+    *,
+    selecting: int = 0,
+    detecting: int = 0,
+    slicing: int = 0,
+    remotion_rendering: int = 0,
+) -> dict:
+    """由持久化任务计数生成列表运行状态（纯函数，不读进程内存）。
+
+    detecting/remotion_rendering 是活跃 SliceTask 的子集；slicing 保留历史上的
+    活跃 SliceTask 总数口径，因此 total 用 selecting + slice_running 去重。
+    """
+    counts = {
+        "selecting": max(0, int(selecting)),
+        "detecting": max(0, int(detecting)),
+        "slicing": max(0, int(slicing)),
+        "remotion_rendering": max(0, int(remotion_rendering)),
+    }
+    counts["slice_running"] = counts["slicing"]
+    counts["total"] = counts["selecting"] + counts["slice_running"]
+    state = next(
+        (stage for stage in _RUN_STATE_PRIORITY if counts[stage] > 0),
+        "idle",
+    )
+    return {
+        "run_state": state,
+        "run_state_label": _RUN_STATE_LABELS[state],
+        "run_counts": counts,
+    }
+
+
 def _serialize_episode(episode: Episode) -> dict:
     return {
         "id": str(episode.id),
@@ -218,20 +265,29 @@ async def list_projects(
     page_size: int = Query(20, ge=1, le=200),
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    owner: Optional[Literal["me", "all"]] = Query(None),
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """List projects with search, status filter and pagination（数据隔离）. """
+    """List projects with owner selection, search, status filter and pagination（数据隔离）. """
     filters = []
     if search:
         filters.append(Project.name.ilike(f"%{search}%"))
     if status:
         filters.append(Project.status == status)
 
-    # 数据隔离：运营专员默认仅可见自己创建的素材
+    # owner 只允许在既有 RBAC 可见范围内收窄，不能绕过 scope_filter。
     scope_filter = _data_scope_filter(current_user)
     if scope_filter is not None:
         filters.append(scope_filter)
+    if owner == "me":
+        # 「仅看自己创建的」= 我创建的 ∪ 无主公共项目：无主项目不属于任何人，
+        # 按既有隔离口径（services.data_scope：operator 可见自己创建的 + 无主公共）
+        # 任何视图都必须可见，否则默认视图会把「视频号导入」这类公共素材整批藏掉。
+        # 「全部项目」= owner=all 或不传，回到 RBAC 原口径。
+        filters.append(
+            or_(Project.created_by == current_user.id, Project.created_by.is_(None))
+        )
 
     count_query = select(func.count(Project.id))
     if filters:
@@ -244,31 +300,71 @@ async def list_projects(
     query = query.order_by(Project.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
     projects = (await db.execute(query)).scalars().all()
 
-    # 项目存储空间统计（2026-11-23 用户需求）：源片 + 成品文件字节数之和
-    from app.models.models import SliceTask, SliceOutput
-    ep_sum = dict((await db.execute(
-        select(Episode.project_id, func.coalesce(func.sum(Episode.file_size), 0))
-        .group_by(Episode.project_id)
-    )).all())
-    out_sum = dict((await db.execute(
-        select(Episode.project_id, func.coalesce(func.sum(SliceOutput.file_size), 0))
-        .join(SliceTask, SliceTask.id == SliceOutput.task_id)
-        .join(Episode, Episode.id == SliceTask.episode_id)
-        .group_by(Episode.project_id)
-    )).all())
-    # 实时运行状态（2026-11-25 用户需求）：每项目当前运行中/排队中的切片任务数，
-    # 列表页据此展示「运行中 ×N」徽标（免逐项目轮询）
-    running_sum = dict((await db.execute(
-        select(Episode.project_id, func.count(SliceTask.id))
-        .join(SliceTask, SliceTask.episode_id == Episode.id)
-        .where(SliceTask.status.in_(["running", "pending", "processing"]))
-        .group_by(Episode.project_id)
-    )).all())
+    # 所有聚合只扫描当前页项目；空页不再发起无关的存储/运行状态查询。
+    project_ids = [p.id for p in projects]
+    runtime_counts = {pid: {} for pid in project_ids}
+    ep_sum = {}
+    out_sum = {}
+    if project_ids:
+        # 项目存储空间统计：源片 + 成品文件字节数之和。
+        ep_sum = dict((await db.execute(
+            select(Episode.project_id, func.coalesce(func.sum(Episode.file_size), 0))
+            .where(Episode.project_id.in_(project_ids))
+            .group_by(Episode.project_id)
+        )).all())
+        out_sum = dict((await db.execute(
+            select(Episode.project_id, func.coalesce(func.sum(SliceOutput.file_size), 0))
+            .join(SliceTask, SliceTask.id == SliceOutput.task_id)
+            .join(Episode, Episode.id == SliceTask.episode_id)
+            .where(Episode.project_id.in_(project_ids))
+            .group_by(Episode.project_id)
+        )).all())
+
+        selecting_rows = (await db.execute(
+            select(Episode.project_id, func.count(AutoClipRun.id))
+            .join(AutoClipRun, AutoClipRun.episode_id == Episode.id)
+            .where(
+                Episode.project_id.in_(project_ids),
+                AutoClipRun.status.in_(["pending", "running"]),
+            )
+            .group_by(Episode.project_id)
+        )).all()
+        for project_id, count in selecting_rows:
+            runtime_counts[project_id]["selecting"] = int(count)
+
+        # detecting/remotion_rendering 是活跃 SliceTask 的子集，保留各阶段明细；
+        # slicing/slice_running 仍表示全部活跃 SliceTask（含 detect/remotion）。
+        slice_rows = (await db.execute(
+            select(
+                Episode.project_id,
+                func.count(SliceTask.id),
+                func.coalesce(func.sum(case(
+                    (SliceTask.mode.like("detect_%"), 1), else_=0,
+                )), 0),
+                func.coalesce(func.sum(case(
+                    (SliceTask.remotion_status.in_(["pending", "rendering"]), 1), else_=0,
+                )), 0),
+            )
+            .join(SliceTask, SliceTask.episode_id == Episode.id)
+            .where(
+                Episode.project_id.in_(project_ids),
+                SliceTask.status.in_(["running", "pending", "processing"]),
+            )
+            .group_by(Episode.project_id)
+        )).all()
+        for project_id, slicing, detecting, remotion_rendering in slice_rows:
+            runtime_counts[project_id].update(
+                slicing=int(slicing),
+                detecting=int(detecting),
+                remotion_rendering=int(remotion_rendering),
+            )
+
     items = []
     for p in projects:
         d = _serialize_project(p)
         d["storage_bytes"] = int(ep_sum.get(p.id, 0) or 0) + int(out_sum.get(p.id, 0) or 0)
-        d["slice_running"] = int(running_sum.get(p.id, 0) or 0)
+        d["slice_running"] = int(runtime_counts[p.id].get("slicing", 0) or 0)
+        d.update(_project_runtime_state(**runtime_counts[p.id]))
         items.append(d)
     return {
         "items": items,
