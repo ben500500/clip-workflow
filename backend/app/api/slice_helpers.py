@@ -1112,6 +1112,44 @@ def _output_prefix(slice_task: SliceTask) -> str:
     return f"slices/{str(slice_task.episode_id)}/{str(slice_task.id)}/"
 
 
+def snapshot_candidate_clips(
+    clips: List[ClipCandidate],
+    auto_accept_all: bool,
+    min_score: Optional[float],
+) -> List[ClipCandidate]:
+    """返回提交时真正参与 cutlist 的候选集合，用于冻结输出绑定。"""
+    if auto_accept_all and min_score is not None:
+        return [
+            clip for clip in clips
+            if clip.score is not None and clip.score >= min_score
+        ]
+    return list(clips)
+
+
+async def lock_existing_clip_ids(db: AsyncSession, clip_ids) -> set[uuid.UUID]:
+    """锁定仍存在的候选行，供回调安全建立 clip_id 外键。
+
+    删除/清空候选的写路径会等待这些行锁；回调提交后，数据库 ON DELETE SET NULL
+    负责解除引用。已删除的候选不会进入返回集合，回调将其输出留空绑定。
+    """
+    normalized = set()
+    for value in clip_ids or []:
+        if not value:
+            continue
+        try:
+            normalized.add(uuid.UUID(str(value)))
+        except (ValueError, TypeError, AttributeError):
+            continue
+    if not normalized:
+        return set()
+    result = await db.execute(
+        select(ClipCandidate.id)
+        .where(ClipCandidate.id.in_(normalized))
+        .with_for_update()
+    )
+    return set(result.scalars().all())
+
+
 async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
     """根据该剧集下所有切片任务的实际状态刷新剧集状态。
 
@@ -1128,7 +1166,9 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
     except ValueError:
         return
 
-    ep_res = await db.execute(select(Episode).where(Episode.id == eid))
+    # 同剧集多个终态回调可能并发进入；锁剧集行串行化“读全部任务→写状态”，
+    # 避免两个回调都看到对方仍 running，最终把剧集永久留在 slicing。
+    ep_res = await db.execute(select(Episode).where(Episode.id == eid).with_for_update())
     episode = ep_res.scalar_one_or_none()
     if not episode:
         return
@@ -1156,7 +1196,7 @@ async def _refresh_episode_status(db: AsyncSession, episode_id) -> None:
             episode.status = "clips_detected" if has_candidates else "uploaded"
         return
 
-    has_running = any(t.status in ("running", "pending") for t in all_tasks)
+    has_running = any(t.status in ("running", "pending", "processing") for t in all_tasks)
     has_completed = any(t.status == "completed" for t in all_tasks)
     has_failed = any(t.status in ("failed", "cancelled") for t in all_tasks)
 
@@ -1521,9 +1561,9 @@ async def _dispatch_local(
     from sqlalchemy import select as _select
     async with async_session_factory() as _sess:
         _row = (await _sess.execute(
-            _select(SliceTask).where(SliceTask.id == slice_task.id)
+            _select(SliceTask).where(SliceTask.id == slice_task.id).with_for_update()
         )).scalar_one_or_none()
-        if _row:
+        if _row and _row.status in ("pending", "processing"):
             _row.status = "running"
             _row.started_at = datetime.utcnow()
             await _sess.commit()

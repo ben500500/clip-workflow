@@ -226,9 +226,6 @@ async def _publish_to_node_queue(target_node_id: str, task_data: dict) -> Option
     except Exception as e:
         logger.error(f"Failed to publish slice task to node queue {target_node_id}: {e}")
         return None
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def get_node_queue_len(node_id: str) -> int:
@@ -241,9 +238,6 @@ async def get_node_queue_len(node_id: str) -> int:
     except Exception as e:
         logger.error(f"Failed to get node queue length for {node_id}: {e}")
         return 0
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def get_node_queue_pending(node_id: str) -> list[str]:
@@ -265,9 +259,6 @@ async def get_node_queue_pending(node_id: str) -> list[str]:
     except Exception as e:
         logger.error(f"Failed to get node queue pending for {node_id}: {e}")
         return []
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def requeue_node_queue(node_id: str) -> int:
@@ -353,8 +344,6 @@ async def requeue_node_queue(node_id: str) -> int:
                 await redis.delete(staging_key)
             except Exception:
                 pass
-        if redis:
-            await redis.close()
 
 
 async def wake_node(node_id: str) -> bool:
@@ -372,9 +361,6 @@ async def wake_node(node_id: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to wake node {node_id}: {e}")
         return False
-    finally:
-        if redis:
-            await redis.close()
 
 
 async def store_task_callback_token(task_id: str, token: str, ttl_seconds: int = 86400) -> None:

@@ -13,7 +13,7 @@ import random
 from unittest.mock import patch
 
 from app.models.material import ClipCandidate
-from app.utils.helpers import generate_cutlist
+from app.utils.helpers import generate_cutlist, map_cutlist_output_clip_ids, strip_output_extension
 
 
 def _sec(t: str) -> float:
@@ -187,6 +187,108 @@ def test_multi_output_time_mode_still_stops_when_pool_exhausted():
                            max_duration=60.0, mix_output_count=5, order="time")
     names = {l.split()[2] for l in _lines(cut)}
     assert len(names) == 3, "time 模式素材耗尽应只出 3 个文件（180s ÷ 60s），不凑满"
+
+
+def test_cutlist_mapping_uses_content_not_candidate_order():
+    import uuid
+
+    clips = [_mk(i, i * 100, i * 100 + 20) for i in range(6)]
+    ids = [uuid.uuid4() for _ in clips]
+    for clip, clip_id in zip(clips, ids):
+        clip.id = clip_id
+    cutlist = (
+        "00:03:20.000 00:03:40.000 剧名_1127_001\n"
+        "00:00:00.000 00:00:20.000 剧名_1127_002\n"
+        "00:08:20.000 00:08:40.000 剧名_1127_003\n"
+    )
+    mapped = map_cutlist_output_clip_ids(cutlist, list(reversed(clips)))
+    assert mapped == {
+        "剧名_1127_001": ids[2],
+        "剧名_1127_002": ids[0],
+        "剧名_1127_003": ids[5],
+    }
+
+
+def test_cutlist_mapping_supports_trimmed_and_variant_outputs():
+    import uuid
+
+    clip = _mk(0, 10, 40)
+    clip.id = uuid.uuid4()
+    mapped = map_cutlist_output_clip_ids(
+        "00:00:10.000 00:00:30.000 t_001\n", [clip]
+    )
+    assert mapped == {"t_001": clip.id}
+    mapped = map_cutlist_output_clip_ids(
+        "00:00:10.000 00:00:30.000 t_001-v2.mp4\n", [clip]
+    )
+    assert mapped == {"t_001-v2": clip.id, "t_001": clip.id}
+    frozen = map_cutlist_output_clip_ids(
+        "00:00:10.000 00:00:30.000 t_001-v2.mp4\n", [clip],
+        allow_variant_suffix=False,
+    )
+    assert frozen == {"t_001-v2": clip.id}
+
+
+def test_cutlist_mapping_refuses_mixed_or_ambiguous_outputs():
+    import uuid
+
+    clips = [_mk(0, 0, 20), _mk(1, 0, 20), _mk(2, 100, 120), _mk(3, 200, 220)]
+    for clip in clips:
+        clip.id = uuid.uuid4()
+    mapped = map_cutlist_output_clip_ids(
+        "00:00:00.000 00:00:20.000 ambiguous\n"
+        "00:01:40.000 00:02:00.000 mixed\n"
+        "00:03:20.000 00:03:40.000 mixed\n"
+        "00:05:00.000 00:05:20.000 missing\n",
+        clips,
+    )
+    assert mapped == {
+        "ambiguous": None,
+        "mixed": None,
+        "missing": None,
+    }
+
+
+def test_cutlist_mapping_preserves_dots_in_episode_titles():
+    import uuid
+
+    clip = _mk(0, 10, 40)
+    clip.id = uuid.uuid4()
+    name = "S01.E02_1127_001"
+    assert strip_output_extension(name) == name
+    assert strip_output_extension(f"{name}.mp4") == name
+    assert strip_output_extension(f"{name}.MP4") == name
+    for cutlist_name in (name, f"{name}.mp4"):
+        assert map_cutlist_output_clip_ids(
+            f"00:00:10.000 00:00:30.000 {cutlist_name}\n", [clip]
+        ) == {name: clip.id}
+
+
+def test_cutlist_mapping_uses_adjusted_timeline():
+    import uuid
+
+    clip = _mk(0, 10, 20)
+    clip.id = uuid.uuid4()
+    clip.adjusted_start = 30.0
+    clip.adjusted_end = 45.0
+    mapped = map_cutlist_output_clip_ids(
+        "00:00:30.000 00:00:45.000 adjusted\n", [clip]
+    )
+    assert mapped == {"adjusted": clip.id}
+
+
+def test_snapshot_candidates_apply_the_same_score_gate_as_cutlist():
+    from types import SimpleNamespace
+    from app.api.slice_helpers import snapshot_candidate_clips
+
+    low = SimpleNamespace(id="low", score=4.0)
+    high = SimpleNamespace(id="high", score=8.0)
+    unscored = SimpleNamespace(id="unscored", score=None)
+    clips = [low, high, unscored]
+
+    assert snapshot_candidate_clips(clips, True, 7.0) == [high]
+    assert snapshot_candidate_clips(clips, True, None) == clips
+    assert snapshot_candidate_clips(clips, False, 7.0) == clips
 
 
 # ─────────────────────────────────────────────────────────────

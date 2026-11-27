@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -18,6 +19,7 @@ from app.config import settings
 from app.database import async_session_factory
 from app.models.models import SliceTask
 from app.models.material import AutoClipRun
+from app.utils.helpers import strip_output_extension
 
 # Celery application
 celery_app = Celery(
@@ -1556,9 +1558,11 @@ async def _update_slice_task_progress(task_id: Optional[str], progress: float):
             tid = uuid.UUID(task_id)
         except ValueError:
             return
-        result = await session.execute(select(SliceTask).where(SliceTask.id == tid))
+        result = await session.execute(
+            select(SliceTask).where(SliceTask.id == tid).with_for_update()
+        )
         task = result.scalar_one_or_none()
-        if task:
+        if task and task.status not in ("completed", "cancelled", "failed"):
             task.progress = progress
             task.status = "running"
             await session.commit()
@@ -1577,18 +1581,25 @@ async def _save_slice_outputs(
     async with async_session_factory() as session:
         tid = uuid.UUID(task_id) if task_id else None
 
-        # Map outputs to accepted clip candidates by order.
-        clips = []
+        # 行锁把“读取任务状态 → 落成品 → 推进终态”与取消/失败写路径串行化，
+        # 避免本地执行/Celery 收尾覆盖已取消或已失败的终态。
+        from app.api.slice_helpers import lock_existing_clip_ids
+
+        output_clip_ids = {}
+        task = None
+        terminal_status = None
         if tid is not None:
-            clip_result = await session.execute(
-                select(ClipCandidate)
-                .where(
-                    ClipCandidate.episode_id == uuid.UUID(episode_id),
-                    ClipCandidate.status == "accepted",
-                )
-                .order_by(ClipCandidate.clip_index.asc())
+            task_result = await session.execute(
+                select(SliceTask).where(SliceTask.id == tid).with_for_update()
             )
-            clips = clip_result.scalars().all()
+            task = task_result.scalar_one_or_none()
+            if task is not None:
+                output_clip_ids = task.output_clip_ids or {}
+                if task.status in ("cancelled", "failed", "completed"):
+                    terminal_status = task.status
+        existing_clip_ids = await lock_existing_clip_ids(
+            session, (output_clip_ids or {}).values()
+        )
 
         # 幂等:任务已落库过输出则直接跳过,避免 Celery 重试导致重复输出
         if tid is not None:
@@ -1600,7 +1611,7 @@ async def _save_slice_outputs(
                     select(SliceTask).where(SliceTask.id == tid)
                 )
                 task = task_result.scalar_one_or_none()
-                if task and task.status != "completed":
+                if task and task.status not in ("completed", "cancelled", "failed"):
                     task.status = "completed"
                     task.progress = 100.0
                     task.output_count = len(output_files)
@@ -1610,7 +1621,18 @@ async def _save_slice_outputs(
                 return
 
         for i, out in enumerate(output_files):
-            clip_id = clips[i].id if i < len(clips) else None
+            base = strip_output_extension(out.get("file_name", ""))
+            clip_id = (output_clip_ids or {}).get(base)
+            if clip_id is None and task is not None \
+                    and int(task.hook_mix_output_count or 1) > 1 \
+                    and task.hook_mix_mode in ("random", "combine"):
+                clip_id = (output_clip_ids or {}).get(re.sub(r"-v\d+$", "", base))
+            try:
+                clip_id = uuid.UUID(str(clip_id)) if clip_id else None
+            except (ValueError, TypeError, AttributeError):
+                clip_id = None
+            if clip_id not in existing_clip_ids:
+                clip_id = None
             session.add(SliceOutput(
                 task_id=tid,
                 clip_id=clip_id,
@@ -1620,10 +1642,7 @@ async def _save_slice_outputs(
                 duration=out.get("duration"),
             ))
 
-        created_outputs: list = []
-        variant_count = 1
-        base_dedupe = None
-        created_by = None
+        task_completed = False
         if tid is not None:
             # 收集本次新建的输出 id（变体生成需要）
             new_outs = await session.execute(
@@ -1631,28 +1650,31 @@ async def _save_slice_outputs(
             )
             created_outputs = new_outs.scalars().all()
 
-        if tid is not None:
-            task_result = await session.execute(
-                select(SliceTask).where(SliceTask.id == tid)
-            )
-            task = task_result.scalar_one_or_none()
-            variant_count = int(task.variant_count or 1) if task else 1
-            base_dedupe = task.dedupe_config if task else None
+        if task is not None:
+            variant_count = int(task.variant_count or 1)
+            base_dedupe = task.dedupe_config
             created_by = None
-            if task:
+            # 已取消/失败/完成的迟到收尾只补录成品，不覆盖状态、错误或完成时间。
+            if terminal_status is None:
                 task.status = "completed"
                 task.progress = 100.0
                 task.output_count = len(output_files)
                 task.completed_at = datetime.utcnow()
                 task.error_message = None
+                task_completed = True
+            else:
+                task.output_count = len(output_files)
+                variant_count = 1
 
-            # 切片输出落库后把剧集状态推进到 completed,让工作流步骤条走到"成品预览"
-            episode_result = await session.execute(
-                select(Episode).where(Episode.id == uuid.UUID(episode_id))
-            )
-            episode = episode_result.scalar_one_or_none()
-            if episode and episode.status != "completed":
-                episode.status = "completed"
+            # 只有任务本身转入 completed 才推进剧集；取消/失败的迟到成品不能
+            # 把剧集错误地标成完成。
+            if task_completed:
+                episode_result = await session.execute(
+                    select(Episode).where(Episode.id == uuid.UUID(episode_id))
+                )
+                episode = episode_result.scalar_one_or_none()
+                if episode and episode.status != "completed":
+                    episode.status = "completed"
 
         await session.commit()
 
@@ -1687,9 +1709,11 @@ async def _fail_slice_task(task_id: Optional[str], error: str):
             tid = uuid.UUID(task_id)
         except ValueError:
             return
-        result = await session.execute(select(SliceTask).where(SliceTask.id == tid))
+        result = await session.execute(
+            select(SliceTask).where(SliceTask.id == tid).with_for_update()
+        )
         task = result.scalar_one_or_none()
-        if task:
+        if task and task.status not in ("completed", "cancelled", "failed"):
             task.status = "failed"
             task.error_message = error[:2000]
             task.completed_at = datetime.utcnow()

@@ -333,6 +333,8 @@ async def _apply_compat_migrations():
         ("publish_profiles", "location", "VARCHAR(200)"),
         # 输出档位（0040_slice_task_output_tier）：original/auto/1080p/720p/480p
         ("slice_tasks", "output_tier", "VARCHAR(20)"),
+        # 创建任务时的输出→候选关联快照（0080_slice_task_output_clip_ids）
+        ("slice_tasks", "output_clip_ids", "JSON"),
         # Remotion 混剪增强（0046_slice_task_remotion_mix）：整包 JSON config，老库由 compat 补列
         ("slice_tasks", "remotion_mix_config", "JSON"),
         # Remotion 混剪增强渲染结果（0047_slice_task_remotion_result）：产物 file_key + 渲染状态
@@ -454,6 +456,29 @@ async def _apply_compat_migrations():
                     logger.info("Added column %s.%s", table, column)
                 except Exception as e:
                     logger.warning("Failed to add column %s.%s: %s", table, column, e)
+
+        # 0081：存量库也必须在 init_db 链路把 clip_id FK 改成 SET NULL。
+        # 生产只 stamp head、不跑 alembic upgrade；若这里不改，passive_deletes
+        # 会把“删候选保留成品”错误地交给旧 NO ACTION 约束。仅 PostgreSQL 执行。
+        if conn.dialect.name == "postgresql":
+            fk_state = (await conn.execute(sqlalchemy.text("""
+                SELECT confdeltype FROM pg_constraint
+                WHERE conrelid = 'slice_outputs'::regclass
+                  AND conname = 'slice_outputs_clip_id_fkey'
+                  AND contype = 'f'
+            """))).scalar_one_or_none()
+            if fk_state != "n":
+                await conn.execute(sqlalchemy.text("""
+                    ALTER TABLE slice_outputs
+                    DROP CONSTRAINT IF EXISTS slice_outputs_clip_id_fkey
+                """))
+                await conn.execute(sqlalchemy.text("""
+                    ALTER TABLE slice_outputs
+                    ADD CONSTRAINT slice_outputs_clip_id_fkey
+                    FOREIGN KEY (clip_id) REFERENCES clip_candidates(id)
+                    ON DELETE SET NULL
+                """))
+                logger.info("Updated slice_outputs_clip_id_fkey to ON DELETE SET NULL")
 
 
 async def close_db():
