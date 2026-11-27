@@ -52,7 +52,7 @@ func runTray(ctx context.Context, config *Config, worker *Worker) {
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 	fmt.Println()
 	fmt.Printf("  节点ID:    %s\n", config.NodeID)
-	fmt.Printf("  Redis:     %s\n", config.RedisURL)
+	fmt.Printf("  Redis:     %s\n", RedactedRedisURL(config.RedisURL))
 	fmt.Printf("  平台:      %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Println()
 	fmt.Println("启动中... 托盘图标就绪后，可从系统托盘/菜单栏查看状态并启停节点")

@@ -10,8 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +31,9 @@ type Worker struct {
 	transfer *FileTransfer
 	callback *CallbackService
 
-	// 状态
+	// 状态：currentTasks 是消费循环为「等待/读取消息」预占的并发槽位，
+	// 不等于正在执行的任务数。节点面板/心跳必须使用 runningTasks 的实际数量，
+	// 否则空闲节点在 XREADGROUP 阻塞期间会长期显示 current_tasks=1。
 	currentTasks   int32
 	runningTasks   sync.Map // taskID -> *RunningTask
 	totalCompleted int32
@@ -306,18 +308,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		// 必须用 CAS 占槽：此前是「本循环 Load 检查 + runTask 内 Add 自增」两段式，
 		// 两条消息连续到达时都能通过检查（TOCTOU），实测 max_concurrent=1 的节点
 		// 同时跑起 2 个任务（2026-11-25 Run A：两台单并发 Mac 节点各接 2 个任务）。
-		slotTaken := false
-		for {
-			cur := atomic.LoadInt32(&w.currentTasks)
-			if int(cur) >= w.config.MaxConcurrent {
-				break
-			}
-			if atomic.CompareAndSwapInt32(&w.currentTasks, cur, cur+1) {
-				slotTaken = true
-				break
-			}
-		}
-		if !slotTaken {
+		if !w.tryReserveSlot() {
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
@@ -325,7 +316,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		// 取任务优先级：专属队列（BRPOP）> 公共 Stream（XReadGroup）
 		msg := w.fetchNextTask(directCh, wakeCh, streams)
 		if msg == nil {
-			atomic.AddInt32(&w.currentTasks, -1) // 释放占槽（本轮无任务）
+			w.releaseReservedSlot() // 释放占槽（本轮无任务）
 			continue
 		}
 
@@ -333,13 +324,42 @@ func (w *Worker) Run(ctx context.Context) error {
 		if !w.matchTags(msg.Task.RequiredTags) {
 			w.log("debug", "标签不匹配，重新入队: %s", msg.Task.TaskID)
 			w.requeue(msg)
-			atomic.AddInt32(&w.currentTasks, -1) // 释放占槽
+			w.releaseReservedSlot() // 释放占槽
 			continue
 		}
 
 		// 启动任务（槽位已在上面占好；runTask 不再自增，defer 里统一释放）
 		go w.runTask(msg)
 	}
+}
+
+// tryReserveSlot 原子预占一个并发槽位。主消费循环与 PEL 恢复都必须先占槽，
+// 再启动 runTask；runTask 退出时统一归还，避免恢复任务绕过 MaxConcurrent。
+func (w *Worker) tryReserveSlot() bool {
+	for {
+		cur := atomic.LoadInt32(&w.currentTasks)
+		if int(cur) >= w.config.MaxConcurrent {
+			return false
+		}
+		if atomic.CompareAndSwapInt32(&w.currentTasks, cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// releaseReservedSlot 归还一个已预占的并发槽位。
+func (w *Worker) releaseReservedSlot() {
+	atomic.AddInt32(&w.currentTasks, -1)
+}
+
+// activeTaskCount 返回真正登记到 runningTasks 的任务数，不包含等待消息时的槽位预占。
+func (w *Worker) activeTaskCount() int {
+	count := 0
+	w.runningTasks.Range(func(_, _ interface{}) bool {
+		count++
+		return true
+	})
+	return count
 }
 
 // fetchNextTask 按「专属队列优先、公共池回落」的规则取一条任务。
@@ -567,13 +587,8 @@ func (w *Worker) claimOnce(streams []string, minIdle time.Duration, startup bool
 		if err != nil {
 			continue
 		}
-		if hash["status"] == "running" && hash["lease"] != "" {
-			leaseTS, _ := strconvParseInt(hash["lease"])
-			// 租约新鲜度阈值与 minIdle 一致（5 分钟）：心跳每 10s 续期，
-			// 正常任务租约恒新鲜，只有 Worker 真正宕机 5 分钟后才会被认领
-			if time.Now().Unix()-leaseTS < int64(5*60) {
-				continue // 任务仍被存活 Worker 处理
-			}
+		if hasFreshTaskLease(hash, time.Now()) {
+			continue // 任务仍被存活 Worker 处理
 		}
 		if hash["status"] == "completed" || hash["status"] == "failed" {
 			// 终态任务直接 ACK，避免重复处理
@@ -581,7 +596,12 @@ func (w *Worker) claimOnce(streams []string, minIdle time.Duration, startup bool
 			continue
 		}
 
-		// 标记为待重试并重新执行
+		// 标记为待重试并重新执行。恢复任务与主循环一样必须先占槽，
+		// 不能绕过 MaxConcurrent，也不能在未占槽时让 runTask 递减槽位。
+		if !w.tryReserveSlot() {
+			w.log("warn", "孤儿任务 %s 等待空闲槽位，稍后重新认领", msg.Task.TaskID)
+			continue
+		}
 		w.log("warn", "认领到孤儿任务: %s (stream=%s, msg=%s)", msg.Task.TaskID, msg.Stream, msg.ID)
 		go w.runTask(msg)
 	}
@@ -717,7 +737,7 @@ func (w *Worker) runTask(msg *StreamMessage) {
 	releaseSlot := func() {
 		if !slotReleased {
 			slotReleased = true
-			atomic.AddInt32(&w.currentTasks, -1)
+			w.releaseReservedSlot()
 		}
 	}
 	defer releaseSlot()
@@ -1298,7 +1318,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			current := int(atomic.LoadInt32(&w.currentTasks))
+			current := w.activeTaskCount()
 			completed := int(atomic.LoadInt32(&w.totalCompleted))
 			failed := int(atomic.LoadInt32(&w.totalFailed))
 			w.redis.Heartbeat(w.config.NodeID, current, completed, failed, w.engineVersion, w.encoderCapabilities, w.config.HeartbeatTTL())
@@ -1486,7 +1506,7 @@ func (w *Worker) CancelTask(taskID string) bool {
 
 // GetCurrentTaskCount 获取当前任务数
 func (w *Worker) GetCurrentTaskCount() int {
-	return int(atomic.LoadInt32(&w.currentTasks))
+	return w.activeTaskCount()
 }
 
 // RunningTaskInfo 运行中任务的托盘展示快照：任务 ID、进度百分比、最近阶段文案、已运行时长。

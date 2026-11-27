@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -120,6 +121,23 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// RedactedRedisURL 返回可安全写入日志的 Redis 地址，隐藏密码。
+// worker.json 仍保存完整连接串；该函数只用于启动日志等非凭据场景。
+func RedactedRedisURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<invalid redis url>"
+	}
+	if u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.UserPassword(u.User.Username(), "***")
+		} else {
+			u.User = url.User(u.User.Username())
+		}
+	}
+	return strings.ReplaceAll(u.String(), "%2A%2A%2A", "***")
 }
 
 // ClampCPUPercent 将 CPU 分配比例约束在 1~100 范围内（供动态调整时使用）

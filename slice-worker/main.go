@@ -94,7 +94,7 @@ func runDaemon(ctx context.Context, config *Config, worker *Worker) {
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 	fmt.Println()
 	fmt.Printf("  节点ID:    %s\n", config.NodeID)
-	fmt.Printf("  Redis:     %s\n", config.RedisURL)
+	fmt.Printf("  Redis:     %s\n", RedactedRedisURL(config.RedisURL))
 	fmt.Printf("  标签:      %v\n", config.Tags)
 	fmt.Printf("  最大并发:  %d\n", config.MaxConcurrent)
 	fmt.Printf("  CPU分配:  %d%%\n", config.CPUPercent)

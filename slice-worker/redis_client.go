@@ -306,23 +306,63 @@ func (r *RedisClient) CreateConsumerGroup(stream, group string) error {
 
 // ClaimStaleTasks 从 PEL 中认领超时未完成（Worker 崩溃遗留）的任务。
 //
-// 返回被认领且可重新处理的消息列表；认领前会检查任务 Hash 的租约（lease），
-// 若任务正被其他存活 Worker 处理，则不会重复认领。
+// 不能直接 XAUTOCLAIM 后再检查租约：XAUTOCLAIM 会先改变 PEL 归属，导致仍在
+// 正常处理的任务每隔 5 分钟被其他节点反复抢走。这里先用 XPENDING 找超时项，
+// 读取消息并过滤新鲜租约，最后只对确实可恢复的消息执行 XCLAIM。
 func (r *RedisClient) ClaimStaleTasks(streams []string, group, consumer string, minIdle time.Duration) ([]*StreamMessage, error) {
 	var claimed []*StreamMessage
 	for _, stream := range streams {
-		res, _, err := r.client.XAutoClaim(r.ctx, &redis.XAutoClaimArgs{
-			Stream:   stream,
-			Group:    group,
-			Consumer: consumer,
-			MinIdle:  minIdle,
-			Start:    "0-0",
-			Count:    100,
+		pending, err := r.client.XPendingExt(r.ctx, &redis.XPendingExtArgs{
+			Stream: stream,
+			Group:  group,
+			Idle:   minIdle,
+			Start:  "-",
+			End:    "+",
+			Count:  100,
 		}).Result()
 		if err != nil {
 			continue
 		}
-		for _, msg := range res {
+
+		ids := make([]string, 0, len(pending))
+		for _, p := range pending {
+			msgs, err := r.client.XRangeN(r.ctx, stream, p.ID, p.ID, 1).Result()
+			if err != nil {
+				continue
+			}
+			if len(msgs) == 0 {
+				// Stream 条目已被删除，仅清理已无内容可恢复的 PEL 记录。
+				_ = r.client.XAck(r.ctx, stream, group, p.ID).Err()
+				continue
+			}
+			task, _, err := parseStreamMessage(msgs[0])
+			if err != nil {
+				continue
+			}
+			hash, err := r.GetTaskHash(task.TaskID)
+			if err != nil {
+				continue
+			}
+			if hasFreshTaskLease(hash, time.Now()) {
+				continue // 保留原 consumer 所有权，不打扰正在执行的 Worker。
+			}
+			ids = append(ids, p.ID)
+		}
+		if len(ids) == 0 {
+			continue
+		}
+
+		msgs, err := r.client.XClaim(r.ctx, &redis.XClaimArgs{
+			Stream:   stream,
+			Group:    group,
+			Consumer: consumer,
+			MinIdle:  minIdle,
+			Messages: ids,
+		}).Result()
+		if err != nil {
+			continue
+		}
+		for _, msg := range msgs {
 			task, data, err := parseStreamMessage(msg)
 			if err != nil {
 				continue
@@ -336,6 +376,20 @@ func (r *RedisClient) ClaimStaleTasks(streams []string, group, consumer string, 
 		}
 	}
 	return claimed, nil
+}
+
+// hasFreshTaskLease 判断任务 Hash 中的进度租约是否仍在 5 分钟保护窗口内。
+// 真正的跨节点互斥仍由 slice:task:lease:{task_id} 的 SETNX 负责；这里用于
+// XCLAIM 前过滤，避免抢走活跃任务的 PEL 所有权。
+func hasFreshTaskLease(hash map[string]string, now time.Time) bool {
+	if hash["status"] != "running" || hash["lease"] == "" {
+		return false
+	}
+	leaseTS, err := strconv.ParseInt(hash["lease"], 10, 64)
+	if err != nil {
+		return false
+	}
+	return now.Unix()-leaseTS < 5*60
 }
 
 // PendingOverview 返回指定 consumer 在消费者组 PEL 中的 pending 消息数量。

@@ -62,7 +62,7 @@ func (w *Worker) sendBackendHeartbeat() error {
 		FFmpegVersion:       GetFFmpegVersion(),
 		Tags:                w.config.Tags,
 		MaxConcurrent:       w.config.MaxConcurrent,
-		CurrentTasks:        int(atomic.LoadInt32(&w.currentTasks)),
+		CurrentTasks:        w.activeTaskCount(),
 		Status:              "online",
 		TotalTasksCompleted: int(atomic.LoadInt32(&w.totalCompleted)),
 		TotalTasksFailed:    int(atomic.LoadInt32(&w.totalFailed)),
