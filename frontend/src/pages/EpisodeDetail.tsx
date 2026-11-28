@@ -14,6 +14,7 @@ import { projectApi } from '../api/projects';
 import { autoclipApi } from '../api/autoclip';
 import { intervalApi } from '../api/intervals';
 import { sliceApi, type BadgeItem, type TextOverlayItem } from '../api/slice';
+import AssetHookPickerModal from '../components/assets/AssetHookPickerModal';
 import ErrorHint from '../components/ErrorHint';
 import DedupeManualConfig, { type DedupeManualConfigValue } from '../components/DedupeManualConfig';
 import SubtitleMarginPicker from '../components/SubtitleMarginPicker';
@@ -282,6 +283,10 @@ const EpisodeDetail: React.FC = () => {
   const [hookVideoNames, setHookVideoNames] = useState<string[]>([]);
   const [hookPendingFiles, setHookPendingFiles] = useState<File[]>([]);
   const [hookPendingNames, setHookPendingNames] = useState<string[]>([]);
+  // 「从成片墙选」（2026-11-28）：挑选弹窗开关＋已从成片墙加进来的 output id（防重复加；
+  // 只在本页记，刷新后靠「钩子×N」Tag 里的 key 列表说话）。
+  const [hookPickerOpen, setHookPickerOpen] = useState(false);
+  const [hookWallOutputIds, setHookWallOutputIds] = useState<string[]>([]);
   const [hookUploading, setHookUploading] = useState(false);
   // 钩子混搭模式：sequential（顺序循环）/ random（随机混搭）/ combine（拼接所有钩子）
   const [hookMixMode, setHookMixMode] = useState<'sequential' | 'random' | 'combine'>('sequential');
@@ -2020,6 +2025,22 @@ const EpisodeDetail: React.FC = () => {
         >
           <Button size="small" icon={<PlayCircleOutlined />} disabled={disabled}>选择文件</Button>
         </Upload>
+        <Button
+          size="small"
+          icon={<PlayCircleOutlined />}
+          disabled={disabled}
+          onClick={() => {
+            if (hookPendingFiles.length > 0) {
+              // 待传文件与已上传 keys 是「提交时二选一」的两路（提交载荷 pending 优先），
+              // 混着选会让成片钩子被静默忽略——先说人话再拦
+              message.warning('先点「开始切片」把待上传的钩子传完（或清掉它们），再从成片墙选');
+              return;
+            }
+            setHookPickerOpen(true);
+          }}
+        >
+          从成片墙选
+        </Button>
         <Tooltip title="支持选整个文件夹，或多选若干视频文件；选完仅暂存本页，点「开始切片/一键切片」时才上传。每个成品按混搭模式取钩子拼在片头/片尾。">
           <InfoCircleOutlined style={{ color: '#999', cursor: 'pointer' }} />
         </Tooltip>
@@ -4587,6 +4608,20 @@ const EpisodeDetail: React.FC = () => {
           )}
         </Space>
       </Modal>
+
+      {/* 「从成片墙选」钩子挑选弹窗（2026-11-28）：挂顶层渲染一次——
+          renderHookPickerCore 被两处调用，塞在里面会出两份弹窗。 */}
+      <AssetHookPickerModal
+        open={hookPickerOpen}
+        existingOutputIds={hookWallOutputIds}
+        onAdd={(items) => {
+          setHookVideoKeys((prev) => [...prev, ...items.map((x) => x.key)]);
+          setHookVideoNames((prev) => [...prev, ...items.map((x) => x.name)]);
+          setHookWallOutputIds((prev) => Array.from(new Set([...prev, ...items.map((x) => x.output_id)])));
+          setHookPickerOpen(false);
+        }}
+        onClose={() => setHookPickerOpen(false)}
+      />
 
     </div>
   );

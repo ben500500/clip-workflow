@@ -784,6 +784,19 @@ export interface AssetOutputListResult {
   items: AssetOutput[];
 }
 
+/** POST /assets/outputs/as-hook 的响应（复制到 hook/ 的每条一个 key） */
+export interface AssetOutputAsHookResult {
+  items: {
+    output_id: string;
+    /** 已是 hook/ 前缀的新 key，原成片不受影响 */
+    file_key: string;
+    file_name: string;
+    duration: number | null;
+    resolution: string | null;
+  }[];
+  message: string;
+}
+
 /** 成片墙分组清单的一行（两级视图第一级，2026-11-07 用户口径） */
 export interface AssetOutputGroup {
   /** asset 模式＝素材 id；batch 模式＝批次 id（未挂批次＝"none"） */
@@ -3234,6 +3247,16 @@ export const assetApi = {
   // 简单拼接：两段按人选顺序直拼（不选点不剪切）。同步等 ffmpeg——
   // 两条短片实测几秒到几十秒，但"从桶里取回两段 + 重编码"最坏会超过 client.ts 默认的 60 秒，
   // 那时后端其实还在跑、前端先报超时。上限与后端 autoclip 的 900s 同口径（同一个常量）。
+  /**
+   * 把成片墙勾选的豆包成片**复制**进切片钩子前缀 `hook/`（素材后端同桶服务端 copy，
+   * 不落盘不转码），返回的 file_key 直接塞进切片详情的 hookVideoKeys——之后它就是
+   * 一条普通钩子（混搭/片头片尾照旧）。后端校验 1～10 条、存在、kind ∉ (package, copy)；
+   * 失败整批 502 点名第几条。为什么要复制不引用：raw-preview 白名单不放 `asset/`
+   * （引用则悬停预览 400），且删成片连桶对象删（引用＝给切片任务埋雷）。
+   */
+  outputsAsHook: (outputIds: string[]) =>
+    client.post('/assets/outputs/as-hook', { output_ids: outputIds }) as Promise<AssetOutputAsHookResult>,
+
   concat: (data: AssetConcatRequest) =>
     client.post('/assets/concat', data, { timeout: MODEL_WAIT_TIMEOUT }) as Promise<AssetConcatResult>,
 
