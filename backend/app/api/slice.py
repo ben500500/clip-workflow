@@ -2243,6 +2243,66 @@ async def update_slice_progress(
     return {"ok": True}
 
 
+async def _load_shard_children(db: AsyncSession, parent_id) -> list:
+    """真分片：加载某父行下的全部分片行（按 shard_index 序）。"""
+    return (
+        await db.execute(
+            select(SliceTask)
+            .where(SliceTask.parent_task_id == parent_id)
+            .order_by(SliceTask.shard_index.asc())
+        )
+    ).scalars().all()
+
+
+async def _reset_shard_for_rerun(db: AsyncSession, shard: SliceTask) -> None:
+    """真分片父级重试：把失败/取消的分片行原行复位重投（聚合关系保留）。
+
+    原行复用（而非新建任务行）避免父聚合 output_count 双计；Redis 旧 hash
+    （含终态标记与取消标记）整体清除，回调 Token 由 _publish_to_worker 重发。
+    断点续传临时目录已被原节点清理，接管方全量重跑该分片（终态 hash 清除后
+    不会被 ACK 跳过）；成品 file_key 回调去重防重复行。
+    """
+    shard.status = "pending"
+    shard.progress = 0.0
+    shard.error_message = None
+    shard.completed_at = None
+    try:
+        _redis = await get_redis()
+        await _redis.delete(f"slice:task:{shard.id}")
+    except Exception:  # noqa: BLE001 - Redis 清理失败不阻断重投
+        logger.warning("清除分片 %s 旧任务 hash 失败（重投继续）", shard.id)
+    await remove_slice_task_from_streams(str(shard.id))
+
+
+async def _republish_shard(db: AsyncSession, shard: SliceTask, episode: Episode, source_file_key, source_bucket: str) -> bool:
+    """按分片行自身字段重建 payload 并发布（与创建期同一发布函数）。"""
+    return await _publish_to_worker(
+        db,
+        shard,
+        episode,
+        shard.cutlist,
+        None,  # intervals 仅 scrub 使用
+        source_file_key,
+        shard.dedupe_config,
+        shard.watermark_config,
+        None,  # encoder：引擎自动探测（与既有 retry 口一致）
+        shard.vert2horiz_config,
+        shard.badges_config,
+        shard.badge_default_width or 0,
+        source_bucket or settings.MINIO_BUCKET_RAW,
+        shard.subtitle_config,
+        shard.text_overlays_config,
+        shard.subtitle_mask_config,
+        shard.watermark_mask_config,
+        bool(shard.subtitle_align_mask) if shard.subtitle_align_mask is not None else True,
+        shard.cover_image_key,
+        shard.output_tier,
+        None, None, None, None, None, None,  # 钩子族：一期分片恒无
+        None,  # priority
+        None,  # target_node_id：公共流
+    )
+
+
 @router.post("/slice-tasks/{task_id}/retry", response_model=SliceRunResponse)
 async def retry_slice_task(
     task_id: str,
@@ -2275,6 +2335,73 @@ async def retry_slice_task(
             status_code=400,
             detail=f"Cannot retry task with status '{task.status}'",
         )
+    # ── 真分片父级语义（docs/1128-v2 §4.4）─────────────────────────────────
+    # 分片行/父行的 retry 一律父级：只重跑失败/取消的分片（已完成分片不重跑、
+    # 成品不重复），聚合关系保留——禁止现有「新建独立任务复制 cutlist」路径
+    # 作用于分片任务（会散落孤儿、父聚合永远收不到）。
+    children = await _load_shard_children(db, task.id)
+    if children:
+        rerun = [c for c in children if c.status in ("failed", "cancelled")]
+        if not rerun:
+            raise HTTPException(status_code=400, detail="没有可重试的分片（全部成功或仍在运行）")
+        episode = (
+            await db.execute(select(Episode).where(Episode.id == task.episode_id))
+        ).scalar_one_or_none()
+        source_file_key = task.source_file_key or (episode.source_file_key if episode else None)
+        if not source_file_key:
+            raise HTTPException(status_code=400, detail="Episode has no source file")
+        source_bucket = task.source_bucket or settings.MINIO_BUCKET_RAW
+        for c in rerun:
+            await _reset_shard_for_rerun(db, c)
+        for c in rerun:
+            ok = await _republish_shard(db, c, episode, source_file_key, source_bucket)
+            if not ok:
+                c.status = "failed"
+                c.error_message = "分片重投发布失败"
+                await db.commit()
+                raise HTTPException(status_code=500, detail="分片重投发布失败，请检查 Redis 连接")
+        task.status = "running"
+        task.progress = 0.0
+        task.error_message = None
+        await db.commit()
+        return SliceRunResponse(
+            task_id=str(task.id),
+            engine="worker",
+            message=f"已重投 {len(rerun)}/{len(children)} 个失败分片（其余分片成品保留），父任务继续聚合",
+            fallback_whole_video=False,
+        )
+    if task.parent_task_id is not None:
+        # 分片行上点重试 = 父级语义只重跑该片（其余分片不动）
+        if task.status not in ("failed", "cancelled"):
+            raise HTTPException(status_code=400, detail="该分片仍在运行，无需重试")
+        parent = (
+            await db.execute(select(SliceTask).where(SliceTask.id == task.parent_task_id).with_for_update())
+        ).scalar_one_or_none()
+        if parent is None:
+            raise HTTPException(status_code=404, detail="Parent slice task not found")
+        episode = (
+            await db.execute(select(Episode).where(Episode.id == task.episode_id))
+        ).scalar_one_or_none()
+        source_file_key = task.source_file_key or (episode.source_file_key if episode else None)
+        if not source_file_key:
+            raise HTTPException(status_code=400, detail="Episode has no source file")
+        source_bucket = task.source_bucket or settings.MINIO_BUCKET_RAW
+        await _reset_shard_for_rerun(db, task)
+        ok = await _republish_shard(db, task, episode, source_file_key, source_bucket)
+        if not ok:
+            task.status = "failed"
+            task.error_message = "分片重投发布失败"
+            await db.commit()
+            raise HTTPException(status_code=500, detail="分片重投发布失败，请检查 Redis 连接")
+        await recalc_parent_task_status(db, parent.id)
+        await db.commit()
+        return SliceRunResponse(
+            task_id=str(parent.id),
+            engine="worker",
+            message=f"分片 {task.shard_index}/{task.shard_total} 已重投",
+            fallback_whole_video=False,
+        )
+
     # processing 任务重试＝旧任务放弃：显式置 cancelled 留痕（否则旧行永远 processing）
     if task.status == "processing":
         task.status = "cancelled"
@@ -2558,11 +2685,37 @@ async def cancel_slice_task(
             detail=f"Cannot cancel task with status '{task.status}'",
         )
 
+    # ── 真分片父级扇出（docs/1128-v2 §4.3）─────────────────────────────────
+    # 取消父任务 = 逐分片走现有取消出口（DB 终态 + Redis 取消标记 + 流清理），
+    # 终态守卫天然挡住迟到回调复活；父行先幂等写 cancelled（本函数行锁已持）。
+    shard_children = await _load_shard_children(db, task.id)
+    if shard_children:
+        for c in shard_children:
+            if c.status in ("pending", "running", "processing"):
+                c.status = "cancelled"
+                c.completed_at = datetime.utcnow()
+                await mark_task_cancelled(str(c.id))
+                try:
+                    await remove_slice_task_from_streams(str(c.id))
+                except Exception:  # noqa: BLE001 - 流清理失败不阻断取消
+                    logger.warning("清理分片 %s 流消息失败（取消继续）", c.id)
+        task.status = "cancelled"
+        task.completed_at = datetime.utcnow()
+        await db.flush()
+        await _refresh_episode_status(db, task.episode_id)
+        return {
+            "message": f"父任务已取消（{len(shard_children)} 个分片全部终止，Worker 端将收到取消信号并终止 ffmpeg）",
+            "task_id": task_id,
+        }
+
     task.status = "cancelled"
     # 取消即终态：写入完成时间，前端耗时才会停在取消时刻，而不是一直累计到现在。
     # 兼容历史 cancelled 行：前端在缺少 completed_at 时回退最后进度心跳。
     task.completed_at = datetime.utcnow()
     await db.flush()
+    # 真分片：分片行被直接取消 → 同事务重算父行（可能提前到终态）
+    if task.parent_task_id is not None:
+        await recalc_parent_task_status(db, task.parent_task_id)
     # 取消本身也是终态变化；不能依赖迟到回调刷新，否则最后一条任务取消后
     # 剧集会永久停留在 slicing。
     await _refresh_episode_status(db, task.episode_id)
@@ -2609,6 +2762,43 @@ async def delete_slice_task(
     ).scalar_one_or_none()
     if episode:
         await check_project_access_by_episode(db, episode, current_user)
+
+    # ── 真分片父级扇出（docs/1128-v2 §4.3）─────────────────────────────────
+    # 删除父任务 = 逐分片清理（各分片独立 MinIO 前缀，父删除清不到子前缀）+
+    # 级联删除 DB 行；删除父行时其行也会被分片行的 FK 级联（parent 无 FK 约束，
+    # 用显式循环保证顺序与日志）。
+    shard_children = await _load_shard_children(db, task.id)
+    if shard_children:
+        removed = 0
+        for c in shard_children:
+            if c.status in ("pending", "running", "processing"):
+                c.status = "cancelled"
+                await mark_task_cancelled(str(c.id))
+            try:
+                await remove_slice_task_from_streams(str(c.id))
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                objs = await list_files(settings.MINIO_BUCKET_SLICED, prefix=_output_prefix(c))
+                for obj in objs:
+                    await delete_file(settings.MINIO_BUCKET_SLICED, obj["key"])
+            except Exception as e:  # noqa: BLE001 - MinIO 清理失败不阻断 DB 删除
+                logger.warning("Failed to delete MinIO outputs for shard %s: %s", c.id, e)
+            await db.delete(c)
+            removed += 1
+        logger.info("Sharded task %s deleted with %d shards", task.id, removed)
+
+    # 真分片：直接删除分片行仅在父行已终态时允许（运行中的父任务请先取消，否则
+    # 聚合语义混乱——剩余分片继续跑而父行少一块）
+    if task.parent_task_id is not None:
+        parent_row = (
+            await db.execute(select(SliceTask).where(SliceTask.id == task.parent_task_id))
+        ).scalar_one_or_none()
+        if parent_row and parent_row.status not in ("completed", "failed", "cancelled"):
+            raise HTTPException(
+                status_code=400,
+                detail="该分片所属父任务仍在运行：请先取消父任务再删除分片",
+            )
 
     # 正在运行/排队中的任务先取消，避免 Worker 还在写入
     if task.status in ("pending", "running"):

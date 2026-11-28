@@ -200,13 +200,26 @@ def test_aggregate_partial_failure_keeps_outputs():
 def test_aggregate_all_failed():
     agg = compute_parent_aggregate([
         _shard("failed", 30, 0, err="A 失败"),
-        _shard("cancelled", 20, 0),
+        _shard("failed", 20, 0, err="B 失败"),
     ])
     assert agg["status"] == "failed"
     assert agg["completed"] is True
     assert "全部分片失败" in agg["error_message"]
+    assert "A 失败" in agg["error_message"]
 
 
-def test_aggregate_cancelled_counts_as_failed_side():
+def test_aggregate_all_cancelled_is_cancelled():
+    # 口径（docs/1128-v2 §4.3）：取消父任务把全部分片置 cancelled——父行应 cancelled
     agg = compute_parent_aggregate([_shard("cancelled"), _shard("cancelled")])
-    assert agg["status"] == "failed"
+    assert agg["status"] == "cancelled"
+    assert agg["completed"] is True
+
+
+def test_aggregate_completed_plus_cancelled_is_partial_completed():
+    agg = compute_parent_aggregate([
+        _shard("completed", 100, 8),
+        _shard("cancelled", 40, 0),
+    ])
+    assert agg["status"] == "completed"
+    assert "1/2 片失败或取消" in agg["error_message"]
+    assert "产出 8 条成品" in agg["error_message"]

@@ -1319,6 +1319,9 @@ def compute_parent_aggregate(shards) -> dict:
         return out
     if statuses <= {"completed"}:
         out["status"] = "completed"
+    elif statuses <= {"cancelled"}:
+        # 用户取消父任务会把全部分片置 cancelled——父行应 cancelled 而非 failed
+        out["status"] = "cancelled"
     elif statuses & {"completed"}:
         failed_n = sum(1 for t in shards if t.status in ("failed", "cancelled"))
         kept_outputs = sum(t.output_count or 0 for t in shards if t.status == "completed")
@@ -1336,7 +1339,7 @@ def compute_parent_aggregate(shards) -> dict:
             "全部分片失败："
             + "; ".join((t.error_message or "")[:120] for t in shards if t.status == "failed")[:400]
         )
-    out["completed"] = out["status"] in ("completed", "failed")
+    out["completed"] = out["status"] in ("completed", "failed", "cancelled")
     return out
 
 
