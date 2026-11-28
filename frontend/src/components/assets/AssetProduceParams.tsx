@@ -637,7 +637,7 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
   /**
    * 11-10 用户口径①：把「每个参数填了多个值」扇出来的那几张稿子**当场组给人看**。
    * 走的是开单同一个引擎（后端 `expand_matrix`＋`compose_variants`），
-   * 0 元、不落库、不占号；换词位置由后端算（`marks`），这里只描色。
+   * 0 元、不落库、不新建板任务；换词位置由后端算（`marks`），这里只描色。
    */
   const runPreview = async () => {
     if (!computed.filled.length || computed.blocked) return;
@@ -918,13 +918,13 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
                 {`每条文案扇 ${computed.rows} 张 → 本批 ${summaries.length * computed.rows} 组稿子`}
               </Text>
               <HelpDot
-                text={`还要 × 派生份数 N × 每份出几版，见下面「要投 X 条」。换词是在展开好的那份稿子上做的，这 ${computed.rows} 张不多花模型钱，但每张各占一个钩子编号、各吃一条当天额度。`}
+                text={`还要 × 派生份数 N × 每份出几版，见下面「要投 X 条」。换词是在展开好的那份稿子上做的，这 ${computed.rows} 张不多花模型钱，每张仍需要一个钩子编号。`}
               />
             </Space>
           )}
 
           {/* ── 「换完长这样」（11-10 用户口径①「选了元素但看不到正文被替换的地方」）──
-              0 元、不占号，走的和开单同一个引擎，所以这里看到的字＝开出去那张单带的字
+              0 元、不新建板任务，走的和开单同一个引擎，所以这里看到的字＝开出去那张单带的字
               （唯一差别：开单时模型还会把文案展开成投递稿，那份以 ④「改投递稿」为准——这句话必须摆出来） */}
           {!computed.blocked && (
             <div style={{ borderTop: '1px dashed #e5e5e5', paddingTop: 6 }}>
@@ -940,7 +940,7 @@ const AssetProduceParams: React.FC<Props> = ({ active, summaries, onChange, onRe
                     <Tag color="orange">参数改了，这份是旧的</Tag>
                   </Tooltip>
                 )}
-                <HelpDot text="不花钱、不占号、不落库：就是拿上面那份底稿，按你现在填的值逐张替换一遍给你看。绿底＝换上的新词（位置由后端算，不是前端猜）。开单时模型还会把文案展开成投递稿，那一版和这里可能有个别字的差别，最终以 ④ 投板前「改投递稿」那一屏为准。" />
+                <HelpDot text="0 元、不落库、不新建板任务：就是拿上面那份底稿，按你现在填的值逐张替换一遍给你看。绿底＝换上的新词（位置由后端算，不是前端猜）。开单时模型还会把文案展开成投递稿，那一版和这里可能有个别字的差别，最终以 ④ 投板前「改投递稿」那一屏为准。" />
               </Space>
 
               {previewError && (

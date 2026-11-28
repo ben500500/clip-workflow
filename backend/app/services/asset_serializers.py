@@ -20,7 +20,7 @@ from app.models.asset import (
     AssetProduction,
     AssetSummary,
 )
-from app.utils.helpers import utc_iso
+from app.utils.helpers import board_local_iso, utc_iso
 
 
 def _serialize_batch(b: AssetBatch) -> dict:
@@ -123,7 +123,7 @@ def _serialize_summary(
         "consistency_ok": s.consistency_ok,
         "consistency_note": s.consistency_note,
         "risk_hit": s.risk_hit,
-        # P1（评审定稿⑯）：已开过几张生产单（挑选器防重复开单白烧号池）
+        # P1（评审定稿⑯）：已开过几张生产单，供挑选器提示避免重复开单
         "production_count": production_count,
         "audit_status": s.audit_status,
         "reviewed_by": str(s.reviewed_by) if s.reviewed_by else None,
@@ -196,7 +196,7 @@ def _serialize_production(
         # 后台任务板对账字段
         "board_total": p.board_total,
         "board_tag": p.board_tag,
-        "board_date": utc_iso(p.board_date) if p.board_date else None,
+        "board_date": board_local_iso(p.board_date) if p.board_date else None,
         "board_name": p.board_name,
         "board_tid": p.board_tid,
         "board_rgid": p.board_rgid,

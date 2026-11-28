@@ -16,7 +16,6 @@ import type {
 } from '../../api/assets';
 import { parseServerTime } from '../../utils/format';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
-import { withCrossPersonConfirm } from './crossPerson';
 import ProduceOrderModal from './ProduceOrderModal';
 import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
 import AssetCardPicker from './AssetCardPicker';
@@ -53,6 +52,8 @@ interface Props {
    * 以前只有本行「已收 N 段」那个抽屉口，人不知道还能整墙看、整墙挑。
    */
   onGoToOutputs?: () => void;
+  /** 投板受理即通知成片墙重查，不等后台任务收敛 */
+  onDispatched?: () => void;
 }
 
 const rate = (v: number | null | undefined) =>
@@ -72,7 +73,7 @@ let listReqSeq = 0;
  * 11-10 用户口径③「投出去的那条生产单显示完成，成片墙还是看不到…我投去了、生产出来了就给我看」：
  * 状态标签那两个字（「已投上板」「出片成功」）说的是**台账里这一行**，不是**片子在哪**。
  * 一线真正想知道的是这四档各下一步谁做、在哪儿看到东西，所以标签下面固定补一句白话：
- *  1. 还没投 —— 建单不占号也不出片，下一步是**人**点「投去出片」；
+ *  1. 还没投 —— 建单不出片，下一步是**人**点「投去出片」；
  *  2. 已投上板 / 正在出片 —— 下一步是**机器**等豆包，几十分钟，人等着就行；
  *  3. 出片成功 —— 片子已经落到「成片墙」，给一跳直达；
  *  4. 投板失败 / 要求改写 —— 说清成因在哪看，别让"红色标签"自己猜。
@@ -84,7 +85,7 @@ const stateWhereabouts = (
   row: { output_count?: number | null },
 ): string | null => {
   const n = row.output_count ?? 0;
-  if (status === 'order_ready') return '只建了单、还没投板：不占号也不出片，点「投去出片」才开始';
+  if (status === 'order_ready') return '只建了单、还没投板：不会出片，点「投去出片」才开始';
   if (status === 'queued' || status === 'running') return '已投上板，豆包在出片（几十分钟起）：这一段不用你盯，回来自动进成片墙';
   if (status === 'success') return n > 0 ? `片子已回收 ${n} 段：在「成片墙」和本行「成片」列都能看` : '记的是出片成功，但库里一段片子都没收到——多半是人工回写或回收没落库，成因看本行「提醒」';
   if (status === 'failed') return '没出成片：红标签旁的「有成因」写了为什么';
@@ -334,8 +335,7 @@ const PromptDraftDiff: React.FC<{ before: string; after: string }> = ({ before, 
  * 两个计数口径不能混（这是最容易看错的地方）：
  *  - `dispatch.by_status` 跟 batch_id/asset_id 走、**不跟 status= 走**：
  *    筛「失败」时如果 by_status 跟着筛，就变成「failed: 12」自己报自己，成功几条这个关键数消失了；
- *  - `dispatch.today.board_rows` = Σ board_total＝号池今天真吃进去的条数（软提示线比它，不是行数）；
- *    `board_capacity.already_today` 含未投单，两者不等价，别互相换算。
+ *  - `dispatch.today.board_rows` = Σ board_total＝当天投板的总版数。
  *
  * 投递有**两个入口、一条交付线**（11-05 批 H）：
  *  - 「投去 AI 出片」＝后端自己连板：建任务 → 轮询出片 → 把成片收进产物。拍板口径是
@@ -346,7 +346,7 @@ const PromptDraftDiff: React.FC<{ before: string; after: string }> = ({ before, 
  */
 const AssetProductionPanel: React.FC<Props> = ({
   canWriteBack, isAdmin, scopeMine, batchId, reloadToken, active = true,
-  dispatchIds, dispatchNotes, onDispatchConsumed, onGoToOutputs,
+  dispatchIds, dispatchNotes, onDispatchConsumed, onGoToOutputs, onDispatched,
 }) => {
   const [items, setItems] = useState<AssetProduction[]>([]);
   const [total, setTotal] = useState(0);
@@ -363,7 +363,7 @@ const AssetProductionPanel: React.FC<Props> = ({
   const [assetFilter, setAssetFilter] = useState<string | undefined>();
   /**
    * A′ 按运营隔离（2026-11-07）→ 11-24 起初始值改由全局「仅看自己」开关给（默认＝全部）。
-   * 统计两行并排（我的／全站）与号池一本账不受这里影响——那是另一套口径。
+   * 统计两行并排（我的／全站）不受这里影响——那是另一套口径。
    */
   const [ownerView, setOwnerView] = useOwnerView(scopeMine);
 
@@ -386,7 +386,6 @@ const AssetProductionPanel: React.FC<Props> = ({
 
   const [exportOpen, setExportOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<'json' | 'txt' | 'payload'>('txt');
-  const [exportAccounts, setExportAccounts] = useState(1);
   const [exportOnlySelected, setExportOnlySelected] = useState(false);
   const [exportData, setExportData] = useState<AssetExportTxt | AssetExportPayload | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
@@ -696,8 +695,6 @@ const AssetProductionPanel: React.FC<Props> = ({
     const creating = selected.filter(canCreateLocally);
     const recovering = selected.filter(canRecoverLocally);
     const other = selected.length - creating.length - recovering.length;
-    // 号池额度按 Σ board_total 算，不是张数（20 张 × total 3 是 60 条，不是 20 条）
-    const rows = creating.reduce((acc, p) => acc + (p.board_total || 1), 0);
     // 批 Q：这次会**被写上新拼装要求**的行＝新建堆＋回收堆（后端 `to_create + to_recover` 同一套）
     const concatTargets = creating.length + recovering.length;
     // 这批里原来就钉过拼装要求的行数：不为 0 才给「取消这些单的自动拼接」那个勾——
@@ -707,7 +704,6 @@ const AssetProductionPanel: React.FC<Props> = ({
       willCreate: creating.length,
       willRecover: recovering.length,
       other,
-      rows,
       concatTargets,
       pinnedConcat: pinned,
     };
@@ -1018,7 +1014,6 @@ const AssetProductionPanel: React.FC<Props> = ({
         batch_id: exportOnlySelected || !batchFilter ? undefined : batchFilter,
         asset_id: assetFilter,
         ids: exportOnlySelected && ids.length ? ids.join(',') : undefined,
-        accounts: exportAccounts,
         format: exportFormat,
         force_risk: forceRisk || undefined,
         force_reason: forceRisk ? exportForceReason.trim() : undefined,
@@ -1060,27 +1055,18 @@ const AssetProductionPanel: React.FC<Props> = ({
       Object.entries(promptOverrides).forEach(([id, v]) => {
         if ((v || '').trim()) overrides[id] = v;
       });
-      const res = await withCrossPersonConfirm((c) =>
-        assetApi.dispatchProductions({
-          ids,
-          confirm: true,
-          recover_only: dispatchRecoverOnly || undefined,
-          force_risk: dispatchForceRisk || undefined,
-          force_reason: dispatchForceRisk ? dispatchForceReason.trim() : undefined,
-          async_mode: true,
-          cross_person_confirm: c,
-          prompt_overrides: Object.keys(overrides).length ? overrides : undefined,
-          card_asset_ids: dispatchCardIds.length ? dispatchCardIds : undefined,
-          // 批 Q（需求⑤）：三种语义必须分开——
-          //   勾了「取消」→ 空串（后端把这几张行上钉的要求清掉）
-          //   挑了一条   → id ＋顺序
-          //   什么都没动   → 字段不传（沿用各单行上原有的要求，不清空）
-          concat_asset_id: dispatchConcatClear ? '' : dispatchConcatId || undefined,
-          concat_order:
-            !dispatchConcatClear && dispatchConcatId ? dispatchConcatOrder : undefined,
-        }),
-      );
-      if (!res) return; // 取消了「替他人批次」确认：什么都不做，弹窗留着
+      const res = await assetApi.dispatchProductions({
+        ids,
+        confirm: true,
+        recover_only: dispatchRecoverOnly || undefined,
+        force_risk: dispatchForceRisk || undefined,
+        force_reason: dispatchForceRisk ? dispatchForceReason.trim() : undefined,
+        async_mode: true,
+        prompt_overrides: Object.keys(overrides).length ? overrides : undefined,
+        card_asset_ids: dispatchCardIds.length ? dispatchCardIds : undefined,
+        concat_asset_id: dispatchConcatClear ? '' : dispatchConcatId || undefined,
+        concat_order: !dispatchConcatClear && dispatchConcatId ? dispatchConcatOrder : undefined,
+      });
       setDispatchOpen(false);
       setDispatchRecoverOnly(false);
       setDispatchForceRisk(false);
@@ -1089,6 +1075,7 @@ const AssetProductionPanel: React.FC<Props> = ({
       setEditPromptFor(null);
       setSelected([]);
       nudgeAssetJobBanner();
+      onDispatched?.();
       fetchList(page, pageSize);
       if (isAssetJobAck(res)) {
         const ack = res as AssetDispatchAck;
@@ -1106,9 +1093,8 @@ const AssetProductionPanel: React.FC<Props> = ({
           description: (
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Text>
-                本批会新建 <Text strong>{pre.will_create}</Text> 张板任务、接续回收{' '}
-                <Text strong>{pre.will_recover}</Text> 张；号池按条数记，本批加{' '}
-                <Text strong>{pre.planned_board_rows}</Text> 条（不是一张一条，Σ board_total）。
+                本批会新建 <Text strong>{pre.will_create}</Text> 张生产单、接续回收{' '}
+                <Text strong>{pre.will_recover}</Text> 张。
               </Text>
               {!!pre.prompt_overrides?.length && (
                 <Text type="warning" style={{ fontSize: 12 }}>
@@ -1129,10 +1115,6 @@ const AssetProductionPanel: React.FC<Props> = ({
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   已取消 {pre.concat.cleared_for.length} 张单的自动拼接（成片原样进产物，要拼去详情抽屉手工拼）。
                 </Text>
-              )}
-              {!!pre.capacity?.advisory && (
-                <Alert type="warning" showIcon message="号池余量（只提示不拦）"
-                  description={<Text style={{ fontSize: 12 }}>{pre.capacity.advisory}</Text>} />
               )}
               {!!pre.blocked?.length && (
                 <Alert
@@ -1469,7 +1451,7 @@ const AssetProductionPanel: React.FC<Props> = ({
             {short > 0 && (
               <Tooltip
                 title={`这张单要 ${r.board_total} 版、只回收 ${r.output_count ?? 0} 版，还缺 ${short} 版。
-机器已经在这次轮询窗口内自动重启过整批全失败的单（部分版失败不重启——那会把已到手的版次再烧一遍额度）。
+机器已经在这次轮询窗口内自动重启过整批全失败的单（部分版失败不重启，避免重复创建已到手的版次）。
 补法：这行「操作 → 按同文案重开单」只补差额；隔夜不自动补投是定死的口径。`}
               >
                 <Tag color="orange">缺 {short} 版</Tag>
@@ -1489,9 +1471,27 @@ const AssetProductionPanel: React.FC<Props> = ({
               <Dropdown
                 menu={{
                   items: [
-                    // 批 N（评审二·P0-1）：失败行的出路——同文案重开单（原单留档不动）
                     ...(r.status === 'failed'
                       ? [
+                          {
+                            key: 'delete-failed',
+                            label: '删掉失败单',
+                            danger: true,
+                            onClick: () => {
+                              Modal.confirm({
+                                title: '删掉这张失败单？',
+                                content: '只把失败单改为已作废；原失败成因、操作人和审计记录仍保留。',
+                                okText: '删掉失败单',
+                                okButtonProps: { danger: true },
+                                cancelText: '保留失败',
+                                onOk: async () => {
+                                  await assetApi.cancelProduction(r.id);
+                                  message.success('已删单：失败单已作废，台账仍可审计');
+                                  await fetchList();
+                                },
+                              });
+                            },
+                          },
                           {
                             key: 'reopen',
                             label: '按同文案重开单（原单留档不动）',
@@ -1516,7 +1516,6 @@ const AssetProductionPanel: React.FC<Props> = ({
   ];
 
   const dispatch_all = dispatch_all_ ?? null;
-  const today = dispatch?.today;
 
   return (
     <Card size="small">
@@ -1536,16 +1535,9 @@ const AssetProductionPanel: React.FC<Props> = ({
         <Col span={3}>
           <Statistic title="失败" value={dispatch?.failed ?? 0} valueStyle={{ color: '#cf1322' }} />
         </Col>
-        <Col span={3}>
+        <Col span={6}>
           <Tooltip title="分母只算已终态（成功+失败），在投/出片中不进分母；没有终态时显示 —">
             <Statistic title="成功率" value={rate(dispatch?.success_rate)} />
-          </Tooltip>
-        </Col>
-        {/* 用户口径 2026-11-09：号池折叠块删除，只留今日消耗统计；
-            暂不设上限/预警（原来的软提示线 120 已从界面移除，后端仍只记数不拦） */}
-        <Col span={6}>
-          <Tooltip title="今天板上真吃掉的条数（Σ各单板上条数，不是行数）；与每日解压线共用同一池，只报数。">
-            <Statistic title="今日消耗" value={today?.board_rows ?? 0} suffix="条" />
           </Tooltip>
         </Col>
       </Row>
@@ -1553,7 +1545,7 @@ const AssetProductionPanel: React.FC<Props> = ({
       {ownerView === 'me' && dispatch_all && (
         <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
           全站：成功 {dispatch_all.succeeded ?? 0} · 失败 {dispatch_all.failed ?? 0} · 已投{' '}
-          {dispatch_all.dispatched ?? 0}（号池一本账，不分人）
+          {dispatch_all.dispatched ?? 0}
         </Text>
       )}
       {/* A′（2026-11-08 定稿）：排版对齐 #110——①筛选行 ②动作行，不再混排 */}
@@ -1839,11 +1831,6 @@ const AssetProductionPanel: React.FC<Props> = ({
               />
             </Col>
           </Row>
-          <Tooltip title="出好的片子自动回「成片」列，可关页面去干别的；额度按条数算（Σ各单板上条数），只含素材库自己投的，与每日解压线共用同一个池">
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              本批 ≈{dispatchPlan.rows} 条额度｜今天已投 {dispatch?.today?.board_rows ?? 0} 条
-            </Text>
-          </Tooltip>
           <Checkbox
             checked={dispatchRecoverOnly}
             onChange={(e) => setDispatchRecoverOnly(e.target.checked)}
@@ -1855,8 +1842,8 @@ const AssetProductionPanel: React.FC<Props> = ({
             showIcon
             message={
               dispatchRecoverOnly
-                ? '回收档不烧额度、一个都不新建；进程重启后靠它把片子取回来'
-                : '真占当天号池额度，一条 25 分钟起；闸门与导出同一套（状态/正文/风险词）'
+                ? '回收档：只取回已经投出去的任务，一个都不新建'
+                : '投板后约 25 分钟起出片；仍检查状态、正文和风险词'
             }
           />
           {/* 人物卡（三视图）：投板前统一挑/传，开窗第一屏就给它——缺卡的单在这里补上再走 */}
@@ -1875,7 +1862,7 @@ const AssetProductionPanel: React.FC<Props> = ({
           )}
           {/*
             批 Q（11-10，需求⑤「钩子成片生成出来以后，需要导入拼接视频自动拼接成可投放素材」）：
-            第二段在这里点名，不等回收。判据（是不是图片、有没有文件）后端在**烧号池之前**跑，
+            第二段在这里点名，不等回收。判据（是不是图片、有没有文件）后端在**投板之前**跑，
             所以这里选不出拼不了的东西；真选的那条被人在回收前删了，也只是这一支拼失败，
             成片照样进产物（成因写进「拼没拼」那一列）。
           */}
@@ -2276,17 +2263,6 @@ const AssetProductionPanel: React.FC<Props> = ({
                 { value: 'payload', label: '板面七键（企微后台建任务那七个字段）' },
               ]}
             />
-            <span>
-              <Text>豆包号数：</Text>
-              <Input
-                type="number"
-                min={1}
-                max={50}
-                style={{ width: 70, marginLeft: 4 }}
-                value={exportAccounts}
-                onChange={(e) => setExportAccounts(Math.max(1, Number(e.target.value) || 1))}
-              />
-            </span>
             <Checkbox checked={exportOnlySelected} onChange={(e) => setExportOnlySelected(e.target.checked)}>
               只导选中的 {ids.length} 张
             </Checkbox>
@@ -2297,7 +2273,7 @@ const AssetProductionPanel: React.FC<Props> = ({
               <Alert
                 type={exportData.blocked_count ? 'warning' : 'success'}
                 showIcon
-                message={`共 ${exportData.count} 张，可投 ${exportData.ready} 张，挡下 ${exportData.blocked_count} 张；按 ${exportData.capacity.account_count} 号折算 ${exportData.capacity.days} 天`}
+                message={`共 ${exportData.count} 张，可投 ${exportData.ready} 张，挡下 ${exportData.blocked_count} 张`}
                 description={
                   <span style={{ fontSize: 12 }}>
                     {exportData.note}

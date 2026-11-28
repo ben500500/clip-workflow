@@ -29,7 +29,7 @@ interface Props {
   onCancel: () => void;
   /**
    * 勾完点「去生成生产单」：选中的文案交回父层，由父层开 `ProduceOrderModal`。
-   * 风险词、一致性、钩子编号、号池、成本这些闸门**只在投产弹窗里有一套**，
+   * 风险词、一致性、钩子编号这些闸门**只在投产弹窗里有一套**，
    * 这里只管「选哪几条文案」，绝不重算第二套（第二套早晚和第一套对不上）。
    */
   onConfirm: (rows: AssetSummary[]) => void;
@@ -154,7 +154,7 @@ const ApprovedSummaryPickerModal: React.FC<Props> = ({
       width: 68,
       render: (v?: number) =>
         v ? (
-          <Tooltip title="这条文案之前开过几张生产单（重复开＝重复占当天号池额度）">
+          <Tooltip title="这条文案之前开过几张生产单">
             <Tag color="orange">{v}</Tag>
           </Tooltip>
         ) : (

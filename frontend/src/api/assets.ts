@@ -226,7 +226,7 @@ export interface AssetItem {
   has_approved_copy: boolean;
   /** 反推实扣（元，按档位推算的额度） */
   cost_prompt: number;
-  /** 生产消耗（额度类消耗记 0，成本走号池） */
+  /** 生产消耗（元；免费豆包生产记 0） */
   cost_produce: number;
   /** 回源解析实扣（元，doc/107 每次 0.01；走免费兜底渠道记 0） */
   cost_parse: number;
@@ -380,7 +380,7 @@ export interface AssetProduction {
   duration: number | null;
   channel: AssetProductionChannel | null;
   // ── 任务板对账列 ──
-  /** 板上 total = **同一条提示词出几版**（1..20）；与 n（几条差异化提示词）是两个量，混用白烧 n×total */
+  /** 板上 total = **同一条提示词出几版**（1..20）；与 n（几条差异化提示词）是两个量，别混用 */
   board_total: number;
   /** 拥有者标记；不填=无主任务，按天筛不到 */
   board_tag: string | null;
@@ -561,52 +561,24 @@ export interface AssetImportBudgetSummary extends AssetImportBudget {
   batches: number;
 }
 
-/** svc.estimate_production_days：按号池把「生产数量 N」折成天数（瓶颈是额度不是工时） */
-export interface AssetProductionDaysPlan {
-  count: number;
-  account_count: number;
-  per_account_per_day: number;
-  capacity_per_day: number;
-  days: number;
-}
-
-/** svc.board_capacity_hint：当日投放量软提示（**不硬限**，只把实测说清楚） */
-export interface AssetBoardCapacity {
-  planned: number;
-  /** 含未投单的「今天打算投多少」口径，与 dispatch.today.board_rows 不等价，别互相换算 */
-  already_today: number;
-  total_today: number;
-  soft_cap: number;
-  over_cap: number;
-  advisory: string | null;
-  /**
-   * 批 H：这个数**只含素材库自己**今天投的，不含同日在板子上跑的解压线（那条线库里没台账）。
-   * 号池是共用池，所以真实余量比这里显示的小——这句是给一线排量看的，别当注释。
-   */
-  note?: string | null;
-}
-
-/** 当日号池事实（不受 batch_id/asset_id 过滤影响——按批次过滤就答不了「今天还能不能再投」） */
+/** 当日投板与回收事实（不受 batch_id/asset_id 过滤影响） */
 export interface AssetDispatchToday {
   /** 板面本地时区切日，'YYYY-MM-DD' */
   day: string;
   /** 生产单行数 */
   tasks: number;
-  /** Σ board_total＝号池真正吃掉的条数（软提示线比的是这个，不是 tasks） */
+  /** 当日投板任务的总版数（Σ board_total） */
   board_rows: number;
   by_status: Partial<Record<ProductionState, number>>;
   succeeded: number;
   failed: number;
   dispatched: number;
-  soft_cap: number;
-  over_cap: number;
-  note: string;
 }
 
 /**
  * 生产单投递计数：`/assets/productions`、`/assets/produce`、`/assets/productions/status` 三处都返回。
  * 两个口径必须分开看：scope 计数（跟 batch_id/asset_id）答「这批投得怎么样」，
- * today 答「今天号池吃进去多少、到手多少」。
+ * today 答「当天投了多少、到手多少」。
  */
 export interface AssetDispatchCounts {
   total: number;
@@ -647,9 +619,10 @@ export interface AssetQueueSegment {
  */
 /**
  * 后台任务类型。七类都有写入方（批 F 加 `frames`、批 H 加 `dispatch`、批 J 加
- * `download`/`prompt_preview`、11-06 加 `analyze`＝反推进台账）：`dispatch` 是唯一
- * **往外花钱/花号池额度**的那一类，所以提交口另带 `confirm`；`download`/`prompt_preview`
- * 是批 J 的搭车动作——反推时顺带下载原片、过审后自动备提示词，也开放手工批量（重试失败行用）。
+ * `download`/`prompt_preview`、11-06 加 `analyze`＝反推进台账）。其中
+ * `download`/`prompt_preview` 是批 J 的搭车动作——反推时顺带下载原片、过审后自动备提示词，
+ * 也开放手工批量（重试失败行用）。`dispatch` 的 `confirm` 是人工投板确认，
+ * 与豆包生成是否收费无关。
  */
 export type AssetJobKind =
   | 'analyze'
@@ -828,6 +801,7 @@ export interface AssetInflightOutput {
   asset_title: string | null;
   batch_id: string | null;
   batch_code: string | null;
+  owner_id: string | null;
   owner_name: string | null;
   board_tid: string | null;
   /** 板面上的任务名＝推荐标题第 1 条，一线认这条最直观 */
@@ -928,8 +902,6 @@ export interface AssetAnalyzeRequest {
   offset?: number;
   /** 本段条数，默认/上限 = ASSET_ANALYZE_MAX_PER_CALL */
   limit?: number | null;
-  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
-  cross_person_confirm?: boolean;
   /**
    * D-1：true＝闸门与成本确认全过之后当场回任务号（AssetJobAck），提交＋收敛在后台跑，
    * 页面关闭不影响（11-06 前收敛只靠前端轮询，页面一关就卡「反推中」）。页面按钮走 true。
@@ -955,8 +927,6 @@ export interface AssetSummaryGenerateRequest {
   retry_failed?: boolean;
   /** D-1：true＝提交即回任务号（后台跑，轮询取结果）。页面按钮一律走 true */
   async_mode?: boolean;
-  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
-  cross_person_confirm?: boolean;
 }
 
 /** RefreshBatchRequest（一次收敛整批在跑的反推任务） */
@@ -977,8 +947,6 @@ export interface AssetResolveRequest {
   limit?: number | null;
   /** ≥2 条时必须为 true */
   confirmed?: boolean;
-  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
-  cross_person_confirm?: boolean;
   /** 11-06 播放直链修复：缓存直链过期后强制重新解析（0.01 元/次）——直链打不开时的自愈出口 */
   retake?: boolean;
 }
@@ -988,8 +956,6 @@ export interface AssetDownloadRequest {
   asset_ids?: string[];
   /** D-1：true＝提交即回任务号（AssetJobAck）。页面按钮一律走 true */
   async_mode?: boolean;
-  /** 11-06 拍板②：涉及别人导入的批次时必须 true（界面确认「替他人批次花钱」后带上） */
-  cross_person_confirm?: boolean;
 }
 
 /** 下载逐条明细：失败原因/error 里写了「失败不记账」还是「已按渠道记账」 */
@@ -1068,15 +1034,13 @@ export interface AssetProduceRequest {
    */
   duration?: number | null;
   channel?: AssetProductionChannel | null;
-  /** 准备用几个豆包号跑（仅折算天数；后台派号，本系统无号池表），导出/建单都只报数 */
-  accounts?: number | null;
   /** 是否调 AutoClip 按 11-02 权威模板展开成可投提示词（默认 true；false 的裸单不许投） */
   expand?: boolean;
   /** 试产（2026-11-12）：不过审闸，prompt_text 直投；行落 is_trial，成片只进审核台判定 */
   trial?: boolean;
   /** trial=true 时必填：投给豆包的提示词正文（审核员改过的那一段） */
   prompt_text?: string;
-  /** 板上 total＝**同一条提示词出几版**（1..20，默认 1）。与 n 是两个量，混用会白烧 n×total */
+  /** 板上 total＝**同一条提示词出几版**（1..20，默认 1）。与 n 是两个量，别混用 */
   board_total?: number | null;
   /** 板上 tag（拥有者标记），缺省用 ASSET_BOARD_TAG；不填=无主任务、按天筛不到 */
   board_tag?: string | null;
@@ -1119,8 +1083,7 @@ export interface AssetProduceRequest {
   /** 多值配对方式：zip＝按行配对（默认，第1个场景配第1只动物）、product＝全组合（上限 100 行） */
   element_mode?: 'zip' | 'product';
   /** D-1：true＝提交即回任务号（展开提示词要等模型，后台跑完再轮询取结果） */
-  async_mode?: boolean;  /** A′ 归属跨人确认：投别人过审的候选（reviewed_by≠操作者）必须 true——谁投账算谁 */
-  cross_person_confirm?: boolean;
+  async_mode?: boolean;
 }
 
 
@@ -1195,7 +1158,7 @@ export interface AssetSummaryListParams {
   audit_status?: AuditStatus | string;
   /**
    * 批 X（文案打通）：带上脚本送审造的「壳」候选行。默认（不传）＝藏壳——
-   * 挑选器/开单屏绝不能看见壳（对它做展开＝把一篇脚本当文案展开，白烧钩子号）；
+   * 挑选器/开单屏绝不能看见壳（对它做展开＝把一篇脚本当文案展开，浪费钩子编号）；
    * **审核台显式传 true**：极简送审的稿子必须在 ③ 能被看到并审得了。
    */
   include_carriers?: boolean;
@@ -1259,8 +1222,6 @@ export interface AssetExportParams {
   asset_id?: string;
   /** ⚠️ 逗号拼接的**单个字符串**（不是数组），后端自己 split(',') */
   ids?: string;
-  /** 准备用几个豆包号跑（只用于折算天数），后端夹在 1..50 */
-  accounts?: number;
   format?: AssetExportFormat;
   /** 带违禁词放行（**只有 admin**，且必须同时带 force_reason） */
   force_risk?: boolean;
@@ -2041,7 +2002,7 @@ export interface AssetProduceBoard {
   board_total: number;
   /** 任务数（= 生产单条数） */
   tasks: number;
-  /** 本批真实投放量 = tasks × board_total（号池当天要吃的条数） */
+  /** 本批计划出片版数 = tasks × board_total */
   planned_rows: number;
   /** 出片规格声明（不可改） */
   output: string;
@@ -2142,8 +2103,8 @@ export interface AssetCardCheck {
 /** POST /assets/produce */
 /**
  * 批 P（11-10）：一次开单按可替换参数扇出成多条生产单的结果回显。
- * 扇出是**字面换词、0 元**（不再调模型），但每张各占一个钩子编号、各吃一条号池额度——
- * 这两件事必须在结果页说清，不然一线会以为「20 张 = 花了 20 次的钱」或「不占额度」。
+ * 扇出是**字面换词、0 元**（不再调模型），每张各占一个钩子编号。
+ * 建单本身不新建板任务；结果页不要把「只建了单、还没投板」说成已经投出。
  */
 export interface AssetProduceElementFanout {
   /** zip＝按行配对（第 i 行的各参数组成第 i 张）；product＝全组合（个数相乘） */
@@ -2164,11 +2125,7 @@ export interface AssetProduceResponse {
   /** 批 I（链路收敛）：这次新建的生产单 id——投产结果页「顺势投去出片」点名投板用 */
   production_ids?: string[];
   board: AssetProduceBoard;
-  /** 按号池折算的天数（accounts 由调用方声明） */
-  capacity_hint: AssetProductionDaysPlan;
-  /** 当日板面投放量软提示（含**未投单**的口径，与 dispatch.today 不等价） */
-  board_capacity: AssetBoardCapacity;
-  /** 建单当场就把「今天号池已经吃掉多少、成几条败几条」摆出来 */
+  /** 建单当天的投板与回收情况 */
   dispatch: AssetDispatchCounts;
   recheck_failed: AssetProduceRecheckFailedItem[];
   recheck_waived: AssetProduceWaivedItem[];
@@ -2291,12 +2248,10 @@ export interface AssetDispatchRequest {
   /** 仅 admin：文案过审后词表又加过词、仍要投这几张（与导出侧 R-4 同一道闸） */
   force_risk?: boolean;
   force_reason?: string;
-  /** true＝一个都不新建，只把已经投上板的片子回读＋收回来（不烧额度，所以不看 confirm） */
+  /** true＝一个都不新建，只把已经投上板的片子回读＋收回来（不新建板任务，所以不看 confirm） */
   recover_only?: boolean;
   /** 默认 true（几十分钟的活，页面按钮一律走后台任务）；false 只给脚本与用例 */
   async_mode?: boolean;
-  /** 11-06 拍板②：新建板任务涉及别人导入的批次时必须 true（回收已投的单不花钱，不用这个字段） */
-  cross_person_confirm?: boolean;
   /**
    * 11-06 拍板：投递稿可改。生产单 id → 这一次投出去的提示词正文。
    * 只改投出去的那份：库里的 prompt_text／过审文案不动，漂移判定不受影响；
@@ -2313,8 +2268,8 @@ export interface AssetDispatchRequest {
   /**
    * 批 Q（需求⑤）：这批片子收回来之后，每支自动和这条素材（asset_items.id）两段直拼，
    * 拼成的产物即「可投放素材」（来源素材状态随之点亮成 ready）。
-   * 0 元、不调模型。挑图片／还没取回原片的链接素材会在**投出去之前**就被后端 400 拦掉
-   * （号池还没烧），不会等回收到了才发现拼不了。
+   * 0 元、不调模型。挑图片／还没取回原片的链接素材会在**投出去之前**就被后端 400 拦掉，
+   * 不会等回收到了才发现拼不了。
    */
   concat_asset_id?: string | null;
   /** 顺序：默认 hook_first＝钩子片在前、素材片段在后 */
@@ -2342,11 +2297,10 @@ export interface AssetDispatchCreatedItem {
 export interface AssetDispatchPrecheck {
   will_create: number;
   will_recover: number;
-  /** Σ board_total＝本批会吃掉多少条号池额度，不是张数 */
+  /** Σ board_total＝本批计划出片的总版数，不是生产单张数 */
   planned_board_rows: number;
   blocked: AssetDispatchBlockedItem[];
   card_warnings: { id: string; hook_code: string | null; warnings: string[] }[];
-  capacity: AssetBoardCapacity;
   /** 11-06 拍板：投递稿可改——这次真的带着改稿投出去的生产单 id 列表 */
   prompt_overrides?: string[];
   /**
@@ -2379,7 +2333,7 @@ export interface AssetDispatchResultItem {
   /**
    * 11-24 需求④（有界自动重试）：这张单本次**实际自动重启了几次**。
    * 只有「整批全失败」才有重启资格——重启是整条 payload 重投，部分成功时重启等于
-   * 把已到手的版次再烧一遍号池，所以那种缺口只能人工补。
+   * 把已到手的版次再生成一遍，所以那种缺口只能人工补。
    */
   retries?: number;
   /** 本次生效的重试上限（`ASSET_BOARD_RETRY_MAX`，默认 2）；界面据此说「已到顶」还是「还能重试」 */
@@ -2427,7 +2381,6 @@ export interface AssetDispatchResponse {
   uncertain: Array<{ id: string; hook_code: string | null; error: string }>;
   card_warnings: { id: string; hook_code: string | null; warnings: string[] }[];
   asset_status?: Record<string, AssetStatus>;
-  capacity: AssetBoardCapacity;
   dispatch: AssetDispatchCounts;
   /** 批 Q：本次回收后自动拼接的结果（没提要求也没有钉着的行时 attempted=0、note 为空串） */
   concat?: AssetAutoConcatSummary | null;
@@ -2500,7 +2453,6 @@ export interface AssetExportJson {
   blocked: AssetExportBlockedItem[];
   /** R-4：导出前按当前词表重扫正文的结论（每次都回，hit_count=0 表示这批干净） */
   risk_recheck: AssetExportRiskRecheck;
-  capacity: AssetProductionDaysPlan;
   note: string;
 }
 
@@ -3263,7 +3215,14 @@ export const assetApi = {
 
   // 批 V 需求②：投出去还没回片的单子（成片墙的灰占位卡用）。轻量口：单表查询＋两把小映射，
   // 不 presign、不打企微后台，所以敢每 20 秒轮一次；在途清零后前端自动停轮。
-  listInflightOutputs: (params?: { batch_id?: string; owner?: 'me' | 'all'; owner_id?: string; limit?: number }) =>
+  listInflightOutputs: (params?: {
+    batch_id?: string;
+    owner?: 'me' | 'all';
+    owner_id?: string;
+    include_creating?: boolean;
+    include_older_failed?: boolean;
+    limit?: number;
+  }) =>
     client.get('/assets/outputs/inflight', { params }) as Promise<AssetInflightResult>,
 
   // 批 Y（11-25 用户口径「成片墙没有删除功能，比如超时生成的豆包素材无法删掉」）：
@@ -3281,7 +3240,7 @@ export const assetApi = {
     }>,
 
   // 换皮扇出的实时预览（11-10 用户口径「选了元素但看不到正文被替换的地方」）：
-  // 0 元、不落库、不占号；与开单同一个引擎，所以配对不齐/超上限的 400 话术也是一条
+  // 0 元、不落库、不新建板任务；与开单同一个引擎，所以配对不齐/超上限的 400 话术也是一条
   previewPromptElementFanout: (body: {
     texts: Record<string, string>;
     category?: string;
@@ -3310,7 +3269,7 @@ export const assetApi = {
     ) as Promise<Blob>,
 
   // ── 组合导出矩阵（2026-11-24 需求三）：N 支钩子成片 × M 条正片 ＝ N×M 条投放素材 ──
-  // 0 元（纯本机 ffmpeg、不占号池），但一次上限 N×M 条转码，超上限后端当场 400 说清
+  // 0 元（纯本机 ffmpeg、不投板、不新建板任务），但一次上限 N×M 条转码，超上限后端当场 400 说清
   // 「分两次点」。默认 async_mode=true＝排后台、提交即回任务号，所以返回是两种形状。
   composeMatrix: (body: ComposeMatrixRequest) =>
     client.post('/assets/compose/matrix', body) as Promise<ComposeMatrixResult | AssetJobAck>,
@@ -3541,13 +3500,12 @@ export const assetApi = {
       waive_reason: waiveReason || undefined,
     }) as Promise<{ results: AssetScriptVerdictItem[]; message: string }>,
 
-  /** 屏 2「投豆包」：已定稿脚本直接建单＋投板，受理即回任务号。用了同事的脚本要先确认 */
+  /** 屏 2「投豆包」：已定稿脚本直接建单＋投板，受理即回任务号。 */
   produceFromScripts: (data: {
     script_ids: string[];
     board_total?: number;
     card_asset_ids?: string[] | null;
     hook_codes?: string[] | null;
-    cross_person_confirm?: boolean;
   }) => client.post('/assets/scripts/produce', data) as Promise<AssetScriptProduceResult>,
 
   getUiPreferences: () =>

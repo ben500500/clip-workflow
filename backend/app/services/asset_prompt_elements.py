@@ -73,7 +73,7 @@ DEFAULT_SKIP_LINES = r"^(钩子原文|生成【)"
 MATRIX_ZIP = "zip"
 MATRIX_PRODUCT = "product"
 MATRIX_MODES = (MATRIX_ZIP, MATRIX_PRODUCT)
-MAX_MATRIX_ROWS = 100  # 一次扇出的行数上限：再多就是白烧号池，界面也铺不下
+MAX_MATRIX_ROWS = 100  # 一次扇出的行数上限：防止界面铺不下与误建过量生产单
 MAX_VALUES_PER_PARAM = 50  # 单个参数最多填几个值（多值扇出的"列高"上限）
 
 # 手填项在界面上要说的那句实话（别让人以为系统认出来了）
@@ -885,7 +885,7 @@ def expand_matrix(
       （"场景换 3 个、动物不换"这种最常用）；两个参数都填了多个、个数又对不齐 →
       **不猜**，直接报错点名是哪两个（猜错的话一线要对着 6 条废单一条一条删）。
     - `product`（全组合）：笛卡尔积，行数超过 `MAX_MATRIX_ROWS` 当场报错，
-      免得手滑填出 20×20＝400 张单白烧号池。
+      免得手滑填出 20×20＝400 张生产单。
 
     返回 `(行, 备注)`，行是 `{key: 值}`。纯函数、不花钱、不落库——
     真正"一行变一张生产单"在批 P 的 `produce` 扇出口做，这里只管算行。

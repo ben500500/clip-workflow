@@ -10,8 +10,6 @@ import AssetCardPicker from './AssetCardPicker';
 import AssetProduceParams, { EMPTY_PRODUCE_PARAMS } from './AssetProduceParams';
 import type { ProduceParams } from './AssetProduceParams';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
-import { withCrossOwnerConfirm } from './crossPerson';
-import { useAuth } from '../../contexts/AuthContext';
 
 const { Text, Paragraph } = Typography;
 
@@ -67,16 +65,13 @@ export function produceResultNotes(res: AssetProduceResponse): string[] {
 /**
  * 投产：过审文案 → N 条差异化提示词（生产单）。
  *
- * 三个量必须分开，混了就白烧号池：
+ * 三个量必须分开：
  *  - `n`：一条文案派生几份**差异化**提示词（＝几个任务）；
  *  - `board_total`：板上 total＝同一条提示词出几版；
  *  - 真实投板量 = 文案数 × n × board_total。
- * 号池实测 ≈120 条/日，产能不做硬限（11-03 拍板），但建单当场就把「今天已经吃掉多少」摆出来。
  * 钩子编号只能从 hook_id.py 取号带进来，前端不生成、后端不编号。
  */
 const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, onClose, onDone, onProduced }) => {
-  const { user } = useAuth();
-  const currentUserId = user?.id;
   /**
    * 11-11 用户口径「再重新生成的时候可以重新获取」：`picked` 是**进弹窗那一刻**的快照，
    * 而这一屏可能开着就去别的屏「覆盖重出」／「改后重提」／补了网页版提示词——稿子换了，
@@ -99,7 +94,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
   }, [open, pickedIds]);
 
   /**
-   * 取回这几条文案**当前**的稿子：一次列表读口（0 元、不动库、不占号）。
+   * 取回这几条文案**当前**的稿子：一次列表读口（0 元、不动库）。
    * 三种结果分开说，因为下一步动作不一样：
    *  - 有变化 → 换进来，子组件那段签名会自动按新稿重认参数（人填的换后值保留）；
    *  - 没变化 → 明说「还是刚才那一版」，别让人以为点了没反应；
@@ -156,7 +151,6 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
 
   const [n, setN] = useState(3);
   const [boardTotal, setBoardTotal] = useState(1);
-  const [accounts, setAccounts] = useState(1);
   const [titleCount, setTitleCount] = useState<number | undefined>(undefined);
   const [boardTag, setBoardTag] = useState('');
   /**
@@ -217,7 +211,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
 
   // 批 M（评审二·P1-4）：Modal destroyOnClose 只销毁子树，本组件的 state 跨开合残留——
   // cardIds/codeText 这类"上一单填的"会 silently 落到下一单上。
-  // 打开时统一归零；n/boardTotal/accounts 这类"上一批怎么配的"保留——批量开单时是顺手的好默认。
+  // 打开时统一归零；n/boardTotal 这类"上一批怎么配的"保留——批量开单时是顺手的好默认。
   useEffect(() => {
     if (!open) return;
     setSubmitIntent('dispatch');
@@ -324,7 +318,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
       placement: 'topRight',
       duration: notes.length ? 0 : 10,
       style: { width: 460 },
-      message: `生产单已建好：${ids.length} 张（本批 ≈${res.board.planned_rows} 条额度）`,
+      message: `生产单已建好：${ids.length} 张（本批 ${res.board.planned_rows} 个板任务）`,
       description: (
         <Space direction="vertical" size={2}>
           <Text style={{ fontSize: 12 }}>
@@ -404,21 +398,10 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
       }
     }
     try {
-      // A′（2026-11-08 定稿）：跨人确认改**会话级一次性**——同一条候选本会话确认过一次
-      // （sessionStorage 记账）就不再弹；换会话/新候选仍会问那一句（知情不能省）。
-      // 谁投账算谁（生产单记实际投产人，候选过审人进 strict 审计）。
-      const crossIds = summaries
-        .filter((s) => s.reviewed_by && s.reviewed_by !== currentUserId)
-        .map((s) => s.id);
-      const allRemembered =
-        crossIds.length > 0 && crossIds.every((id) => sessionStorage.getItem(`xowner:${id}`) === '1');
-      const markRemembered = () => crossIds.forEach((id) => sessionStorage.setItem(`xowner:${id}`, '1'));
-      const doProduce = (confirmed: boolean) =>
-        assetApi.produce({
+      const res = await assetApi.produce({
           summary_ids: summaries.map((s) => s.id),
           n,
           board_total: boardTotal,
-          accounts,
           recommended_title_count: titleCount,
           board_tag: boardTag || undefined,
           card_asset_ids: cardIds.length ? cardIds : undefined,
@@ -436,16 +419,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
             params.filled.length && Object.keys(params.baseBySummary).length ? params.baseBySummary : undefined,
           element_mode: params.filled.length ? params.mode : undefined,
           async_mode: true,
-          cross_person_confirm: confirmed || allRemembered || undefined,
         });
-      const res = (allRemembered
-        ? await doProduce(true)
-        : await withCrossOwnerConfirm(async (confirmed) => {
-            const r = await doProduce(confirmed);
-            if (r && confirmed) markRemembered();
-            return r;
-          })) as AssetProduceResponse;
-      if (!res) return; // 取消了「替他人投产」确认：什么都不做
       if (isAssetJobAck(res)) {
         // 叫一声让顶部横幅立刻登记这条活：人中途关窗后由横幅接住结果
         nudgeAssetJobBanner();
@@ -551,26 +525,10 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
             <Descriptions.Item label="板上的归属标记">{result.board.tag}</Descriptions.Item>
             <Descriptions.Item label="板上的建任务时间（系统生成）">{result.board.date}</Descriptions.Item>
             <Descriptions.Item label="出片规格">{result.board.output}</Descriptions.Item>
-            <Descriptions.Item label="预计要跑几天">
-              {result.capacity_hint.days} 天（{result.capacity_hint.account_count} 个号 × 每号每日 {result.capacity_hint.per_account_per_day} 条）
-            </Descriptions.Item>
-            {/* 用户口径 2026-11-09：暂不设上限/预警，只报数 */}
-            <Descriptions.Item label="当日投板量">
-              今天已排 {result.dispatch.today.board_rows} 条
-            </Descriptions.Item>
-            <Descriptions.Item label="今天投板情况" span={2}>
-              已投出 {result.dispatch.today.dispatched} 条｜成功 {result.dispatch.today.succeeded} 条｜失败 {result.dispatch.today.failed} 条
-              {result.dispatch.today.note && (
-                <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                  {result.dispatch.today.note}
-                </Text>
-              )}
-            </Descriptions.Item>
           </Descriptions>
 
-          {/* 批 O/P（11-10）：这批是换皮扇出来的话必须在这里说清两件事——
-              「多出来的张数不花模型钱」和「每张照样各占一个号、一条当天额度」。
-              少说一句，一线就会以为 20 张＝花了 20 次的钱，或者以为不占额度。 */}
+          {/* 批 O/P（11-10）：这批是换皮扇出来的话必须说明——多出来的张数不再花模型钱，
+              但每张仍需要一个钩子编号。 */}
           {!!result.element_fanout?.rows_per_copy && (
             <Alert
               type="info"
@@ -586,7 +544,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
                       .join('｜')}
                   </Text>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    换词是在展开好的那份稿子上做的，多出来的张数不再花模型钱；但每张各占一个钩子编号、各吃一条当天额度。
+                    换词是在展开好的那份稿子上做的，多出来的张数不再花模型钱；每张仍需要一个钩子编号。
                   </Text>
                   {(result.element_fanout.skipped || []).map((s, i) => (
                     <Text key={`${s.code}-${i}`} type="danger" style={{ fontSize: 12 }}>
@@ -764,22 +722,16 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
             />
           )}
           <Space wrap size={16}>
-            <Tooltip title="N＝一条过审文案派生出几条不同写法的提示词（差异化换皮）。文案数 × N × 每份出几版 ＝ 本批总条数，号也按这个数烧——拿不准就填 1">
+            <Tooltip title="N＝一条过审文案派生出几条不同写法的提示词（差异化换皮）。文案数 × N × 每份出几版 ＝ 本批板任务数，拿不准就填 1">
               <span>
                 <Text>N 每条文案派生份数：</Text>
                 <Input type="number" min={1} max={10} style={{ width: 80, marginLeft: 6 }} value={n} onChange={(e) => setN(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} />
               </span>
             </Tooltip>
-            <Tooltip title="板上的 total＝同一条提示词出几版（1..20）。和 N 是两回事，弄混会白花 N×total 的量">
+            <Tooltip title="板上的 total＝同一条提示词出几版（1..20）。和 N 是两回事，本批板任务数按 N×total 计算">
               <span>
                 <Text>每份出几版：</Text>
                 <Input type="number" min={1} max={20} style={{ width: 80, marginLeft: 6 }} value={boardTotal} onChange={(e) => setBoardTotal(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} />
-              </span>
-            </Tooltip>
-            <Tooltip title="本批占用的豆包发布号数量，号池按天折算额度（一本账不分人）。拿不准就保持 1——多填不会更快出片，只会多吃额度">
-              <span>
-                <Text>豆包号数（折算天数）：</Text>
-                <Input type="number" min={1} max={50} style={{ width: 80, marginLeft: 6 }} value={accounts} onChange={(e) => setAccounts(Math.max(1, Number(e.target.value) || 1))} />
               </span>
             </Tooltip>
             <Tooltip title="K＝这部剧发布账号的数量，决定推荐视频标题给几条（现在不再固定 5 条）">
@@ -812,8 +764,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
             {/* 11-10 用户口径「钩子编号这个也自动取了，不要人工参与」：
                 这一屏不再有"贴号"这一步。号的两条来源都在后端：文案名下预取的那份
                 （开单当场顶槽），加上**点提交那一刻**向取号命令现取的差额。
-                ⚠️ 取号必须压在提交那一刻，不能开屏就取：号一发就烧掉，人只是打开看看
-                又把窗关了，那几个号就白废了（原来那颗「代取 N 个号」就是这么烧号的）。 */}
+                必须压在提交那一刻：提前取号会占用钩子编号，打开看看又关窗会造成浪费。 */}
             <Space wrap size={6}>
               <Text>钩子编号（本单共需 {needCodes} 个，自动取，不用你填）</Text>
               {parkedCodes.length > 0 && (
@@ -948,7 +899,7 @@ const ProduceOrderModal: React.FC<Props> = ({ open, summaries: picked, isAdmin, 
             <Alert
               type="info"
               showIcon
-              message={`出片恒 10.08s / 720×1280；本批 ${plannedRows} 条计入当日额度（≈120 条/日，只报数不拦）`}
+              message={`出片恒 10.08s / 720×1280；本批 ${plannedRows} 个板任务`}
             />
           </Tooltip>
           <MonoText>{summaries.map((s) => s.asset_code || s.id.slice(0, 8)).join(' · ')}</MonoText>

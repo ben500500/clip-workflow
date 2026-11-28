@@ -20,6 +20,7 @@ import {
 } from '../components/assets/deskNotify';
 import { assetApi, type AssetJobInfo, type UiPreferences } from '../api/assets';
 import SimpleLibrary from '../components/assets/simple/SimpleLibrary';
+import { formatDateTime } from '../utils/format';
 
 const { Text, Paragraph } = Typography;
 
@@ -469,6 +470,7 @@ const AssetLibrary: React.FC = () => {
           dispatchIds={dispatchIds}
           dispatchNotes={dispatchNotes}
           onGoToOutputs={() => setActiveTab('outputs')}
+          onDispatched={() => setReloadToken((n) => n + 1)}
           onDispatchConsumed={() => {
             setDispatchIds(null);
             setDispatchNotes([]);
@@ -490,7 +492,10 @@ const AssetLibrary: React.FC = () => {
           ownerDefault={scopeMine ? 'me' : 'all'}
           ownerSwitchable={canReview}
           active={activeTab === 'outputs'}
-          canCancel={role === 'admin' || role === 'operator'}
+          canCancel={canProduce}
+          canCancelOthers={role === 'admin' || role === 'operator'}
+          currentUserId={user?.id ?? null}
+          includeCreating
           onGoToProduction={() => setActiveTab('production')}
         />
       ),
@@ -614,7 +619,8 @@ const AssetLibrary: React.FC = () => {
           canImport={canProduce}
           canProduce={canProduce}
           canReview={canReview}
-          canCancel={role === 'admin' || role === 'operator'}
+          canCancel={canProduce}
+          canCancelOthers={role === 'admin' || role === 'operator'}
           isAdmin={isAdmin}
           userId={user?.id ?? null}
           reloadToken={reloadToken}
@@ -749,7 +755,7 @@ const AssetLibrary: React.FC = () => {
           dataSource={auditRows}
           pagination={{ pageSize: 20, showSizeChanger: false }}
           columns={[
-            { title: '时间', dataIndex: 'created_at', width: 150, render: (v: string) => (v || '').replace('T', ' ').slice(0, 19) },
+            { title: '时间', dataIndex: 'created_at', width: 150, render: (v: string) => formatDateTime(v) },
             { title: '操作人', dataIndex: 'operator_name', width: 110 },
             { title: '动作', dataIndex: 'action', width: 210 },
             { title: '对象', key: 'target', width: 170, render: (_: unknown, r: Record<string, unknown>) => `${r.target_type ?? ''} ${(r.target_id as string ?? '').slice(0, 13)}` },

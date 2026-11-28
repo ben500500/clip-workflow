@@ -21,6 +21,7 @@ import {
   CloseCircleOutlined,
   DownOutlined,
   DownloadOutlined,
+  LoadingOutlined,
   PlayCircleOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
@@ -36,6 +37,7 @@ import {
   type AssetOutputsAwaiting,
 } from '../../api/assets';
 import { boardStatusText } from './AssetBits';
+import { formatDateTime, parseServerTime } from '../../utils/format';
 
 const { Text } = Typography;
 
@@ -335,7 +337,7 @@ const OutputGrid: React.FC<{
                       <Tag style={{ fontSize: 11, lineHeight: '18px', marginInlineEnd: 0 }}>未验</Tag>
                     )}
                     {o.downloaded_at && (
-                      <Tooltip title={`素材库内下载于 ${o.downloaded_at.slice(0, 16).replace('T', ' ')}`}>
+                      <Tooltip title={`素材库内下载于 ${formatDateTime(o.downloaded_at)}`}>
                         <Tag color="blue" style={{ fontSize: 11, lineHeight: '18px', marginInlineEnd: 0 }}>
                           已下载
                         </Tag>
@@ -493,10 +495,25 @@ const InflightStrip: React.FC<{
   active?: boolean;
   reloadToken?: number;
   canCancel?: boolean;
+  canCancelOthers?: boolean;
+  currentUserId?: string | null;
+  includeCreating?: boolean;
   onGoToProduction?: () => void;
-}> = ({ owner, ownerId, batchId, active = true, reloadToken, canCancel = false, onGoToProduction }) => {
+}> = ({
+  owner,
+  ownerId,
+  batchId,
+  active = true,
+  reloadToken,
+  canCancel = false,
+  canCancelOthers = true,
+  currentUserId,
+  includeCreating = false,
+  onGoToProduction,
+}) => {
   const [data, setData] = useState<AssetInflightResult | null>(null);
   const [stale, setStale] = useState(false);
+  const [showOlderFailed, setShowOlderFailed] = useState(false);
   // 删单成功后就地移除；ref 同时挡住删单前发出的旧 GET 回写，避免刷新失败或竞态把卡复活。
   const removedRef = useRef<Set<string>>(new Set());
   const requestRef = useRef(0);
@@ -504,7 +521,13 @@ const InflightStrip: React.FC<{
   const fetchInflight = useCallback(async () => {
     const requestId = ++requestRef.current;
     try {
-      const res = await assetApi.listInflightOutputs({ owner, owner_id: ownerId || undefined, batch_id: batchId });
+      const res = await assetApi.listInflightOutputs({
+        owner,
+        owner_id: ownerId || undefined,
+        batch_id: batchId,
+        include_creating: includeCreating || undefined,
+        include_older_failed: showOlderFailed || undefined,
+      });
       if (requestId !== requestRef.current) return;
       const hidden = res.items.filter((i) => removedRef.current.has(i.production_id));
       const hiddenFailed = hidden.filter((i) => i.bucket === 'failed').length;
@@ -521,7 +544,7 @@ const InflightStrip: React.FC<{
       // 别 toast——它在 20 秒轮里，失败刷屏比不显示更糟。
       if (requestId === requestRef.current) setStale(true);
     }
-  }, [owner, ownerId, batchId]);
+  }, [owner, ownerId, batchId, includeCreating, showOlderFailed]);
 
   const removeCard = useCallback((productionId: string) => {
     removedRef.current.add(productionId);
@@ -550,31 +573,57 @@ const InflightStrip: React.FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken]);
 
-  // 自刷：只在「页签在前台 ＆ 确有单子要等」时轮，全回片＋全终态就停轮，不空转。
+  // 自刷：投板刚受理时空窗先用 2 秒补查一分钟，避免异步任务尚未 queued 时永久停在空列表；
+  // 之后有在途单继续 20 秒轮询，全终态且无新投板则停止。只查本地生产单，不打企微后台。
   const shown = data?.items.length ?? 0;
+  const recentDispatchAt = useRef(reloadToken ? Date.now() : 0);
+  const lastReloadToken = useRef(reloadToken);
   useEffect(() => {
-    if (!active || !shown) return undefined;
-    const timer = setInterval(() => {
-      if (!document.hidden) fetchInflight();
-    }, 20000);
-    return () => clearInterval(timer);
-  }, [active, shown, fetchInflight]);
+    if (reloadToken !== lastReloadToken.current) {
+      lastReloadToken.current = reloadToken;
+      recentDispatchAt.current = Date.now();
+    }
+  }, [reloadToken]);
+  useEffect(() => {
+    if (!active) return undefined;
+    if (!shown && Date.now() - recentDispatchAt.current >= 60000) return undefined;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (!shown && Date.now() - recentDispatchAt.current >= 60000) return;
+      if (!document.hidden) await fetchInflight();
+      if (stopped) return;
+      const delay = Date.now() - recentDispatchAt.current < 60000 ? 2000 : 20000;
+      timer = setTimeout(poll, delay);
+    };
+    timer = setTimeout(poll, Date.now() - recentDispatchAt.current < 60000 ? 1000 : 20000);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [active, shown, fetchInflight, reloadToken]);
 
   // 页签隐藏时连同 Popconfirm portal 一起卸载，避免未确认弹窗跨页签残留。
   if (!active) return null;
 
   if (!shown) {
-    // 读失败时墙上可能少摆几条在途——宁可说一句「没查到」，也别静默消失让人以为没投。
-    return stale ? (
-      <Text type="secondary" style={{ fontSize: 12 }}>
-        在途投放的进度这一次没查到（不影响下面已回收的成片；已删单不会复活）。
-      </Text>
-    ) : null;
+    const failedOlder = data?.failed_older ?? 0;
+    if (!failedOlder) {
+      // 读失败时墙上可能少摆几条在途——宁可说一句「没查到」，也别静默消失让人以为没投。
+      return stale ? (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          在途投放的进度这一次没查到（不影响下面已回收的成片；已删单不会复活）。
+        </Text>
+      ) : null;
+    }
   }
 
   const slowAfter = data?.slow_after_minutes ?? 45;
   const generating = (data?.items || []).filter((i) => i.bucket !== 'failed');
+  const creating = generating.filter((i) => i.status === 'order_ready');
+  const onBoard = generating.filter((i) => i.status !== 'order_ready');
   const failed = (data?.items || []).filter((i) => i.bucket === 'failed');
+  const failedOlder = data?.failed_older ?? 0;
   const gridStyle: React.CSSProperties = {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(168px, 1fr))',
@@ -590,10 +639,18 @@ const InflightStrip: React.FC<{
       {generating.length > 0 && (
         <>
           <Space size={8} wrap style={{ marginBottom: 8 }}>
-            <Text strong style={{ fontSize: 13 }}>
-              <SyncOutlined spin style={{ marginRight: 4, color: '#1677ff' }} />
-              豆包正在生成中（{data?.inflight_total ?? generating.length} 张）
-            </Text>
+            {creating.length > 0 && (
+              <Text strong style={{ fontSize: 13 }}>
+                <LoadingOutlined spin style={{ marginRight: 4, color: '#1677ff' }} />
+                正在创建豆包任务（{creating.length} 张）
+              </Text>
+            )}
+            {onBoard.length > 0 && (
+              <Text strong style={{ fontSize: 13 }}>
+                <SyncOutlined spin style={{ marginRight: 4, color: '#1677ff' }} />
+                豆包正在生成中（{onBoard.length} 张）
+              </Text>
+            )}
             <Tooltip title="这些单子已经投上企微后台的任务板、正在豆包那边出片。片子和三视图都还在豆包手里，所以这里只有占位、没有画面——回收回来会自动变成下面的成片卡。进度取自己库里的投板台账，不另外调用后台、不花钱。">
               <Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>
                 约 25 分钟回片，回来自动摆到下面的墙上
@@ -614,8 +671,11 @@ const InflightStrip: React.FC<{
             {generating.map((p) => {
               const mins = p.minutes_since_dispatch;
               const overdue = mins != null && mins >= slowAfter;
-              const statusText =
-                boardStatusText(p.board_last_status) || (p.status === 'running' ? '出片中' : '已投板，排队中');
+              const making = p.status === 'order_ready';
+              const canDelete = canCancel && (canCancelOthers || (!!currentUserId && p.owner_id === currentUserId));
+              const statusText = making
+                ? '正在创建豆包任务'
+                : boardStatusText(p.board_last_status) || (p.status === 'running' ? '出片中' : '已投板，排队中');
               return (
                 <div
                   key={p.production_id}
@@ -643,9 +703,9 @@ const InflightStrip: React.FC<{
                         textAlign: 'center',
                       }}
                     >
-                      <SyncOutlined spin style={{ fontSize: 20 }} />
+                      {making ? <LoadingOutlined spin style={{ fontSize: 20 }} /> : <SyncOutlined spin style={{ fontSize: 20 }} />}
                       <Text style={{ fontSize: 12, color: overdue ? '#d46b08' : '#8c8c8c' }}>
-                        {overdue ? '比平时久，还没回片' : statusText}
+                        {making ? '正在创建豆包任务' : overdue ? '比平时久，还没回片' : statusText}
                       </Text>
                       {p.board_name && (
                         <Text type="secondary" style={{ fontSize: 11 }} ellipsis>
@@ -665,7 +725,7 @@ const InflightStrip: React.FC<{
                         padding: '1px 6px',
                       }}
                     >
-                      {mins == null ? '—' : mins < 60 ? `投出 ${mins} 分` : `投出 ${(mins / 60).toFixed(1)} 时`}
+                      {making ? '刚提交' : mins == null ? '—' : mins < 60 ? `投出 ${mins} 分` : `投出 ${(mins / 60).toFixed(1)} 时`}
                     </div>
                   </div>
                   <div style={{ padding: '6px 8px 8px' }}>
@@ -703,17 +763,19 @@ const InflightStrip: React.FC<{
                     </Space>
                     <div>
                       <Text type="secondary" style={{ fontSize: 11 }}>
-                        {overdue
-                          ? `投出 ${mins ?? '?'} 分，已过常规出片窗口——去生产单看板面卡在哪`
-                          : p.board_last_check_at
-                            ? `板面查于 ${p.board_last_check_at.slice(11, 16)}`
-                            : '投板后台还没跑第一轮回读'}
+                        {making
+                          ? '生产单已收下，正在后台创建豆包任务；创建好会自动切换成“出片中”'
+                          : overdue
+                            ? `投出 ${mins ?? '?'} 分，已过常规出片窗口——去生产单看板面卡在哪`
+                            : p.board_last_check_at
+                              ? `板面查于 ${formatDateTime(p.board_last_check_at)}`
+                              : '投板后台还没跑第一轮回读'}
                       </Text>
                     </div>
                     {/* 批 Y（11-25「超时生成的豆包素材删不掉」）：超时死单的人工删单口。
                         只把在途占位置 cancelled，不动桶里文件——片子还在豆包手里。
                         后端只收 queued/running，改判待重写的单在这删会 409，按钮就不摆。 */}
-                    {canCancel && (p.status === 'queued' || p.status === 'running') && (
+                    {canDelete && (p.status === 'order_ready' || p.status === 'queued' || p.status === 'running') && (
                       <div>
                         <Popconfirm
                           title="删掉这张在途单？"
@@ -750,8 +812,8 @@ const InflightStrip: React.FC<{
       )}
 
       {/* ── 失败：板面判了／人工改判了（用户 11-25 点的正是「失败/超时也要标出来」）──
-          这里可删单（failed→cancelled）但不能重投；删单保留原失败成因、审计和号池消耗，
-          重投仍回生产单面板做，避免在墙上重复烧号。 */}
+          这里可删单（failed→cancelled）但不能重投；删单保留原失败成因和审计，
+          重投仍回生产单面板做，避免在墙上重复发起生产。 */}
       {failed.length > 0 && (
         <div style={{ marginTop: generating.length ? 12 : 0 }}>
           <Space size={8} wrap style={{ marginBottom: 8 }}>
@@ -761,17 +823,12 @@ const InflightStrip: React.FC<{
               {(data?.failed_total ?? 0) > failed.length ? `，共 ${data?.failed_total} 张` : ''}）
             </Text>
             <Tooltip
-              title={`只摆最近 ${data?.failed_window_hours ?? 24} 小时判失败的单子。更早的失败账还在生产单面板里（按状态筛 failed），不堆在墙顶——失败行是永久累积的，全摆两周后这屏就没人看了。`}
+              title={`默认只摆最近 ${data?.failed_window_hours ?? 24} 小时判失败的单子；更早的失败可以展开查看和删除，台账仍保留。`}
             >
               <Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>
                 成因写在卡上；重投要回生产单点名
               </Text>
             </Tooltip>
-            {(data?.failed_older ?? 0) > 0 && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                另有 {data?.failed_older} 张更早的失败没摆在这里
-              </Text>
-            )}
             {stale && (
               <Text type="secondary" style={{ fontSize: 12 }}>
                 （最近一次刷新没成功；已删掉的失败单不会重新出现）
@@ -779,7 +836,9 @@ const InflightStrip: React.FC<{
             )}
           </Space>
           <div style={gridStyle}>
-            {failed.map((p) => (
+            {failed.map((p) => {
+              const canDelete = canCancel && (canCancelOthers || (!!currentUserId && p.owner_id === currentUserId));
+              return (
               <div
                 key={p.production_id}
                 style={{ border: '1px solid #ffccc7', borderRadius: 8, overflow: 'hidden', background: '#fff' }}
@@ -842,7 +901,7 @@ const InflightStrip: React.FC<{
                       {boardStatusText(p.board_last_status) || '投板失败'}
                     </Tag>
                     {(p.attempts || 0) > 1 && (
-                      <Tooltip title={`已经自动重启过 ${p.attempts - 1} 次仍失败：再重投要先看成因，别连着烧号池`}>
+                      <Tooltip title={`已经自动重启过 ${p.attempts - 1} 次仍失败：再重投要先看成因，避免重复生成`}>
                         <Tag color="orange" style={{ fontSize: 11, lineHeight: '18px', marginInlineEnd: 0 }}>
                           重试 {p.attempts - 1} 次仍失败
                         </Tag>
@@ -856,18 +915,18 @@ const InflightStrip: React.FC<{
                   </Space>
                   <div>
                     <Text type="secondary" style={{ fontSize: 11 }}>
-                      {p.error ? '成因见卡上；重投＝再占一次当天号池' : '没写成因，去生产单补一句为什么废'}
+                      {p.error ? '成因见卡上；重投前先确认是否真的需要重投' : '没写成因，去生产单补一句为什么废'}
                     </Text>
                   </div>
                   {/* 11-26 用户口径「失败的豆包投产任务还是没法删除」：红卡也给删单口。
-                      与灰卡同一后端动作（failed→cancelled），卡片消失但失败成因/审计/号池消耗保留。 */}
-                  {canCancel && (
+                      与灰卡同一后端动作（failed→cancelled），卡片消失但失败成因和审计记录保留。 */}
+                  {canDelete && (
                     <div>
                       <Popconfirm
                         title="删掉这张失败单？"
                         description={
                           <div style={{ maxWidth: 280 }}>
-                            只把这张失败卡从墙上移除；台账会改为已作废，原失败成因、操作人和当天已消耗的号池仍保留，可查审计。
+                            只把这张失败卡从墙上移除；台账会改为已作废，原失败成因、操作人和审计记录仍保留，可查审计。
                           </div>
                         }
                         okText="删掉失败单"
@@ -891,8 +950,20 @@ const InflightStrip: React.FC<{
                   )}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
+        </div>
+      )}
+
+      {(failedOlder > 0 || showOlderFailed) && (
+        <div style={{ marginTop: failed.length ? 8 : 0 }}>
+          <Button
+            size="small"
+            onClick={() => setShowOlderFailed((v) => !v)}
+          >
+            {showOlderFailed ? '收起更早的失败单' : `展开更早的失败单（${failedOlder} 张）`}
+          </Button>
         </div>
       )}
     </div>
@@ -917,8 +988,13 @@ const AssetOutputWall: React.FC<{
   ownerSwitchable?: boolean;
   /** A′ UX：页签切回来自动刷新 */
   active?: boolean;
-  /** 与后端删单权限同口径：仅 operator/admin。 */
+  /** 是否有删单入口；operator/admin 可删全部，material 只能删自己的。 */
   canCancel?: boolean;
+  /** 是否能删他人生产单（operator/admin）。 */
+  canCancelOthers?: boolean;
+  currentUserId?: string | null;
+  /** 极简模式：提交后先显示「正在创建豆包任务」占位卡。 */
+  includeCreating?: boolean;
   /** 11-10：空态里「去看生产单」的一跳（切到 ④ 页签），由页面层传 */
   onGoToProduction?: () => void;
 }> = ({
@@ -928,6 +1004,9 @@ const AssetOutputWall: React.FC<{
   ownerSwitchable = false,
   active = true,
   canCancel = false,
+  canCancelOthers = true,
+  currentUserId,
+  includeCreating = false,
   onGoToProduction,
 }) => {
   // 11-13 用户口径：五板块内嵌动画——本面板＝挑片/交付链路
@@ -1085,10 +1164,10 @@ const AssetOutputWall: React.FC<{
     const unsent = awaiting?.order_ready_not_dispatched ?? 0;
     const lastAt = awaiting?.last_output_at || '';
     const parts: string[] = [];
-    if (unsent) parts.push(`有 ${unsent} 张单只建好还没投板——建单不占号也不出片，要在「生产单与投板」点「投去出片」才算投出去`);
+    if (unsent) parts.push(`有 ${unsent} 张单只建好还没投板——建单不新建板任务也不出片，要在「生产单与投板」点「投去出片」才算投出去`);
     if (waiting) parts.push(`${waiting} 张已经投板、正在豆包那边出片，回收回来会自动摆在这里`);
     if (!parts.length && lastAt) {
-      parts.push(`这个口径下最近一次回收到成片是 ${lastAt.slice(5, 16).replace('T', ' ')}`);
+      parts.push(`这个口径下最近一次回收到成片是 ${formatDateTime(lastAt)}`);
     }
     if (!parts.length && !lastAt) {
       parts.push('还没有回收过成片：先去「生产单与投板」开单投板，片子回来就摆在这里');
@@ -1238,6 +1317,9 @@ const AssetOutputWall: React.FC<{
         active={active}
         reloadToken={reloadToken}
         canCancel={canCancel}
+        canCancelOthers={canCancelOthers}
+        currentUserId={currentUserId}
+        includeCreating={includeCreating}
         onGoToProduction={onGoToProduction}
       />
 
@@ -1303,7 +1385,7 @@ const AssetOutputWall: React.FC<{
                   <Tag color="blue">{g.count} 条</Tag>
                   {g.latest_at && (
                     <Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>
-                      最近 {g.latest_at.slice(5, 16).replace('T', ' ')}
+                      最近 {parseServerTime(g.latest_at)?.format('MM-DD HH:mm') || '-'}
                     </Text>
                   )}
                   {open ? <DownOutlined style={{ color: '#999' }} /> : <RightOutlined style={{ color: '#999' }} />}

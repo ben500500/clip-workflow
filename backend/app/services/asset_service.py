@@ -33,11 +33,6 @@ PROMPT_MAX_DURATION_TIERS = (60, 180, 300, 600)
 # 默认档位：**不允许默认 600**（100 条误选 600 档一次烧 32.4 元，采集席位硬性反对过）
 DEFAULT_PROMPT_MAX_DURATION = 180
 
-# 豆包产能口径（2026-10-27 实测，见 short-drama-hook-writer SKILL.md:44）：
-# 单号 2~4 条/日，排产按每号约 3 条规划。瓶颈是**额度不是工时**。
-DOUBAO_PER_ACCOUNT_PER_DAY = 3
-
-
 # ─────────────────────────  链接归一化（跨批次去重键）  ─────────────────────────
 
 # 明确只影响分享来源/埋点的参数前缀与精确键：命中即从去重键里剔除。
@@ -255,27 +250,6 @@ def budget_gate(
     note = None if balance is not None else "余额查询未成功，本批按预估放行，请事后对账"
     return {"allowed": True, "level": "ok", "reason": None, "note": note,
             "estimate": estimate, "balance": balance}
-
-
-def estimate_production_days(
-    count: int, account_count: int, per_account_per_day: Optional[int] = None
-) -> Dict[str, Any]:
-    """按号池把"生产数量 N"折成天数（瓶颈是额度不是工时）。
-
-    `per_account_per_day` 由调用方传 `settings.ASSET_DOUBAO_PER_ACCOUNT_PER_DAY`
-    （B 组：那格配置原先无人读，改配置不生效；本层保持不 import config，纯函数好测）。
-    """
-    per_day_unit = max(1, int(per_account_per_day or DOUBAO_PER_ACCOUNT_PER_DAY))
-    accounts = max(1, int(account_count or 1))
-    per_day = max(1, accounts * per_day_unit)
-    n = max(0, int(count))
-    return {
-        "count": n,
-        "account_count": accounts,
-        "per_account_per_day": per_day_unit,
-        "capacity_per_day": per_day,
-        "days": -(-n // per_day),  # 向上取整
-    }
 
 
 # ─────────────────────────  图片素材入库（11-04 拍板③ / 11-05 批 G）  ─────────────────────────
@@ -1012,7 +986,7 @@ def board_timestamp(now: Optional[datetime] = None, tz_offset_hours: int = 8) ->
 
     两条实测教训都落在这里：
     1. 只写日期（或让前端传）→ 接口照样返回 succ，但 `info?date=` 按任何日期都查不到，
-       额度白烧、成片永久取不回（1021 那次 120 条）。
+       任务无法自动回收（1021 那次 120 条）。
     2. 板面按 NAS 本地时区（CST）切日，后端存 UTC —— 16:00~24:00 投放会错一天。
     所以时间由后端生成、按偏移折算成板面本地时间（naive，与板接口一致），落库为准。
     """
@@ -1164,43 +1138,6 @@ def format_output_manifest(rows: List[Dict[str, Any]]) -> str:
             f"｜{r.get('asset_code') or r.get('asset_id') or '未知'}｜第{r.get('seq')}条"
         )
     return "\n".join(lines)
-
-
-def board_capacity_hint(
-    planned: int,
-    already_today: int,
-    soft_cap: int,
-) -> Dict[str, Any]:
-    """当日投放量的软提示（B-8）：**不硬限**（用户口径「产能不限」），只把实测说清楚。
-
-    号池实测 ≈120 条/日：1023 一天叠两份量（240），其中一批 10 分钟内 115/120 全 fail；
-    1028 投 230 只到手 162（70%），90 分钟后不再增加 —— 超出 120 的那部分基本是白投。
-    正确排法是"今天 120 + 明天 120"，所以提示给的是**分日建议**，不是拒绝。
-    soft_cap<=0 视为关闭提示。
-    """
-    planned = max(0, int(planned))
-    already = max(0, int(already_today))
-    cap = int(soft_cap or 0)
-    total = already + planned
-    over = max(0, total - cap) if cap > 0 else 0
-    hint: Dict[str, Any] = {
-        "planned": planned,
-        "already_today": already,
-        "total_today": total,
-        "soft_cap": cap,
-        "over_cap": over,
-        "advisory": None,
-    }
-    if over > 0:
-        hint["advisory"] = (
-            f"今日板上已投 {already} 条，本批再加 {planned} 条 = {total} 条，"
-            f"超出号池实测 ≈{cap} 条/日约 {over} 条：超出部分预计到手率明显下降"
-            "（1028 实测 230 条只到手 162 条）。建议分日投（今天 {a} + 明天 {b}），"
-            "产能不限、可继续，只是别指望全出片。".format(
-                a=min(total, cap) - already, b=max(0, total - cap)
-            )
-        )
-    return hint
 
 
 def normalize_source_list(raw: Any) -> Tuple[List[str], List[str]]:

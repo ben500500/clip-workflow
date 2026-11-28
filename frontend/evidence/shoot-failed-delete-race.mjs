@@ -8,6 +8,8 @@ const BASE = process.env.SHOOT_BASE || 'http://127.0.0.1:5199';
 const VARIANT = process.env.FD_VARIANT || 'current';
 const OUT = `/tmp/shots-failed-delete-race${VARIANT === 'head' ? '-head' : ''}`;
 const TOK = readFileSync(process.argv.slice(2).find((arg) => !arg.startsWith('--')) || '/tmp/asset-ui-token', 'utf8').trim();
+const A = '00000000-0000-4000-8000-000000000001';
+const B = '00000000-0000-4000-8000-000000000002';
 const PORT = 9346;
 const PROFILE = '/tmp/asset-shot-profile-failed-delete-race';
 const KEY_ONLY = process.argv.includes('--key');
@@ -27,7 +29,7 @@ const results = [];
 const browserErrors = [];
 let msgId = 0;
 const assert = (name, condition, detail = '') => {
-  const item = { name, pass: !!condition, detail: flat(detail).slice(0, 500) };
+  const item = { name, pass: !!condition, detail: flat(detail).slice(0, 4000) };
   results.push(item);
   console.log(`${item.pass ? 'PASS' : 'FAIL'} ${name}${item.pass ? '' : ` — ${item.detail}`}`);
 };
@@ -75,6 +77,7 @@ async function main() {
   await send('Runtime.enable');
   await send('Network.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 2, mobile: false });
+  await send('Emulation.setTimezoneOverride', { timezoneId: 'Asia/Shanghai' });
   const js = async (expression) => {
     const response = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
     if (response.exceptionDetails) throw new Error(`JS ${JSON.stringify(response.exceptionDetails).slice(0, 300)}`);
@@ -102,15 +105,16 @@ async function main() {
   };
   const clickTestId = async (id) => js(`(() => { const e=document.querySelector('[data-testid="${id}"]'); if(!e||e.offsetParent===null)return false; e.click(); return true; })()`);
   const clickText = async (selector, text) => js(`(() => { const e=Array.from(document.querySelectorAll(${JSON.stringify(selector)})).find(x=>x.offsetParent!==null&&(x.innerText||x.textContent||'').replace(/\\s+/g,' ').trim()===${JSON.stringify(text)}); if(!e)return false; e.click(); return true; })()`);
-  const cardExpr = (needle) => `!!Array.from(document.querySelectorAll('[data-inflight] div')).find(e=>e.offsetParent!==null&&(e.getAttribute('style')||'').includes('border: 1px solid')&&e.innerText.includes(${JSON.stringify(needle)}))`;
+  const cardExpr = (needle) => `!!Array.from(document.querySelectorAll('[data-inflight] div')).find(e=>e.offsetParent!==null&&(e.getAttribute('style')||'').includes('border: 1px solid')&&e.innerText.includes(${JSON.stringify(needle)})&&!Array.from(e.querySelectorAll('div')).some(c=>(c.getAttribute('style')||'').includes('border: 1px solid')))`;
   const card = (needle) => js(cardExpr(needle));
   const wallText = () => js(`document.querySelector('[data-inflight]')?.innerText || ''`);
   const modalExpr = `!!Array.from(document.querySelectorAll('.ant-popconfirm')).find(e=>e.offsetParent!==null)`;
   const open = async (needle, label) => js(`(() => { const b=Array.from(document.querySelectorAll('button')).find(e=>{ if(e.offsetParent===null||(e.innerText||'').replace(/\\s+/g,' ').trim()!==${JSON.stringify(label)})return false; for(let p=e;p&&p!==document.body;p=p.parentElement){if((p.getAttribute('style')||'').includes('border: 1px solid')&&p.innerText.includes(${JSON.stringify(needle)}))return true;} return false;}); if(!b)return false; b.click(); return true; })()`);
   const confirm = async (label) => clickText('.ant-popconfirm button', label);
-  const gotoHarness = async (needle = '内容审核未通过：角色卡不符') => {
-    await send('Page.navigate', { url: `${BASE}/__fd/harness` });
-    return waitFor(cardExpr(needle), 'harness card');
+  const gotoHarness = async (needle = '内容审核未通过：角色卡不符', query = '') => {
+    const previousOrigin = await js('performance.timeOrigin');
+    await send('Page.navigate', { url: `${BASE}/__fd/harness${query}` });
+    return waitFor(`performance.timeOrigin !== ${previousOrigin} && document.readyState === 'complete' && ${cardExpr(needle)}`, 'harness card');
   };
   const gotoAssets = async () => {
     await send('Page.addScriptToEvaluateOnNewDocument', { source: `try{localStorage.setItem('auth_token',${JSON.stringify(TOK)})}catch{}` });
@@ -150,7 +154,7 @@ async function main() {
     assert('R2 慢 GET 在途时删第一张', await open('内容审核未通过：角色卡不符', '删掉失败单') && await waitFor(modalExpr, 'first confirm') && await confirm('删掉失败单'));
     await sleep(1700);
     const textAfterLimit = await wallText();
-    assert('R3 已删 ID 在 limit 外时 failed_total 仍精确为 1', !(await card('内容审核未通过：角色卡不符')) && await card('生成失败：隔离验收错误路径') && !textAfterLimit.includes('共 2 张'), textAfterLimit);
+    assert('R3 已删 ID 在 limit 外时 failed_total 仍精确为 1', !(await card('内容审核未通过：角色卡不符')) && await card('生成失败：隔离验收错误路径') && !textAfterLimit.includes('共 2 张'), `${textAfterLimit} ${JSON.stringify(events())}`);
     await shot('limit-outside-count');
 
     await reset('twoGenerating');
@@ -211,30 +215,58 @@ async function main() {
     if (!SKIP_TIMEOUT) {
       await reset();
       await reloadHarness();
-      await control({ posts: [{ mode: 'ok', delay: 62000 }, { mode: 'conflict', delay: 1500 }] });
+      await control({ posts: [{ mode: 'timeout', delay: 62000 }, { mode: 'ok', delay: 800 }] });
       assert('E-timeout 发出删单请求', await open('内容审核未通过：角色卡不符', '删掉失败单') && await waitFor(modalExpr, 'timeout confirm') && await confirm('删掉失败单'));
       const timedOut = await waitFor(`document.body.innerText.includes('请求超时，请稍后重试')`, 'real axios timeout', 66000);
       assert('E-timeout 60s 超时后卡片保留且不自动重发', timedOut && await card('内容审核未通过：角色卡不符') && hits().length === 1, hits().join('|'));
       await shot('error-timeout');
-      await control({ posts: [{ mode: 'conflict', delay: 1500 }] });
       assert('E-timeout 人工重试', await open('内容审核未通过：角色卡不符', '删掉失败单') && await waitFor(modalExpr, 'timeout retry') && await confirm('删掉失败单') && await waitHits(2));
-      await sleep(2500);
+      await sleep(1200);
       await clickTestId('fd-reload');
       await waitFor(`!(${cardExpr('内容审核未通过：角色卡不符')})`, 'timeout server reconciliation');
-      assert('E-timeout 重试无第三次自动请求并以真实 GET 对账', hits().length === 2 && !(await card('内容审核未通过：角色卡不符')), hits().join('|'));
+      assert('E-timeout 重试无第三次自动请求并以真实 GET 对账', hits().length === 2 && !(await card('内容审核未通过：角色卡不符')), `${hits().join('|')} ${JSON.stringify(events())}`);
     }
 
-    // material 无投产职能：权限来自 /auth/me，不是卡片状态。
-    await reset();
-    await control({ role: 'material', can_produce: false, can_review: false });
-    await gotoAssets();
-    const materialButtons = await js(`Array.from(document.querySelectorAll('button')).filter(b=>b.offsetParent!==null&&b.innerText.replace(/\\s+/g,' ').trim()==='删掉失败单').length`);
-    assert('P1 material/can_produce=false 不显示可点击删单口', materialButtons === 0 && await card('内容审核未通过：角色卡不符'), `buttons=${materialButtons}`);
-    await shot('material-no-delete');
+    // material 有投产职能：只能删本人单，不能删他人单。
+    await reset('ownership');
     await control({ role: 'material', can_produce: true, can_review: false });
-    await gotoAssets();
-    const materialProduceButtons = await js(`Array.from(document.querySelectorAll('button')).filter(b=>b.offsetParent!==null&&b.innerText.replace(/\\s+/g,' ').trim()==='删掉失败单').length`);
-    assert('P2 material 即使可投产也无审核删单权', materialProduceButtons === 0 && await card('内容审核未通过：角色卡不符'), `buttons=${materialProduceButtons}`);
+    await gotoHarness('本人失败单', '?role=material');
+    const ownOnlyButtons = await js(`Array.from(document.querySelectorAll('button')).filter(b=>b.offsetParent!==null&&b.innerText.replace(/\\s+/g,' ').trim()==='删掉失败单').length`);
+    assert('P2 material 只看到本人失败单的删单口', ownOnlyButtons === 1 && await card('他人失败单') && await open('本人失败单', '删掉失败单'), `buttons=${ownOnlyButtons}`);
+    await waitFor(modalExpr, 'material own confirm');
+    assert('P2A material 可删本人失败单', await confirm('删掉失败单') && await waitFor(`!(${cardExpr('本人失败单')})`, 'own failed removed'));
+    assert('P2B 他人失败单不受影响', await card('他人失败单') && hits().length === 1 && hits()[0].startsWith(B + ' '), hits().join('|'));
+    await shot('material-own-only-delete');
+
+    // 刚投单、任务板尚未建任务时，先出 creating 卡；上板后同一张切换为生成中。
+    await reset('empty');
+    await send('Page.navigate', { url: `${BASE}/__fd/harness` });
+    await waitFor(`document.readyState==='complete' && !!document.querySelector('[data-testid="fd-produce"]')`, 'empty harness');
+    assert('C0 投单前墙上没有占位卡', !(await card('ZZ901')));
+    assert('C1 提交后立即出现「正在创建豆包任务」', await clickTestId('fd-produce') && await waitFor(cardExpr('ZZ901'), 'creating card', 5000));
+    const creatingText = await wallText();
+    assert('C2 creating 卡有独立栏与说明', creatingText.includes('正在创建豆包任务（1 张）') && creatingText.includes('生产单已收下，正在后台创建豆包任务'), creatingText);
+    assert('C3 待投板单也可删', await open('ZZ901', '删掉这单') && await waitFor(modalExpr, 'creating cancel confirm'));
+    await clickText('.ant-popconfirm button', '再等等');
+    await waitFor(`!(${modalExpr})`, 'creating cancel closed');
+    await shot('creating-before-board');
+    await control({ transition: 'running' });
+    assert('C4 上板后自动切换为「豆包正在生成中」', await waitFor(`document.querySelector('[data-inflight]')?.innerText.includes('豆包正在生成中（1 张）')`, 'generating transition', 5000));
+    const runningText = await wallText();
+    assert('C5 creating 栏消失且显示板面回读时间', !runningText.includes('正在创建豆包任务（') && runningText.includes('板面查于 2026-11-26 16:20:00'), runningText);
+    await shot('generating-after-board-beijing-time');
+
+    // 超过 24 小时的失败单：展开后真给卡、可删，近期失败单保留。
+    await reset('historical');
+    await gotoHarness('生成失败：隔离验收错误路径', `?historical=${Date.now()}`);
+    const oldInitially = await card('24 小时前的失败单');
+    const historyText = await wallText();
+    const expanded = await js(`(() => { const e=Array.from(document.querySelectorAll('button')).find(x=>x.offsetParent!==null&&(x.innerText||'').replace(/\\s+/g,'').includes('展开更早的失败单')); if(!e)return false; e.click(); return true; })()`);
+    assert('H1 更早失败默认收起但有展开入口', !oldInitially && expanded, historyText);
+    assert('H2 展开后出现可删老失败卡', await waitFor(cardExpr('24 小时前的失败单'), 'old failed expanded') && await open('24 小时前的失败单', '删掉失败单'));
+    await waitFor(modalExpr, 'historical confirm');
+    assert('H3 老失败单可删且近期失败保留', await confirm('删掉失败单') && await waitFor(`!(${cardExpr('24 小时前的失败单')})`, 'old failed removed') && await card('生成失败：隔离验收错误路径'));
+    await shot('historical-failed-deleted');
 
     // 键盘与焦点。
     await reset();

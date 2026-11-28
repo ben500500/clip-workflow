@@ -302,15 +302,15 @@ export function ProduceGuide({ open, onClose }: { open: boolean; onClose: () => 
       open={open} onClose={onClose}
       headline="生产与投板怎么用 · 60 秒动画版"
       frameDir="/guides/panel-produce"
-      tagline="生成生产单（建单不花钱）→ 人工确认投去出片 → 机器回收 → 成片进 ⑤"
-      footnote="四档状态话术说真话——「还没投」就是只建了单、不占号也不出片"
+      tagline="生成生产单（0 元）→ 人工确认投去出片 → 机器回收 → 成片进 ⑤"
+      footnote="四档状态话术说真话——「还没投」就是只建了单、不新建板任务也不出片"
       steps={[
         {
           title: '第 1 步 · 「从过审文案开单」开窗',
           sub: '勾已过审文案、定条数 N、可选换皮参数',
           tips: [
             '「列出全部已过审的文案，勾选后生成生产单（一条文案派生 N 条差异化提示词）」',
-            'N 不是把同一条重复投 N 次——差异记在 variant_basis，产物才不会近似到白烧额度',
+            'N 不是把同一条重复投 N 次——差异记在 variant_basis，避免生成近似稿',
           ],
           cursor: [20, 300, 390, 150],
           stage: (
@@ -323,17 +323,17 @@ export function ProduceGuide({ open, onClose }: { open: boolean; onClose: () => 
         },
         {
           title: '第 2 步 · 提交窗自关，先看清状态',
-          sub: '新单是「还没投」——建单不占号也不出片',
+          sub: '新单是「还没投」——建单不新建板任务也不出片',
           tips: [
-            '「只建了单、还没投板：不占号也不出片，点『投去出片』才开始」',
-            '这一步反悔零成本：单没投，号没烧——想改就作废重建',
+            '「只建了单、还没投板：不新建板任务也不出片，点『投去出片』才开始」',
+            '这一步反悔零成本：单还没投板，想改就作废重建',
           ],
           cursor: [20, 300, 200, 110],
           stage: (
             <MockCard>
               <MockChip>order_ready</MockChip>　<MockTag color="orange" blink>还没投</MockTag>
               <div style={{ marginTop: 6, color: '#888', fontSize: 12 }}>
-                只建了单、还没投板：不占号也不出片，点「投去出片」才开始
+                只建了单、还没投板：不新建板任务也不出片，点「投去出片」才开始
               </div>
             </MockCard>
           ),

@@ -459,16 +459,30 @@ def test_entities_do_not_emit_garbage():
     assert svc.extract_entities("她在中山医院的走廊里等了三天。") == ["中山医院"]
 
 
-# ─────────────────────────  5. 产能 / 入参清洗  ─────────────────────────
+# ─────────────────────────  5. 免费投产入参契约 / 入参清洗  ─────────────────────────
 
 
-def test_capacity_is_quota_bound_not_wall_clock():
-    """排产按豆包单号 3 条/日（实测 2~4），不是按 8 小时工时算。"""
-    plan = svc.estimate_production_days(120, account_count=2)
-    assert plan["capacity_per_day"] == 6
-    assert plan["days"] == 20
-    assert svc.estimate_production_days(0, 1)["days"] == 0
-    assert svc.estimate_production_days(1, 0)["account_count"] == 1  # 号数兜底至少 1
+def test_paid_requests_have_no_cross_person_confirmation():
+    """跨人操作不再二次确认；费用确认与投板意图确认仍保留。"""
+    from app.api.assets.misc import (
+        AnalyzeRequest,
+        AssetDownloadRequest,
+        DispatchRequest,
+        ProduceRequest,
+        ResolveRequest,
+        ScriptProduceRequest,
+        SummaryGenerateRequest,
+    )
+
+    assert "accounts" not in ProduceRequest.model_fields
+    assert "confirmed" in AnalyzeRequest.model_fields
+    assert "confirmed" in ResolveRequest.model_fields
+    assert "confirm" in DispatchRequest.model_fields
+    for request_model in (
+        AnalyzeRequest, AssetDownloadRequest, DispatchRequest, ProduceRequest,
+        ResolveRequest, ScriptProduceRequest, SummaryGenerateRequest,
+    ):
+        assert "cross_person_confirm" not in request_model.model_fields
 
 
 def test_variant_basis_differs_within_first_six():
@@ -555,17 +569,6 @@ def test_hook_code_is_five_chars_and_never_invented():
     assert svc.is_valid_hook_code("7C0B31") is False
     assert svc.is_valid_hook_code("7C0B-") is False
     assert svc.is_valid_hook_code(None) is False
-
-
-def test_board_capacity_is_advisory_only():
-    """软闸门（B-8）：超 120 条只提示分日，不拒绝——用户口径是「产能不限」。"""
-    under = svc.board_capacity_hint(60, already_today=40, soft_cap=120)
-    assert under["over_cap"] == 0 and under["advisory"] is None
-    over = svc.board_capacity_hint(100, already_today=100, soft_cap=120)
-    assert over["total_today"] == 200 and over["over_cap"] == 80
-    assert "号池实测" in over["advisory"] and "分日" in over["advisory"]
-    off = svc.board_capacity_hint(500, already_today=0, soft_cap=0)
-    assert off["over_cap"] == 0 and off["advisory"] is None, "soft_cap<=0 即关闭提示"
 
 
 # ─────────────────────────  7. 展开漂移判定 + 交付形态（A3-3 / A3-1）  ─────────────────────────

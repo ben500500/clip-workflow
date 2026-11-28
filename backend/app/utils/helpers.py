@@ -346,3 +346,12 @@ def utc_iso(dt) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.isoformat()
+
+
+def board_local_iso(dt, tz_offset_hours: int = 8) -> str:
+    """企微任务板的 board_date 存的是板面本地 naive 时间，不按 UTC 解读。"""
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone(timedelta(hours=int(tz_offset_hours or 0))))
+    return dt.isoformat()

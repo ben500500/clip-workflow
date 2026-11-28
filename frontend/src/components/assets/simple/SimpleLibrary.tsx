@@ -15,7 +15,6 @@ import AssetCardPicker from '../AssetCardPicker';
 import AssetOutputWall from '../AssetOutputWall';
 import { CategorySelect, splitCategoryName, useAssetCategories } from '../AssetCategoryBits';
 import { nudgeAssetJobBanner } from '../AssetJobBanner';
-import { withCrossOwnerConfirm, withCrossPersonConfirm } from '../crossPerson';
 import ScriptEditorDrawer, { type SaveKind } from './ScriptEditorDrawer';
 import { ThumbCell, VideoPreviewModal, useCoverMap } from './SimplePreviewBits';
 import { reportVerdict } from './scriptResult';
@@ -50,7 +49,7 @@ const fmtTime = (v: string | null | undefined): string => {
 
 /**
  * 后端取号被拦下时 502 话术里钉的标记（`misc.py` 的 `_HOOK_TAKE_MARKER`），冒号后是**缺口数**。
- * 与「替他人过审候选投产」同一套做法：话术里埋机器认得的串，不让前端猜中文错误文案。
+ * 话术里埋机器认得的串，不让前端猜中文错误文案。
  */
 const HOOK_TAKE_MARK = /【需要手工贴号:(\d+)】/;
 
@@ -76,8 +75,9 @@ interface Props {
   canProduce: boolean;
   /** 审核职能＋角色：成片墙的「我的／全部」切换 */
   canReview: boolean;
-  /** 删生产单权限：与后端 _REVIEW_ROLES 同口径 */
+  /** 删生产单入口：material/operator/admin；是否能删他人另由 canCancelOthers 控制。 */
   canCancel: boolean;
+  canCancelOthers: boolean;
   isAdmin: boolean;
   /**
    * 批 T（11-24）全局「仅看自己」：true＝脚本库默认只摆「我写的＋我收藏的」（后端 owner=me 口径），
@@ -208,17 +208,18 @@ const ImportHookModal: React.FC<ImportHookModalProps> = ({
  *   这样就少一个 tab；名称不要叫"先弄到稿"，就叫"导入"」）——它是脚本库顶部的
  *   一张卡，与"收进脚本库""改稿·定稿"同屏，省掉一次页签往返。
  *
- * 只折叠界面、不旁路逻辑：导入、反推、投产、投板全走五环同一个接口；钩子号、跨人确认、
+ * 只折叠界面、不旁路逻辑：导入、反推、投产、投板全走五环同一个接口；钩子号、费用确认、
  * 风险词闸都在后端。定稿冻结／生产载体见后端 assets/misc.py 脚本库段。
  */
 const SimpleLibrary: React.FC<Props> = ({
-  canImport, canProduce, canReview, canCancel, isAdmin, scopeMine, userId, reloadToken, onOpenFullTab,
+  canImport, canProduce, canReview, canCancel, canCancelOthers, isAdmin, scopeMine, userId, reloadToken, onOpenFullTab,
 }) => {
   const cats = useAssetCategories();
   const [defaultCat, setDefaultCat] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState('');
   /** 分步页签（11-24 用户要求保留 tab 形式好分清步骤；导稿并入脚本库后只剩三步） */
   const [tab, setTab] = useState<'scripts' | 'produce' | 'outputs'>('scripts');
+  const [outputReloadToken, setOutputReloadToken] = useState(0);
 
   // ── 脚本库 ──
   // 默认**全部**（11-24 用户口径「默认是要能看到全部的」），全局开关打开才收成"我的"。
@@ -356,11 +357,10 @@ const SimpleLibrary: React.FC<Props> = ({
       void fetchHooks();
 
       // 反推＝真金白银的一步：按钮本身是那一下确认（与五环 11-12「钱面下架」后同口径）
-      const ack = await withCrossPersonConfirm((c) => assetApi.analyzeBatch({
+      const ack = await assetApi.analyzeBatch({
         asset_ids: ids, max_duration: REVERSE_TIER, confirmed: true, force: isAdmin,
-        async_mode: true, cross_person_confirm: c || undefined,
-      }));
-      if (!ack) return; // 取消了「替他人批次花钱」的确认：素材已入库，没反推
+        async_mode: true,
+      });
       if (isAssetJobAck(ack)) {
         nudgeAssetJobBanner();
         message.success(`已导入 ${ids.length} 条，反推在后台跑——出稿后点「收进脚本库」`, 7);
@@ -411,9 +411,7 @@ const SimpleLibrary: React.FC<Props> = ({
   const genHooks = async (ids: string[], overwrite: boolean) => {
     setBusy('gen');
     try {
-      const res = await withCrossPersonConfirm((c) =>
-        assetApi.generateSummaries({ asset_ids: ids, async_mode: true, overwrite, cross_person_confirm: c }));
-      if (!res) return; // 取消了「替他人批次」确认：什么都不做
+      const res = await assetApi.generateSummaries({ asset_ids: ids, async_mode: true, overwrite });
       if (isAssetJobAck(res)) {
         // 回执只有任务号：去哪儿看让横幅说，别在这里猜跑没跑完
         message.success(res.message, 8);
@@ -486,13 +484,13 @@ const SimpleLibrary: React.FC<Props> = ({
   /**
    * 批 AB-2（11-25 用户「素材库增加批量删除」）：批量删除＝批量下架，和逐行
    * 「下架」同一颗内核（软删，投过的记录留着对账）。接口 HTTP 200 ≠ 全删完——
-   * 别人的脚本删不动，逐条点名，别让人以为清干净了。
+   * 无删除权限的脚本会逐条点名，别让人以为清干净了。
    */
   const deleteRows = (rows: AssetScript[]) => {
     if (!rows.length) return;
     Modal.confirm({
       title: `删除选中的 ${rows.length} 条脚本？`,
-      content: '删除＝下架：不再出现在脚本库；投过的记录留着，对账查得到。别人写的脚本删不动，会逐条点名。',
+      content: '删除＝下架：不再出现在脚本库；投过的记录留着，对账查得到。无删除权限的脚本会逐条点名。',
       okText: '删除', okType: 'danger', cancelText: '算了',
       onOk: async () => {
         setBusy('retire');
@@ -533,14 +531,12 @@ const SimpleLibrary: React.FC<Props> = ({
 
   /** 真发一枪。`hookCodes`＝人工贴的号（只在自动取号没凑齐那一批用） */
   const runProduce = async (rows: AssetScript[], hookCodes: string[] | null) => {
-    const res = await withCrossOwnerConfirm((c) => assetApi.produceFromScripts({
+    const res = await assetApi.produceFromScripts({
       script_ids: rows.map((s) => s.id),
       board_total: boardTotal,
       card_asset_ids: cardIds.length ? cardIds : null,
-      cross_person_confirm: c,
       ...(hookCodes && hookCodes.length ? { hook_codes: hookCodes } : {}),
-    }));
-    if (!res) return false; // 取消了「替他人投产」的确认
+    });
     const sent = res.results.some((r) => r.ok);
     reportVerdict(res.results, res.message, '条投出');
     nudgeAssetJobBanner();
@@ -548,15 +544,17 @@ const SimpleLibrary: React.FC<Props> = ({
     // 批 V 需求①（11-25 用户：「投了豆包之后，豆包界面上的那些记录就可以清除了，
     // 比如说上传的三视图，或者选的文案等」）：真投出去了就把这一屏的输入擦干净——
     // 卡还挂着、版数还停在上一批的数，回到 ② 时容易当成「上一批没投完」再点一次，
-    // 而重复点这一次就是**重复占当天号池**。只在至少投出去一条时清：闸门全挡下的
+    // 而重复点这一次就是重复发起生产。只在至少投出去一条时清：闸门全挡下的
     // 那一批是要改完重投的，卡和号得留着。
     if (sent) {
       setCardIds([]);
       setBoardTotal(1);
       setHookText('');
     }
-    // 投完直接把人带到 ③：这步之后能看的只有等片，别让他在 ② 空等（11-24 分步页签）
-    if (sent) setTab('outputs');
+    if (sent) {
+      setOutputReloadToken((n) => n + 1);
+      setTab('outputs');
+    }
     return true;
   };
 
@@ -677,7 +675,7 @@ const SimpleLibrary: React.FC<Props> = ({
     },
     {
       title: (
-        <Tooltip title="收藏＝把这条挪进「仅看自己」的清单，下次能直接找到并勾去投。只是让你看得到，不代表你能改它——别人的定稿要动，打开后另存一份草稿。">
+        <Tooltip title="收藏＝把这条挪进「仅看自己」的清单，下次能直接找到并勾去投。收藏只改变可见范围，不授予修改权限；要改动请先另存为草稿。">
           <span>收藏</span>
         </Tooltip>
       ),
@@ -1122,7 +1120,7 @@ const SimpleLibrary: React.FC<Props> = ({
             <AssetCardPicker value={cardIds} onChange={setCardIds} active />
           </div>
           <Space size={8} wrap>
-            <Tooltip title={hint || '投出去占当天号池额度（一个脚本一个钩子号）；约 25 分钟出片，投完自动跳到 ③ 看成片'}>
+            <Tooltip title={hint || '一个脚本配一个钩子编号；约 25 分钟出片，投完自动跳到 ③ 看成片'}>
               <Button
                 type="primary"
                 danger
@@ -1153,11 +1151,14 @@ const SimpleLibrary: React.FC<Props> = ({
       />
       <AssetOutputWall
         key="simple-outputs"
-        reloadToken={reloadToken}
+        reloadToken={reloadToken + outputReloadToken}
         ownerDefault="all"
         ownerSwitchable={canReview}
         active={tab === 'outputs'}
         canCancel={canCancel}
+        canCancelOthers={canCancelOthers}
+        currentUserId={userId}
+        includeCreating
         onGoToProduction={() => onOpenFullTab('production')}
       />
     </Space>

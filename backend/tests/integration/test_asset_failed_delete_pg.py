@@ -480,7 +480,6 @@ async def test_dispatch_cannot_revive_production_voided_during_board_create(
                 operator=operator,
                 gate={"cross_person": None, "forced_ids": [], "forced_reason": None},
                 blocked=[],
-                capacity={"total_today": 0, "soft_cap": 240},
                 card_warnings=[],
                 recover_only=False,
             )

@@ -13,13 +13,12 @@ P0 只补三件真正缺的事（其余能力复用既有链路）：
       ② 导出 payload → 人在企微后台建任务 → `POST /assets/productions/status` 回写
          queued/running/success/failed（11-03 拍板第 4 条，这条路一直没断）。
       **两条路的闸门与状态迁移是同一套判据**（同一个 `_dispatch_gate`＋同一个 `_build_delivery`），
-      所以别在 ② 里把机器投的结果再报一遍。切片视频拼接、交付打包仍属 P1/P2。
-      号池不做硬限（产能不限），只把数报清楚。
+      所以别在 ② 里把机器投的结果再报一遍。切片视频拼接、交付打包仍属 P0/P2。
 
 生产通道（2026-11-03 用户裁决）：**企微自动化后台「创建 AI 视频」任务板**
 （`wework_aivideo`，`POST /api-g/aivideo/create`，payload 七键 tag/reqID/total/date/prompt/
-name/picDatas），不是豆包网页 RPA、也不是火山方舟 Seedance 官方 API。这条通道**不扣现金**、
-**没有时长/分辨率参数**（成片恒 10.08s / 720×1280），号池实测 ≈120 条/日。P1 前置是队列拆分：
+name/picDatas），不是豆包网页 RPA、也不是火山方舟 Seedance 官方 API。这条通道**免费**、
+**没有时长/分辨率参数**（成片恒 10.08s / 720×1280）。P1 前置是队列拆分：
 `seedance_generate_task` 现在与视频号发布抢同一个 concurrency=1 的 publish 队列，不拆就开批量
 接口生产＝发布链路一条都发不出去。
 
@@ -176,7 +175,7 @@ import app.services.asset_serializers as _asset_ser  # noqa: E402
 
 from app.api.slice_helpers import _ffprobe_duration
 from app.services.upload_service import validate_file_name
-from app.utils.helpers import utc_iso
+from app.utils.helpers import board_local_iso, utc_iso
 from wechat_download.models import PST_UPLOAD, PT_FAILED, PT_SUCCESS, WechatDlPromptTask
 from wechat_download.provider_registry import ProviderParseError, dispatch_parse
 # 批 J（11-05）：下载原片复用采集侧同一个拉流下载器（断点续传/HLS 都在里面），
@@ -295,11 +294,6 @@ class AnalyzeRequest(BaseModel):
     )
     offset: int = Field(0, ge=0, description="游标：跳过队列头部 N 条。默认 0——提交成功的条会自己离开队列")
     limit: Optional[int] = Field(None, description="本段条数，默认取 ASSET_ANALYZE_MAX_PER_CALL，上限同它")
-    cross_person_confirm: bool = Field(
-        False,
-        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）；"
-        "自己的批次不用管这个字段",
-    )
     async_mode: bool = Field(
         False,
         description="D-1：true＝闸门与成本确认全过之后当场回任务号，提交＋收敛在后台跑"
@@ -332,10 +326,6 @@ class SummaryGenerateRequest(BaseModel):
         description="D-1：true＝立即回一个任务号（后台继续跑，前端轮询 /assets/jobs/任务号），"
         "false＝同步等到模型跑完（等几十秒到十几分钟，浏览器/nginx 都可能先掐）。"
         "页面按钮走 true；脚本/回归用例保持默认",
-    )
-    cross_person_confirm: bool = Field(
-        False,
-        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）",
     )
 
 
@@ -370,10 +360,6 @@ class ResolveRequest(BaseModel):
         ),
     )
     confirmed: bool = Field(False, description="≥2 条时必须为 true（成本确认弹窗已确认）")
-    cross_person_confirm: bool = Field(
-        False,
-        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）",
-    )
 
 
 class AssetDownloadRequest(BaseModel):
@@ -386,10 +372,6 @@ class AssetDownloadRequest(BaseModel):
     async_mode: bool = Field(
         False,
         description="D-1：页面走 true 提交即回任务号；后台复跑时运行器会把它摘掉，防止无限套娃",
-    )
-    cross_person_confirm: bool = Field(
-        False,
-        description="11-06 拍板②：涉及别人导入的批次时必须为 true（界面确认「替他人批次花钱」后带上）",
     )
 
 
@@ -456,7 +438,6 @@ class ProduceRequest(BaseModel):
     n: Optional[int] = Field(None, description="每条文案派生的份数（N 份差异化提示词=N 个任务），默认 ASSET_PRODUCE_DEFAULT_N")
     duration: Optional[int] = Field(None, description="**意图字段**：板上无时长开关，成片恒 10.08s；只接受 10，更长请拆上/下集两条各 10s")
     channel: Optional[str] = Field(None, description="wework_aivideo（默认，= 企微后台 AI 视频任务板）/ doubao_rpa(deprecated) / seedance_api")
-    accounts: Optional[int] = Field(None, description="准备用几个豆包号跑（仅用于折算天数；后台派号，本系统无号池表）")
     expand: bool = Field(True, description="是否调 autoclip 按 11-02 权威模板展开成可投提示词")
     # 试产（2026-11-12 用户口径）：审核员改提示词投豆包验证预期——**不看审核态**，
     # 待审/被驳的候选正是试产主角。必须带 prompt_text（投的就是这一段，不展开）；
@@ -473,14 +454,10 @@ class ProduceRequest(BaseModel):
             "提示词与板面 name（脚本名）直落行；极简入口投产前重扫风险词 block，投板侧照扫。"
         ),
     )
-    board_total: Optional[int] = Field(None, description="板上 total＝**同一条提示词出几版**（1..20，默认 1）。与 n 是两个量，混用会白烧 n×total")
+    board_total: Optional[int] = Field(None, description="板上 total＝**同一条提示词出几版**（1..20，默认 1）。与 n 是两个量，分别控制版数与差异化任务数")
     board_tag: Optional[str] = Field(None, description="板上 tag（拥有者标记），缺省用 ASSET_BOARD_TAG；不填=无主任务、按天筛不到")
     hook_codes: Optional[List[str]] = Field(None, description="五位钩子编号（hook_id.py 取来的，按 n 的顺序对应）；后端不自己编号")
     character_card_key: Optional[str] = Field(None, description="角色卡在自有桶的 key → 板上 picDatas 来源（同剧同卡，按剧分组投）")
-    cross_person_confirm: bool = Field(
-        False,
-        description="A′ 归属跨人确认：投**别人作者或别人过审**的脚本/候选时必须 true——谁投账算谁，脚本作者与候选过审人进审计；投自己的或无主公共候选不用带",
-    )
 
     @field_validator("character_card_key")
     @classmethod
@@ -544,7 +521,7 @@ class ProduceRequest(BaseModel):
 
 
 class ProductionStatusRequest(BaseModel):
-    """投递状态回写（11-03 拍板第 4 条：号池**不做硬限**，但要知道投了多少、成多少、败多少）。
+    """投递状态回写（11-03 拍板第 4 条：不设额度限制，但要知道投了多少、成多少、败多少）。
 
     这条路是「**人工投板之后补账**」：导出 payload → 人在企微后台任务板建任务 → 回这里记账。
     11-05 批 H 起多了另一条入口 `POST /assets/productions/dispatch`（机器连板、自动回收成片），
@@ -577,7 +554,7 @@ class DispatchRequest(BaseModel):
     )
     confirm: bool = Field(
         False,
-        description="人工确认位：必须 true。投出去占的是当天号池额度，且板侧失败行没有原因字段，"
+        description="人工确认位：必须 true。板侧失败行没有原因字段，"
         "所以这一下只能由人点，不能由脚本代签",
     )
     force_risk: bool = Field(
@@ -591,16 +568,12 @@ class DispatchRequest(BaseModel):
         False,
         description="true＝**一个都不新建**，只对已有 board_tid 的单做回读＋回收下载。"
         "进程重启把在等的协程带走之后（任务台账显示已中断），用这个把片子取回来；"
-        "它不烧任何号池额度，所以不看 confirm",
+        "它不新建板任务，所以不看 confirm",
     )
     async_mode: bool = Field(
         True,
         description="默认 true：投板＝建任务＋轮询出片＋下载落桶，整段几十分钟，"
         "同步等必然顶穿超时链（前端 960s / 后端 900s）。false 只留给后台协程与回归用例",
-    )
-    cross_person_confirm: bool = Field(
-        False,
-        description="11-06 拍板②：新建板任务涉及别人导入的批次时必须为 true（回收已投的单不花钱，不用这个字段）",
     )
     card_asset_ids: Optional[List[str]] = Field(
         None,
@@ -636,7 +609,7 @@ class DispatchRequest(BaseModel):
             "11-10 批 Q（需求⑤）：这几张单回收到的**每一支豆包成片**，出片后自动和这条素材"
             "（asset_items.id）拼成一条可投放素材。传空串＝取消自动拼。"
             "当场验三段：素材存在／不是图片／桶里有文件——和图片拼会在 ffmpeg 解码时炸，"
-            "和没文件的链接素材拼会在下载那步炸，两种都要在投出去之前拦（号池已经烧了才发现"
+            "和没文件的链接素材拼会在下载那步炸，两种都要在投出去之前拦（任务建好才发现"
             "拼不了，只能重投一遍）"
         ),
     )
@@ -740,14 +713,11 @@ async def _write_audit(
         logger.exception("素材库审计写入失败 action=%s target=%s", action, target_type)
 
 
-_CROSS_MARKER = "替他人批次花钱"
-# A′：归属跨人（投别人过审的候选）的固定点名短语，前端 withCrossOwnerConfirm 靠它识别
-_CROSS_OWNER_MARKER = "替他人过审候选投产"
 # 批 U（2026-11-25）：极简屏「投豆包」被取号拦住时，502 话术带这个固定短语＋缺口数
 # （形如 `【需要手工贴号:2】`）。
 # 前端 SimpleLibrary 靠它识别「这是号没凑齐、不是别的事」，并照缺口数摆出「我自己贴号」
 # 输入框——旧写法只 toast 一句原文，一线在本地（没装配号命令）就是死路：既不知道能贴号，
-# 也不知道要贴几个。与 _CROSS_OWNER_MARKER 同一套做法（话术里埋标记，不让前端猜错误文案）。
+# 也不知道要贴几个。
 _HOOK_TAKE_MARKER = "【需要手工贴号"
 
 
@@ -768,61 +738,31 @@ async def _user_names(db: AsyncSession, uids: set) -> Dict[str, str]:
     }
 
 
-async def _cross_person_gate(
+async def _cross_person_batches(
     db: AsyncSession,
     *,
     operator: Optional[User],
     batch_ids: List[Any],
-    action_label: str,
-    confirmed: bool,
 ) -> List[dict]:
-    """11-06 拍板②：跨人批次的花钱动作先拦一道，确认后再放行并留痕。
-
-    「跨人」＝这批素材的导入人（`asset_batches.created_by`）不是本次操作者。
-    内容全量可见（11-03 拍板）不受影响——看、审、导 payload 都照旧零门槛；只有
-    **会花钱/占号池**的动作才走这里：费用记到批次成本上，替别人批次花了钱，
-    事后对账会找不到是谁的手笔。所以要么当场拦下来让人确认（400，前端弹窗），
-    要么确认后把「发起人≠批次主人」原样写进审计。批次归属未知（created_by 为空、
-    老数据）不拦——没有凭据说它跨人，就不预判。
-    """
+    """Return batch provenance for audit without blocking shared-library work."""
     ids = {b for b in batch_ids if b}
     if not ids or operator is None:
         return []
     rows = list((await db.execute(select(AssetBatch).where(AssetBatch.id.in_(ids)))).scalars().all())
-    if not rows:
-        return []
-    owner_uids = {r.created_by for r in rows if r.created_by}
-    names: Dict[str, str] = {}
-    if owner_uids:
-        for uid, dn, un in (
-            await db.execute(select(User.id, User.display_name, User.username).where(User.id.in_(owner_uids)))
-        ).all():
-            names[str(uid)] = (dn or un) or "未知（账号已删）"
+    names = await _user_names(db, {r.created_by for r in rows if r.created_by})
     op_key = str(operator.id)
-    crosses: List[dict] = []
-    for r in rows:
-        if r.created_by is None or str(r.created_by) == op_key:
-            continue
-        crosses.append({
+    return [
+        {
             "batch_id": str(r.id),
             "batch_code": r.code,
             "batch_owner_id": str(r.created_by),
             "batch_owner": names.get(str(r.created_by), "未知（账号已删）"),
             "operator_id": op_key,
             "operator": operator.username,
-        })
-    if crosses and not confirmed:
-        shown = "；".join(f"{c['batch_code']}（导入人 {c['batch_owner']}）" for c in crosses[:5])
-        more = f"（另有 {len(crosses) - 5} 批，本条只列前 5 批）" if len(crosses) > 5 else ""
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{action_label}涉及{_CROSS_MARKER}：{shown}{more}。费用会记到批次成本上，"
-                "请先确认你确实是替这位同事操作（补单/代班）；界面弹窗里点「确认替他人批次操作」"
-                "后再发一次（带 cross_person_confirm=true），这一次没有动账。"
-            ),
-        )
-    return crosses
+        }
+        for r in rows
+        if r.created_by is not None and str(r.created_by) != op_key
+    ]
 
 
 def _as_uuid(value: Any, field: str = "id") -> uuid.UUID:
@@ -1452,13 +1392,13 @@ async def list_asset_audit_logs(
 
 # ── P1（评审定稿⑦）：取号进界面——后端代理 hook_id.py（服务器脚本），保留手工旁路。
 # ASSET_HOOK_ID_CMD 未配置时 501（前端提示走手工粘贴）。命令须输出每行一个五位编号；
-# 一钩一号「发了即烧」的铁律不变：代取的号也走既有硬查重＋白名单校验。 ──
+# 一钩一号「发了即用」的铁律不变：代取的号也走既有硬查重＋白名单校验。 ──
 
 # 11-09 批 O：把「取号」下沉成界面代取与新文案自动预取共用的底层，两个坑在这里一起解决：
 #   ① `hook_id.py` 有 TAKE_MAX=50（一次最多发 50 个号），整批 85 条一口要过去 → 脚本 rc=2、
 #      一个号都拿不到（现网第一次钉 88 个号就是在服务器上分 50＋38 两枪取的）。所以分块取。
-#   ② 「发了即烧」是硬铁律：号一旦发出就记在共享台账上，后面一块失败也**不能把前面已经
-#      拿到手的号扔掉重来**——扔掉等于白烧。所以本函数返回 (已拿到的号, 失败说明)，
+#   ② 「发了即用」是硬铁律：号一旦发出就记在共享台账上，后面一块失败也**不能把前面已经
+#      拿到手的号扔掉重来**——那会浪费已发的编号。所以本函数返回 (已拿到的号, 失败说明)，
 #      而不是抛异常。调用方自己决定「够不够」。
 _HOOK_TAKE_CHUNK = 50  # 与 hook_id.py 的 TAKE_MAX 对齐；放宽只会让脚本 rc=2，改这里没用
 _HOOK_TAKE_TIMEOUT_SECONDS = 30
@@ -1470,7 +1410,7 @@ async def _take_hook_codes(count: int) -> Tuple[List[str], List[str], Optional[s
     **永不抛异常**（除非调用方自己没接住 `asyncio` 取消）：自动预取那条路上取不到号
     不该把导入整体拒掉，界面代取那条路则把 `error` 原文转成白话 502/501。
     `discarded`（超发丢弃）在 2026-11-11 评审后必须由调用方写审计——号已在共享台账
-    烧掉，系统侧「丢得无声无息」违反一切状态可追溯。
+    登记，系统侧「丢得无声无息」违反一切状态可追溯。
     """
     want = max(0, int(count))
     if want == 0:
@@ -1561,9 +1501,9 @@ async def _auto_park_hook_codes(
     - **fail-soft**：号是外部动作（脚本没配、台账锁不上、当天池子用光），任何一种都不能
       把「文案已经建好」这件事回滚掉——稿是人写的，比号金贵。所以本函数不抛 HTTPException，
       只回统计；哪条没挂上号，开单时照旧手工填或点「代取」。
-    - **不重复发号**：只给 `hook_code` 还是空的行取号（重投同一批、或已经挂过号的行不再烧号）。
+    - **不重复发号**：只给 `hook_code` 还是空的行取号（重投同一批、或已经挂过号的行不再取号）。
     - **一钩一号**：拿回来的号先对着库里两张表（`asset_productions.hook_code` /
-      `asset_summaries.hook_code`）扫一遍，撞上的号不钉（号已烧掉，界面如实报出来）。
+      `asset_summaries.hook_code`）扫一遍，撞上的号不钉（号已占用，界面如实报出来）。
 
     留痕与手工钉号口共用同一套动作名 `asset.hook_code.park`，靠 `after.source` 区分
     「自动预取」和「人工钉」；只在真钉上号时写审计，取不到号不写（同 8-9 的判据：
@@ -3419,7 +3359,7 @@ async def delete_card(
     db: AsyncSession = Depends(get_db),
 ):
     """删卡（只认卡主或 admin）。**还有生产单挂着就拒删**——删了它，那些单的投板
-    payload 会静默变成"没有画中人"，烧的是真号池；想换卡先去生产单上换。"""
+    payload 会静默变成"没有画中人"；想换卡先去生产单上换。"""
     a = await _get_card_or_404(db, card_id)
     _assert_card_owner(a, current_user)
     # card_asset_ids 是 JSON 数组，量级是"生产单总数"，删卡是偶发操作——拉一列在
@@ -4105,13 +4045,10 @@ async def analyze_batch(
             ),
         )
 
-    # 11-06 拍板②：反推是真金白银的动作，替别人批次提交前先让人确认，确认后审计留痕
-    crosses = await _cross_person_gate(
+    crosses = await _cross_person_batches(
         db,
         operator=current_user,
         batch_ids=[a.batch_id for a in todo],
-        action_label="反推提示词",
-        confirmed=data.cross_person_confirm,
     )
 
     need_upload = any(a.source_kind == SOURCE_FILE for a in todo)
@@ -4738,8 +4675,8 @@ ASSET_JOB_STATE_LABELS = {
 ASSET_JOB_DONE_NOTES = {
     JOB_ANALYZE: "反推只出稿：文案在「素材与文案」／审核台，这一步不产视频",
     JOB_SUMMARY_GENERATE: "钩子文案已出稿（还没建单、没投板）：去审核台看过审，再开单才轮到出片",
-    JOB_PROMPT_PREVIEW: "提示词只是备好的预览：没建单、没投板、不占号池",
-    JOB_PRODUCE: "生产单已建好，但还没投板（不占号也不出片）：在「生产单与投板」点「投去出片」才算投出去",
+    JOB_PROMPT_PREVIEW: "提示词只是备好的预览：没建单、没投板",
+    JOB_PRODUCE: "生产单已建好，但还没投板、不会出片：在「生产单与投板」点「投去出片」才算投出去",
     JOB_DISPATCH: (
         "投板只是把单挂上豆包任务板：出片＋回库要几十分钟，"
         "回到「生产单与投板」看行上「成片」列——从「还没收片」变成「已收 N 段」才算到手，"
@@ -4749,7 +4686,7 @@ ASSET_JOB_DONE_NOTES = {
     JOB_FRAMES: "抽帧完成：首帧摆在审核台卡片行与成片墙缩略图上",
     JOB_COMPOSE: (
         "组合导出已拼完：产物一条条摆在「成片墙」（每条一次拼接、不覆盖），"
-        "勾选后照旧走「打包下载」出包——这一步 0 元、不占号池"
+        "勾选后照旧走「打包下载」出包——这一步 0 元"
     ),
 }
 
@@ -4775,7 +4712,7 @@ def _job_endpoint(kind: str) -> Tuple[Any, Any, str]:
     if kind == JOB_DISPATCH:
         # 批 H：投板＝建任务＋轮询出片＋下载落桶，一段几十分钟的活。后台跑的仍然是
         # `/productions/dispatch` 这个口本身（confirm/闸门/审计全在里面），不另写一套——
-        # 投递闸门要是分叉成"人点的严、机器排的松"，号池额度就会替我们发现这个 bug。
+        # 投递闸门要是分叉成"人点的严、机器排的松"，同一批就会被重复建任务。
         return DispatchRequest, dispatch_productions, "投板"
     if kind == JOB_DOWNLOAD:
         # 批 J：下载原片。反推提交后自动排上（用户口径：反推默认顺带下载），
@@ -4842,12 +4779,7 @@ def _job_scope_ids(kind: str, params: Dict[str, Any]) -> List[str]:
 
 
 def _twin_cost_phrase(kind: str) -> str:
-    """重复提交烧的是**什么**——三类后台任务各不相同，别说成一句通用话。
-
-    出文案／投产烧模型费用；投板一分钱模型费不花，烧的是**当天号池额度**（1023 那次
-    叠两份量 → 115/120 成批 fail 就是这么来的）。写成"重复扣模型费用"会让一线以为
-    投板重复提交只是多花几厘钱，而它的真实代价是"同一批里几十条额度白烧、还挤掉别人的量"。
-    """
+    """按任务类型说明重复提交的代价，付费动作保留成本提示。"""
     if kind == JOB_DOWNLOAD:
         # 批 J：下载本身 0 元，但重下前要重新解析分享链接——落到付费渠道就是
         # 0.01 元/条的真金白银，外加桶里白占一份存储（桶不设过期）。
@@ -4862,13 +4794,13 @@ def _twin_cost_phrase(kind: str) -> str:
         # 一条条新增、不覆盖——重复点一次桶里就多整批一份，没人回收。
         # 所以这里不能说"不花钱随便点"，要说"不花钱但白占机器、桶里多存一份"。
         return "不花模型费，但重复占服务器转码、还在桶里多存一整批重样片子"
-    return "重复占当天号池额度" if kind == JOB_DISPATCH else "重复扣模型费用"
+    return "同一批投板任务已在运行" if kind == JOB_DISPATCH else "重复扣模型费用"
 
 
 async def _assert_no_running_twin(
     db: AsyncSession, *, kind: str, params: Dict[str, Any], batch_id: Optional[str]
 ) -> None:
-    """同一件事已经在跑就**不再起一份**——出文案/投产真花钱，投板真占号（批 H 起也有 twin 判据）。
+    """同一件事已经在跑就**不再起一份**——付费动作避免重复扣费，投板避免重复建任务。
 
     判据两档：按 id 列表提交的，比对 id 是否有交集；整批排队的（只有 batch_id），
     比对同批次同类型是否已有未结束的活。只回看 3 小时，免得一条历史卡死的活
@@ -4938,8 +4870,7 @@ async def _start_asset_job(
 
     ⚠️ 必须先 `commit` 再调度：后台协程用的是**另一个会话**，读不到本会话未提交的行；
     反过来也不能等本会话的 response 结束——那正是本口要避免的"人得干等着"。
-    `cross_person`（11-06 拍板②）：跨人批次闸门确认后的清单，原样进 submit 审计，
-    让「发起人≠批次主人」这件事在台账动作里也查得到。
+    `cross_person`：操作人与批次导入人不同时的来源清单，原样进 submit 审计。
     """
     params = data.model_dump(mode="json")
     await _lock_asset_job_scope(db, kind=kind, params=params, batch_id=batch_id)
@@ -5442,16 +5373,12 @@ async def generate_summaries(
     if not 1 <= count <= 6:
         raise HTTPException(status_code=400, detail="候选数只支持 1~6 条")
 
-    # 11-06 拍板②：跨人批次闸门要放在**排任务之前**——异步的任务号一发出模型就开始烧钱，
-    # 不能等后台跑起来才发现该拦。点名形态此时素材还没读，先读一遍（同步档下面会再读，
-    # 同一事务里同主键拿回同一对象，不浪费）。
+    # 来源信息在排任务前取好，随异步任务一起进审计；不拦截共享素材库操作。
     gate_assets = picked if queue_batch_id else [await _get_asset_or_404(db, aid) for aid in asset_ids]
-    crosses = await _cross_person_gate(
+    crosses = await _cross_person_batches(
         db,
         operator=current_user,
         batch_ids=[a.batch_id for a in gate_assets],
-        action_label="出钩子文案",
-        confirmed=data.cross_person_confirm,
     )
 
     if data.async_mode:
@@ -5664,9 +5591,9 @@ async def generate_summaries(
             entry["note"] = f"候选不齐：要 {count} 条只出 {created} 条，审核缺横向对照，建议重生成"
         results.append(entry)
         if created_rows:
-            # 多候选时只给**推荐条**挂号（没有推荐条就挂第一条）：一钩一号、发了即烧，
-            # 三条候选都挂＝一条文案烧三个号，280/日的号池会被当废纸烧光。
-            # 审核时真挑了非推荐那条，开单屏照旧手工填或点「代取」，跟批 N 之前一样。
+            # 多候选时只给**推荐条**挂号：一钩一号、发了即用，
+            # 三条候选都挂会提前占掉三个编号。审核时真挑了非推荐那条，
+            # 开单屏照旧手工填或点「代取」，跟批 N 之前一样。
             new_copy_rows.append(next((s for s in created_rows if s.is_recommended), created_rows[0]))
             web_jobs.append({"asset": asset, "script": script, "summaries": created_rows})
             all_generated.extend(created_rows)
@@ -7056,7 +6983,7 @@ async def list_summaries(
         out_counts = {sid: int(cnt) for sid, cnt in orows}
     # A′：过审人显示名一次聚合
     reviewer_names = await _user_names(db, {s.reviewed_by for s, _a in rows})
-    # P1（评审定稿⑯）：每条候选已开过几张生产单——防重复开单白烧号池
+    # P1（评审定稿⑯）：每条候选已开过几张生产单——提示重复开单
     prod_counts: Dict[Any, int] = {}
     if rows:
         prows = (
@@ -7759,7 +7686,7 @@ async def _resolve_card_assets(
     （同 id 重复出现只留第一次）。
 
     两类脏输入当场 400 白话拒收，绝不允许静默变成"少一张卡"——少一张卡的任务
-    照样投得出去，烧的是号池额度，而且没人知道：
+    照样投得出去，而且没人知道：
       · id 不存在（含被删的卡）；
       · 卡没落进桶（`file_key` 为空＝上传失败行）。
     """
@@ -8236,17 +8163,17 @@ async def create_productions(
     db: AsyncSession = Depends(get_db),
     _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
 ):
-    """过审文案 → N 条生产单（本口**只建 order_ready 单**，一毛不花也不占号池；
+    """过审文案 → N 条生产单（本口**只建 order_ready 单**，不调模型也不投板；
     往板上投是下一步：批 H 起有 `POST /assets/productions/dispatch`（机器连板、逐批人工确认），
     或照旧导出 payload 人工投完走 `POST /assets/productions/status` 回写投递态）。
 
     N 的语义（2026-11-03 定稿）：同一条过审文案派生 **N 条差异化提示词**
     （句式轮换 / 换角色卡 / 镜头重排…），**不是**把同一条重复投 N 次——
-    重复投喂产物近似且白烧额度。差异来源记在每条的 variant_basis。
+    重复投喂产物近似。差异来源记在每条的 variant_basis。
 
     ⚠️ **N 与板上 total 是两个量**（B-1）：板上 `total`＝同一条 prompt 出几版（后台给
     每版派不同豆包号）。所以一批 N 份＝**N 个任务、每个 board_total 默认 1**；若把 N 直接
-    填进 total，同一批会白烧 N×N 的量。要"一条出 2~3 版挑最好"请用 board_total。
+    填进 total，同一批会白跑 N×N 个版次。要"一条出 2~3 版挑最好"请用 board_total。
 
     prompt_snapshot 冻结过审文案；展开后的提示词若与快照对不上（模型改词），
     标 drift=true 不静默——「审的」和「生产的」必须能对上。
@@ -8264,7 +8191,7 @@ async def create_productions(
     if n > int(settings.ASSET_PRODUCE_MAX_N):
         raise HTTPException(
             status_code=400,
-            detail=f"单条文案最多派生 {settings.ASSET_PRODUCE_MAX_N} 份（防误填把号池额度一天烧光），请分批",
+            detail=f"单条文案最多派生 {settings.ASSET_PRODUCE_MAX_N} 份（防止误填生成过大批次），请分批",
         )
     channel = data.channel or DEFAULT_PRODUCTION_CHANNEL
     if channel not in PRODUCTION_CHANNELS:
@@ -8374,9 +8301,8 @@ async def create_productions(
     card_key = (cards[0].file_key if cards else None) or data.character_card_key or None
 
     # ── 批 P（11-10）：多值扇出——「一次填多个场景/动物 → 一次出多条钩子视频」 ──
-    # ⚠️ 三个判据全排在 async_mode **之前**，理由与卡校验、跨人闸同一条先例：扇出来的每一条
-    # 都要占一个钩子编号、投上板就是当天号池的一条额度。参数写错了却在几分钟后于后台任务
-    # 详情里看到，人早走了，号也烧了。
+    # ⚠️ 三个判据全排在 async_mode **之前**：扇出来的每一条都需要一个钩子编号，
+    # 参数写错了却在几分钟后于后台任务详情里看到，人早走了，编号已经占下。
     # 扇出本身**不调模型、不花钱**：它是在已经展开好的那份正文上做字面替换（引擎在
     # `asset_prompt_elements.compose_variants`），所以 `n`（差异化份数）与扇出行数是两个量，
     # 本批张数 = 文案数 × n × 扇出行数。
@@ -8410,7 +8336,7 @@ async def create_productions(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         # 换上去的词当场按当前词表扫一遍：扇 10 条里有 1 条带高风险词，投到板上才发现
-        # 就是白占 9 条之外的额度＋一个烧掉的号。这里整批不建单，改词再投（比事后逐张撤便宜）。
+        # 就会连累同批其它条。这里整批不建单，改词再投。
         _book0, _exempt0 = await _risk_lexicon(db)
         bad_words: List[str] = []
         for row in element_rows:
@@ -8433,12 +8359,8 @@ async def create_productions(
     # 一条文案扇出几张单（没填多值＝1，与今天完全同一条路径）
     fanout = max(1, len(element_rows))
 
-    # A′（2026-11-07 按运营隔离）：归属跨人确认闸——投**别人过审**的候选要知情确认。
-    # ⚠️ 必须在 async_mode 分支**之前**判：前端唯一真实路径是 async_mode=true（提交即回
-    # 任务号），闸若放在分支之后，首呼会拿到 job ack、确认弹窗协议就断了（后台重放才
-    # 撞 400，一线只看到任务失败）。与卡校验同一条先例：烧钱前当场判完。
-    # 谁投账算谁（production.created_by 记实际投产人），候选过审人进审计；
-    # 无主公共历史（reviewed_by IS NULL 的存量行）不拦——与钱闸「归属未知不预判」同口径。
+    # 先批量取回候选，供后续钩子编号校验与逐条投产使用；免费投产不按脚本作者或审核人拦截。
+    # 谁投账算谁（production.created_by 记实际投产人），候选过审人进审计。
     _pre_summaries: Dict[Any, Optional[AssetSummary]] = {}
     for sid in data.summary_ids:
         _u = _as_uuid(sid, "summary_id")
@@ -8505,31 +8427,6 @@ async def create_productions(
         if s is not None and s.audit_status in REVIEW_PASSED_STATES
         and s.reviewed_by == current_user.id
     ]
-    if cross_summaries and not data.cross_person_confirm:
-        name_map = await _user_names(db, {s.reviewed_by for s in cross_summaries})
-        code_map = dict(
-            (
-                await db.execute(
-                    select(AssetItem.id, AssetItem.code).where(
-                        AssetItem.id.in_({s.asset_id for s in cross_summaries})
-                    )
-                )
-            ).all()
-        )
-        shown = "；".join(
-            f"{code_map.get(s.asset_id, str(s.asset_id)[:8])}#{s.seq}（过审人 {name_map.get(str(s.reviewed_by), '未知')}）"
-            for s in cross_summaries[:5]
-        )
-        more = f"（另有 {len(cross_summaries) - 5} 条，本条只列前 5 条）" if len(cross_summaries) > 5 else ""
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"投产涉及{_CROSS_OWNER_MARKER}：{shown}{more}。"
-                "谁投账算谁（生产单记你名下、候选过审人留审计）——请确认确实是替同事补单/代班："
-                "界面弹窗点「确认替他人投产」后再发一次（带 cross_person_confirm=true），这一次没有建单。"
-            ),
-        )
-
     # 极简模式脚本直投（2026-11-26 定稿即可投）：入参里的键必须是已定稿脚本的生产载体，
     # 正文须与载体当前正文逐字一致。为什么在这里卡死而不是信前端：script_texts 会让这些行
     # 跳过 A2-1 形态复核——不校验的话，任何有投产权的人都能拿它当"绕过复核的任意提示词"入口。
@@ -8596,32 +8493,10 @@ async def create_productions(
                 )
             direct_texts[k] = _want
 
-        cross_direct_scripts = [
-            r for r in _direct_script_rows if str(r.script_owner_id) != str(current_user.id)
-        ]
-        if cross_direct_scripts and not data.cross_person_confirm:
-            script_owner_names = await _user_names(db, {r.script_owner_id for r in cross_direct_scripts})
-            shown_scripts = "；".join(
-                f"「{r.script_name}」（作者 {script_owner_names.get(str(r.script_owner_id), '未知')}）"
-                for r in cross_direct_scripts[:5]
-            )
-            more_scripts = (
-                f"（另有 {len(cross_direct_scripts) - 5} 条，本条只列前 5 条）"
-                if len(cross_direct_scripts) > 5 else ""
-            )
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"投产涉及{_CROSS_OWNER_MARKER}：{shown_scripts}{more_scripts}。"
-                    "谁投账算谁（生产单记你名下、脚本作者留审计）——请确认确实是替同事补单/代班："
-                    "界面弹窗点「确认替他人投产」后再发一次（带 cross_person_confirm=true），这一次没有建单。"
-                ),
-            )
-
     # 反过来也要堵：**是脚本载体、却没带 script_texts** 的候选，一律不许在这里建单。
     # 不堵的后果与正文长短有关（所以靠形态闸"碰巧拦住"不算闸）：脚本短于 80 字时形态闸
     # 放行——expand=false 建出一张没有正文的裸单；expand=true 把整篇脚本当钩子文案送去
-    # autoclip 展开，展开稿对不上原稿还白烧一个钩子号。脚本载体只认脚本直投那一条路。
+    # autoclip 展开，展开稿对不上原稿还浪费一个钩子号。脚本载体只认脚本直投那一条路。
     _sid_uuids = [_as_uuid(x, "summary_id") for x in data.summary_ids]
     # 批 X：只拦**壳**载体（is_shell）。镜像脚本指着的真候选照常可从五环投产——
     # 镜像只是让候选在脚本库也可见可投，不改变候选本身的投产路径。
@@ -8740,7 +8615,7 @@ async def create_productions(
 
         # A2-1 投产前复核（方案 §十一.7）：审核时看的是文案，投产时投的是**展开后的提示词**，
         # 中间词表可能已经更新（迁进 system_config 后改词不用发版），文案本身也可能被别处改过。
-        # 这一遍跑在真正花号池额度**之前**，不过就整条文案不生成单，而不是生成了再靠人肉眼拦。
+        # 这一遍跑在建生产单**之前**，不过就整条文案不生成单，而不是生成了再靠人肉眼拦。
         # 试产（2026-11-12）整体跳过这遍复核：它的字数/形态检查是给**文案**的，套在
         # 提示词上会全拦；且待审条目多无反推稿，_prompt_script_of 的补稿路径会同步等
         # 模型——正是弹窗长时间转圈的来源。试产提示词的风险词闸在投板侧照扫
@@ -9035,7 +8910,7 @@ async def create_productions(
                         **gap,
                     })
                 if row["drift"]:
-                    # 单子照常生成、不静默丢弃，但逐条点名（投出去烧的是号池额度）
+                    # 单子照常生成、不静默丢弃，但逐条点名（投出去会偏离过审内容）
                     drifted.append({
                         "summary_id": str(summary.id), "code": asset.code,
                         "seq": row["seq"], "reason": row["drift_reason"],
@@ -9050,7 +8925,7 @@ async def create_productions(
                 asset.has_approved_copy = True
             code_pos += n * fanout  # 号只在这批真的成了单之后才算用掉（扇出后每行各占一个）
             if parked_consumed:
-                # 预取位清空与上面那行同生同死：半批被拦下时根本走不到这里，号不会被白烧
+                # 预取位清空与上面那行同生同死：半批被拦下时根本走不到这里，编号仍留在预取位
                 summary.hook_code = None
 
         created = len(flat_rows) if not expand_error else 0
@@ -9084,27 +8959,7 @@ async def create_productions(
             status_code=409,
             detail="生产单与已有记录撞了唯一约束（同一文案同一序号已投过），本次整批未落库，请刷新后重试",
         )
-    # 本批真实投放量 = 单条数 × 板上 total（这是号池当天要吃的条数，不是 created）
     planned_rows = len(productions) * board_total
-    day_start = board_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    already_today = int(
-        (
-            await db.execute(
-                select(func.coalesce(func.sum(AssetProduction.board_total), 0)).where(
-                    AssetProduction.board_date >= day_start,
-                    AssetProduction.board_date < day_start + timedelta(days=1),
-                )
-            )
-        ).scalar_one()
-        or 0
-    ) - planned_rows  # 刚 flush 的本批已在库里，扣掉才是"本批之前"的量
-    capacity = svc.board_capacity_hint(
-        planned_rows, max(0, already_today), int(settings.ASSET_BOARD_DAILY_SOFT_CAP)
-    )
-    plan = svc.estimate_production_days(
-        planned_rows, account_count=max(1, int(data.accounts or 1)),
-        per_account_per_day=settings.ASSET_DOUBAO_PER_ACCOUNT_PER_DAY,
-    )
     missing_codes = sum(1 for p in productions if not p.hook_code)
     missing_names = sum(1 for p in productions if not p.board_name)
     _owner_names_all = await _user_names(
@@ -9132,7 +8987,6 @@ async def create_productions(
             "board_tag": board_tag,
             "board_date": board_date.isoformat(timespec="seconds"),
             "duration": duration,
-            "accounts": data.accounts,
             "recommended_title_count": title_count,
             "character_card_key": card_key,
             # 批 G：卡按 id 数组留痕（顺序也留）——事后对账要能回答"当时挂的是哪几张、
@@ -9171,7 +9025,6 @@ async def create_productions(
                 else None
             ),
             "hook_codes": hook_codes or None,
-            "capacity": capacity,
             # 复核结果全部入审计：豁免的每一条都能被 admin 抽检回溯（A2-1）
             "recheck_waived": waived_rows or None,
             "recheck_failed": recheck_failed or None,
@@ -9201,8 +9054,6 @@ async def create_productions(
     await db.commit()
 
     warnings = []
-    if capacity["advisory"]:
-        warnings.append(capacity["advisory"])
     if missing_codes:
         warnings.append(
             f"{missing_codes} 条缺五位钩子编号：段头/推荐标题/产出清单三处必须带编号，"
@@ -9231,7 +9082,7 @@ async def create_productions(
     if drifted:
         warnings.append(
             f"{len(drifted)} 条展开结果与过审文案不是同一条（成因见 drifted，单条也回显在 drift_reason）："
-            "模型改写了钩子原句 / 前面拼了字 / 整句复制了两遍。这批投出去就是烧号池额度，"
+            "模型改写了钩子原句 / 前面拼了字 / 整句复制了两遍。这批投出去会偏离过审内容，"
             "要么回去重展（expand=true 重投一次，序号接着排），要么人工把原句粘回正文再投"
         )
     if title_warnings:
@@ -9280,8 +9131,7 @@ async def create_productions(
         )
         warnings.append(
             f"按参数扇出：每条文案 {len(element_rows)} 张（{combo}，{'全组合' if (data.element_mode or pesvc.MATRIX_ZIP) == pesvc.MATRIX_PRODUCT else '按行配对'}）。"
-            "扇出来的只是换了词的稿子，**没有再花模型钱**，但每张各占一个钩子编号、"
-            "各吃一条号池额度"
+            "扇出来的只是换了词的稿子，**没有再花模型钱**，但每张仍需要一个钩子编号"
         )
     for note in element_notes[:6]:
         warnings.append(note)
@@ -9290,7 +9140,7 @@ async def create_productions(
             f"{len(element_skipped)} 条扇出来的稿子换完词撞上高风险词、**这条没建单**"
             f"（逐条见 element_fanout.skipped）：同批其它条照常建，改那个词再来一次"
         )
-    # 当日号池真实消耗 + 本批投递分布（11-03 第 4 条：不硬限，只报数）
+    # 当日投板与回收事实 + 本批投递分布（只报数，不设额度限制）
     batch_ids = sorted({str(p.batch_id) for p in productions if p.batch_id})
     scope = (
         [AssetProduction.batch_id.in_([uuid.UUID(b) for b in batch_ids])] if batch_ids else []
@@ -9311,10 +9161,7 @@ async def create_productions(
             "planned_rows": planned_rows,
             "output": f"{settings.ASSET_BOARD_OUTPUT_SECONDS}s / {settings.ASSET_BOARD_OUTPUT_RESOLUTION}（不可改）",
         },
-        "capacity_hint": plan,
-        "board_capacity": capacity,
-        # 建单当场就把「今天号池已经吃掉多少、成几条败几条」摆出来：拍 n/board_total 的人
-        # 只有在这一刻会看数，等到导出时再问已经晚了（11-03 第 4 条：不硬限，但要报数）
+        # 建单当场带回当天投板与回收情况，便于确认本批任务量；只是事实统计，不参与额度判定。
         "dispatch": dispatch_counts,
         # 复核结论回显给审核台：拦了几条、豁免了几条，当场看得见，不用翻审计（A2-1）
         "recheck_failed": recheck_failed,
@@ -9350,14 +9197,14 @@ async def create_productions(
                 if (recheck_failed or waived_rows)
                 else ""
             )
-            + "本口只到生产单为止（还没上板、不吃号池）：下一步用「投去 AI 出片」自动连板，"
+            + "本口只到生产单为止（还没上板）：下一步用「投去 AI 出片」自动连板，"
               "或导出任务文件手工投完再补记投板结果。"
         ),
     }
 
 
 # ──────────────────────────────────────────────
-# 投递状态：回写口 + 计数（11-03 拍板第 4 条：号池不硬限，但要知道投了多少、成多少、败多少）
+# 投递状态：回写口 + 计数（要知道投了多少、成多少、败多少，不设额度限制）
 # ──────────────────────────────────────────────
 
 # 这里只允许人报这四个态。superseded/cancelled/skipped 是**系统态**（撤审作废 / 熔断挡下），
@@ -9377,9 +9224,9 @@ _DISPATCH_TRANSITIONS: Dict[str, Tuple[str, ...]] = {
 # 「还没投出去」的态：用来判 attempts 该不该 +1（补报也算投过一次的证据）
 _NOT_DISPATCHED = (PR_ORDER_READY,)
 # 「投过、但后来被作废/人工删掉」的单（R-5 撤审 supersede；成片墙删单 cancelled）。
-# 这类单**当日确实占了号池**，计数时必须还当已投——否则「今天投了多少条」会因为
-# 事后一次撤审或删卡而变小，一线据此再排今天的量就会超。判据用 started_at（没真投过的
-# 作废单这个字段是 NULL，撤审/删单只改 status 不改 started_at，两者不会互相污染）。
+# 这类单**当日确实投过板**，计数时必须还当已投——否则「今天投了多少条」会因为
+# 事后一次撤审或删单而变小。判据用 started_at（没真投过的作废单这个字段是 NULL，
+# 撤审/删单只改 status 不改 started_at，两者不会互相污染）。
 _VOIDED_BUT_SENT = and_(
     AssetProduction.status.in_([PR_SUPERSEDED, PR_CANCELLED]),
     AssetProduction.started_at.is_not(None),
@@ -9435,7 +9282,7 @@ async def _dispatch_counts_dual(db: AsyncSession, *conds, owner_uid: Any = None)
     """一趟聚合出（我的口径, 全站口径）两套投递计数（2026-11-13 性能席）。
 
     与 `_dispatch_counts` 完全同键：by_status/order_ready/dispatched/voided_after_dispatch/
-    succeeded/failed/success_rate/total/scope_note；today 号池口径全站一本账，两套共用
+    succeeded/failed/success_rate/total/scope_note；today 是当日投板事实，两套共用
     同一份（由全站那份计算）。by_status 用一次 GROUP BY 双计数列（总行数＋FILTER 我的）；
     voided 用一条 SELECT 双列。owner 视图套在 conds 之上（conds 是 scope 过滤）。
     """
@@ -9482,13 +9329,13 @@ async def _dispatch_counts_dual(db: AsyncSession, *conds, owner_uid: Any = None)
             "success_rate": round(succeeded / terminal, 3) if terminal else None,
             "scope_note": (
                 "by_status 含未投的 order_ready；success_rate 只按已终态（成功+失败）算，"
-                "在投/出片中不进分母；投上板后又被撤审或人工删掉的单仍计入 dispatched（号池那天真被吃了）"
+                "在投/出片中不进分母；投上板后又被撤审或人工删掉的单仍计入 dispatched（投递事实保留）"
             ),
         }
 
     mine = _build(by_mine, await _voided(filter_owner=True))
     total_all = _build(by_all, await _voided(filter_owner=False))
-    # today 号池口径＝全站事实：让全站那份带上 today（与 _dispatch_counts 同一条查询逻辑）
+    # today 按全站事实计算：让全站那份带上 today（与 _dispatch_counts 同一条查询逻辑）
     day_start = svc.board_timestamp().replace(hour=0, minute=0, second=0, microsecond=0)
     today_rows = (
         await db.execute(
@@ -9500,14 +9347,13 @@ async def _dispatch_counts_dual(db: AsyncSession, *conds, owner_uid: Any = None)
                 and_(
                     AssetProduction.board_date >= day_start,
                     AssetProduction.board_date < day_start + timedelta(days=1),
-                    # 与单口径一致：作废单只有真投过（started_at 非空）才继续吃号池。
+                    # 与单口径一致：作废单只有真投过（started_at 非空）才继续计入当日投板数。
                     or_(AssetProduction.status.in_(list(_DISPATCH_STATES)), _VOIDED_BUT_SENT),
                 )
             ).group_by(AssetProduction.status)
         )
     ).all()
     today_status = {str(r[0]): int(r[2]) for r in today_rows}
-    cap = int(settings.ASSET_BOARD_DAILY_SOFT_CAP)
     today_tasks = sum(int(cnt) for _s, _total, cnt in today_rows)
     today_board_rows = sum(int(total) for _s, total, _cnt in today_rows)
     today_block = {
@@ -9520,12 +9366,6 @@ async def _dispatch_counts_dual(db: AsyncSession, *conds, owner_uid: Any = None)
         "dispatched": sum(today_status.get(s, 0) for s in _DISPATCH_STATES)
         + today_status.get(PR_SUPERSEDED, 0)
         + today_status.get(PR_CANCELLED, 0),
-        "soft_cap": cap,
-        "over_cap": max(0, today_board_rows - cap) if cap > 0 else 0,
-        "note": (
-            "当日口径按板面本地时区切日（与建任务的 board_date 同一套），"
-            "board_rows=Σ total（号池真正吃掉的条数），tasks=生产单行数"
-        ),
     }
     total_all["today"] = today_block
     mine["today"] = today_block
@@ -9533,22 +9373,19 @@ async def _dispatch_counts_dual(db: AsyncSession, *conds, owner_uid: Any = None)
 
 
 async def _dispatch_counts(
-    db: AsyncSession, *conds, soft_cap: Optional[int] = None, owner_uid: Optional[Any] = None
+    db: AsyncSession, *conds, owner_uid: Optional[Any] = None
 ) -> dict:
-    """生产单投递计数。`by_status` 是全量分布（含未投的 order_ready），`today` 是号池当日事实。
+    """生产单投递计数。`by_status` 是全量分布（含未投的 order_ready），`today` 是当日投板事实。
 
     两个口径必须分开，别混着看：
     - **scope 计数**（跟着 batch_id/asset_id 过滤）回答「这批/这条投得怎么样」；
-    - **today 计数**不受 scope 约束——「今天号池吃进去多少、到手多少」是全队事实
-      （实测 ≈120 条/日那条线），按批次过滤后就变成「这批占今天多少」，
-      回答不了「今天还能不能再投」。
+    - **today 计数**不受 scope 约束，回答「当天投了多少、到手多少」。
     `owner_uid`（A′ 按运营隔离）：只进 **scope 聚合**（「我的链路投得怎么样」），
-    **today 号池口径绝不受它影响**——号池是全站一本账，按人切了就是「我占今天多少」，
-    与「今天还能不能再投」是两个问题。注释与测试双钉（test_output_groups……隔离矩阵）。
+    **today 保持全站事实**，不按人切分。注释与测试双钉（test_output_groups……隔离矩阵）。
     `success_rate` 分母只算**已终态**（success+failed），在投/出片中不进分母；
     没有终态时回 None，不是 0——0 会被读成「一条都没成」。
     `dispatched` 含**投过后被作废**的单（见 `_VOIDED_BUT_SENT`）：作废是审核侧的追溯动作，
-    不改变「号池那天已经被吃掉」这个事实；`voided_after_dispatch` 单列出来给前端说明用。
+    不改变当天已经投递的事实；`voided_after_dispatch` 单列出来给前端说明用。
     """
     if owner_uid is not None:
         conds = [*conds, AssetProduction.created_by == owner_uid]
@@ -9583,17 +9420,14 @@ async def _dispatch_counts(
             ).where(
                 AssetProduction.board_date >= day_start,
                 AssetProduction.board_date < day_start + timedelta(days=1),
-                # 只数**已投**的：没投上板的单不吃号池额度。produce 口的
-                # board_capacity.already_today 含未投单（那是"今天打算投多少"的口径），
-                # 两者不等价，别在页面上互相换算。
+                # 只数已投的；未投板单不属于当天投递统计。
                 or_(AssetProduction.status.in_(list(_DISPATCH_STATES)), _VOIDED_BUT_SENT),
             ).group_by(AssetProduction.status)
         )
     ).all()
     # 列序是 (status, Σ board_total, 行数)：状态分布按**行数**算，不是按 board_total
     today_status = {str(r[0]): int(r[2]) for r in today_rows}
-    cap = int(settings.ASSET_BOARD_DAILY_SOFT_CAP if soft_cap is None else soft_cap)
-    # 列序是 (status, Σ board_total, 行数)：tasks＝生产单行数，board_rows＝号池吃掉的条数
+    # 列序是 (status, Σ board_total, 行数)：tasks＝生产单行数，board_rows＝计划出的版数
     today_tasks = sum(int(cnt) for _s, _total, cnt in today_rows)
     today_board_rows = sum(int(total) for _s, total, _cnt in today_rows)
     return {
@@ -9607,7 +9441,7 @@ async def _dispatch_counts(
         "success_rate": round(succeeded / terminal, 3) if terminal else None,
         "scope_note": (
             "by_status 含未投的 order_ready；success_rate 只按已终态（成功+失败）算，"
-            "在投/出片中不进分母；投上板后又被撤审或人工删掉的单仍计入 dispatched（号池那天真被吃了）"
+            "在投/出片中不进分母；投上板后又被撤审或人工删掉的单仍计入 dispatched（投递事实保留）"
         ),
         "today": {
             "day": day_start.strftime("%Y-%m-%d"),
@@ -9619,19 +9453,6 @@ async def _dispatch_counts(
             "dispatched": sum(today_status.get(s, 0) for s in _DISPATCH_STATES)
             + today_status.get(PR_SUPERSEDED, 0)
             + today_status.get(PR_CANCELLED, 0),
-            "soft_cap": cap,
-            # 软提示线是**条/日**（号池实测 120 条），所以比的是 Σ board_total 不是行数：
-            # 6 张 ×20 条的板面吃掉 120 条＝已到线，按 tasks 算只会得出 6，永远提示不到人。
-            "over_cap": max(0, today_board_rows - cap) if cap > 0 else 0,
-            "note": (
-                "当日口径按板面本地时区切日（与建任务的 board_date 同一套），"
-                f"board_rows=Σ total（号池真正吃掉的条数），tasks=生产单行数；"
-                + (
-                    f"已超号池实测 ≈{cap} 条/日，超出部分预计到手率明显下降（不硬拦，产能不限）"
-                    if cap > 0 and today_board_rows > cap
-                    else "号池不做硬拦，这里只报数"
-                )
-            ),
         },
     }
 
@@ -9851,7 +9672,7 @@ async def list_productions(
     「failed: 12」自己报自己，成功几条这个关键数消失了——那正是今天要对账的东西。
 
     `owner`（A′ 按运营隔离，2026-11-07）：GET 读口的查询偏好。owner=me → 按
-    `created_by=me` 过滤（谁投账算谁）；scope 聚合同步带 owner，`today` 号池口径
+    `created_by=me` 过滤（谁投账算谁）；scope 聚合同步带 owner，`today` 保持全站口径
     保持全站；响应另带 `dispatch_all`（同 scope 的全站口径），前端「我的/全站」
     两行并排。写口权限不受 owner 影响。
 
@@ -9970,11 +9791,11 @@ async def list_productions(
 def _export_block_reason(p: AssetProduction) -> str:
     """挡下导出的成因（回显给前端，别让一线猜）。"""
     if p.status == PR_SUPERSEDED:
-        return "文案已被撤销过审，这张是作废旧单：正文不给，防止投出去烧号池额度"
+        return "文案已被撤销过审，这张是作废旧单：正文不给，防止误投"
     if p.status == PR_CANCELLED:
         return "生产单已取消"
     if p.status == PR_SKIPPED:
-        return "被批次熔断挡下（额度/预算），未投递"
+        return "被批次熔断挡下，未投递"
     if p.status == PR_FAILED:
         return f"生产失败单，无可交付产物{('：' + p.error) if p.error else ''}"
     return f"状态 {p.status} 不在可交付集内"
@@ -10151,7 +9972,6 @@ async def export_productions(
     batch_id: Optional[str] = None,
     asset_id: Optional[str] = None,
     ids: Optional[str] = None,
-    accounts: int = 1,
     format: str = "json",
     force_risk: bool = False,
     force_reason: Optional[str] = None,
@@ -10161,14 +9981,9 @@ async def export_productions(
 ):
     """导出提示词（每行一条可直接粘进豆包的完整提示词）。
 
-    accounts 由调用方声明「这批准备用几个豆包号跑」——本系统没有豆包号池表
-    （豆包是一条 CDP 浏览器会话＝一个登录号），所以不能自己去数 ChannelAccount：
-    那是**视频号发布号**，跟豆包产能无关，拿它算天数会算出个漂亮的假数字。
-    折成天数用的是单号 3 条/日的**额度墙**，不是工时。
-
     A2-2：作废态（superseded/cancelled/skipped/failed）的单子**状态照实回显、正文不外泄**
     （prompt_text 置空 + 挡下的成因）。撤销过审后留下的旧单如果被复制去投放，
-    就是拿废弃文案烧号池额度，事后对账还看不出来。
+    就是拿废弃文案投放，事后对账还看不出来。
 
     A3-1（format=）：
     - `json`（默认，兼容既有前端）→ 只有 items[]；
@@ -10201,7 +10016,6 @@ async def export_productions(
     stmt = select(AssetProduction).where(and_(*conds)) if conds else select(AssetProduction)
     rows = list((await db.execute(stmt.order_by(AssetProduction.created_at.desc()))).scalars().all())
 
-    account_count = max(1, min(int(accounts or 1), 50))
     fmt = (format or "json").strip().lower()
     if fmt not in ("json", "txt", "payload"):
         raise HTTPException(status_code=400, detail="format 只认 json / txt / payload")
@@ -10251,7 +10065,7 @@ async def export_productions(
             "board_name": p.board_name,
             "board_total": p.board_total,
             "board_tag": p.board_tag,
-            "board_date": utc_iso(p.board_date) if p.board_date else None,
+            "board_date": board_local_iso(p.board_date) if p.board_date else None,
             "character_card_key": p.character_card_key,
             # 批 G：json 形态也要能看到挂了几张卡（payload 形态的逐张明细在 payloads[].cards）
             "card_asset_ids": [str(x) for x in (p.card_asset_ids or []) if str(x or "").strip()],
@@ -10285,7 +10099,6 @@ async def export_productions(
             "exported": len(rows) - len(blocked),
             "blocked": [b["id"] for b in blocked] or None,
             "blocked_detail": blocked or None,
-            "accounts": account_count,
             # 交付形态也入审计：事后能还原"当时拿走的是 json 还是可直接投的 payload"
             "format": fmt,
             # R-4：重扫结果单独记一份。**放行的那几张必须能单独查出来**——
@@ -10325,10 +10138,6 @@ async def export_productions(
                 + "词表在审核台之外的改动不会回头找存量单，这一道是存量单唯一的重扫点。"
             ),
         },
-        "capacity": svc.estimate_production_days(
-            len(items), account_count=account_count,
-            per_account_per_day=settings.ASSET_DOUBAO_PER_ACCOUNT_PER_DAY,
-        ),
         "note": (
             "prompt_text 为空的有三种：作废/失败单（不可投放，见 status）、展开失败"
             "（看生产单 error）、按当前词表重扫命中高风险词（见 blocked），都别硬投"
@@ -10343,9 +10152,9 @@ async def export_productions(
 #
 # **批量数学**（11-04 拍板④要求把这条写进注释与 UI，别只写在文档里）：
 # - N 份差异化提示词 = **N 张生产单**，每张单一次 `create`、板上 `total` 默认 1；
-# - 号池当天吃的是 **Σ board_total**，不是"单的行数"。20 张单 × total=3 是 **60 条**额度，
-#   而投递台账上只有 20 行——对账看 `dispatch.today.board_rows`，按行数算会少看三倍；
-# - 「同一条文案出 3 版挑最好」才用 total>1，「要 3 条不同钩子」用 N。两个量混用就是白烧。
+# - 板上创建的是 **Σ board_total** 个版次，不是"单的行数"。20 张单 × total=3 是 **60 个版次**，
+#   而投递台账上只有 20 行——统计看 `dispatch.today.board_rows`，按行数算会少看三倍；
+# - 「同一条文案出 3 版挑最好」才用 total>1，「要 3 条不同钩子」用 N。两个量混用会重复创建近似内容。
 #
 # 与人工投板（导出 payload → 人去板面建任务）的关系：**同一条交付线，两个入口**。
 # payload 仍然走 `_build_delivery`（和导出同一个函数），闸门仍然是那四条，
@@ -10382,8 +10191,8 @@ def _board_poll_max_minutes() -> float:
 def _board_retry_max() -> int:
     """板面判失败后**同一条 payload 自动重启**的次数上限（下限 0＝完全关闭自动重试）。
 
-    为什么不设上限地"补到我要的条数为止"不做：一次重启＝整条 payload 再建一遍任务、
-    再花一遍**共享号池**的额度（板上失败行连失败原因都没有，多烧几次没人看得出为什么），
+    为什么不设上限地"补到我要的条数为止"不做：一次重启＝整条 payload 再建一遍任务，
+    而板上失败行没有原因字段，无界重试会反复创建同一批任务；
     而且重启是**本次轮询窗口内**的动作——出了窗口就是隔夜补投，那是拍板明确禁掉的口径。
     所以这里只把旧的"硬编码重启一次"换成可配的次数：0＝旧的人工判读、1＝老口径、
     2（默认）＝首投＋两次重试＝最多 3 次上板机会。缺省值兜底也按 2 走，别把旋钮读崩。
@@ -10399,10 +10208,9 @@ def _refresh_board_date(p: AssetProduction) -> None:
 
     为什么必须重生成：`board_date` 是建单时（`/produce`）盖章的，而"建完单当天就投"
     只是理想情况——一线经常今天建单、明天投。板上按 `date` 排日，用昨天的日期建任务，
-    量就记到昨天那天的号池上（当日余量提示跟着算错），回收时按今天查还查不到。
+    回收时按今天查还查不到。
     格式仍然是**后端生成的完整时间戳**（`svc.board_timestamp`），不是前端传的日期：
-    只写日期或不带时分秒＝接口照样回 succ、但 `info?date=` 永远查不到，额度白烧
-    （1021 实测 120 条就是这么丢的）。
+    只写日期或不带时分秒＝接口照样回 succ、但 `info?date=` 永远查不到，成片会漏收。
     """
     p.board_date = svc.board_timestamp(tz_offset_hours=settings.ASSET_BOARD_TZ_OFFSET_HOURS)
 
@@ -10422,9 +10230,8 @@ async def _dispatch_gate(
     闸门四条（11-04 拍板④＋第二轮审核 R-4/R-5 的口径，一条都不能少）：
     1. **只投 `order_ready`**：已经 success 的不再动；failed 的**不在这里自动重投**——
        板上失败行没有原因字段，重投与否要人判读（「不自动补投隔夜」是同一条纪律）；
-       superseded/cancelled/skipped 是系统作废态，投出去就是拿废弃文案烧号池；
-    2. **`drift=false`**：展开结果和过审文案不是同一条的单，投出去烧的是号池、
-       发出去的是没人审过的词——这条**不给豁免**（豁免风险词是给语境判断，
+       superseded/cancelled/skipped 是系统作废态，不能把废弃文案投出去；
+    2. **`drift=false`**：展开结果和过审文案不是同一条的单，投出去的是没人审过的词——这条**不给豁免**（豁免风险词是给语境判断，
        漂移是"文案没审过"，不是语境问题）；
     3. **未作废**：见第 1 条；
     4. **按当前词表重扫不命中 block**：与导出侧 R-4 同一道闸、同一个 admin 放行口径
@@ -10447,7 +10254,7 @@ async def _dispatch_gate(
         if not (force_reason or "").strip():
             raise HTTPException(
                 status_code=400,
-                detail="强制投板必须写理由（force_reason）：投出去就烧号池额度，不留一句话事后只看到一个绕过闸门的记录",
+                detail="强制投板必须写理由（force_reason）：这是绕过风险词闸的操作，要留下为什么放行",
             )
 
     book, exemptions = await _risk_lexicon(db)
@@ -10456,7 +10263,7 @@ async def _dispatch_gate(
     forced_ids = sorted(risk_hits) if (force_risk and risk_hits) else []
 
     if forced_ids:
-        # 11-06 拍板①：强制投板是**不可逆烧号池额度**的动作，审计必须在动板子
+        # 11-06 拍板①：强制投板绕过风险词闸，审计必须在动板子
         # **之前**落定（strict）——审计写失败＝这次强制投板根本不开始，而不是
         # 「投出去了、账没记上」。后面那笔常规审计照旧 fail-soft。
         await _write_audit(
@@ -10500,8 +10307,8 @@ async def _dispatch_gate(
             )
             continue
         if p.board_tid:
-            # 拍板②「已拿到 board_tid 的单只回读不重建」：这张的号池额度**已经花掉了**，
-            # 再 POST 一次就是同一条文案烧两遍。进程重启、协程被带走时靠这条路把片子取回来。
+            # 拍板②「已拿到 board_tid 的单只回读不重建」：这张已经建过板任务，
+            # 再 POST 一次就是重复创建。进程重启、协程被带走时靠这条路把片子取回来。
             to_recover.append(p)
             continue
         if p.status != PR_ORDER_READY:
@@ -10552,43 +10359,6 @@ async def _dispatch_gate(
         "forced_ids": forced_ids,
         "forced_reason": (force_reason or "").strip() or None,
     }
-
-
-async def _dispatch_capacity(db: AsyncSession, planned_rows: int) -> Dict[str, Any]:
-    """号池当日余量（Σ board_total 口径）。**只提示不拦**——用户拍板「产能不限」。
-
-    为什么不拦：这条线唯一的实测结论是"超出 ≈120 条的部分到手率明显掉"，不是"投不进去"；
-    把它做成熔断就会在一线真需要冲量的那天挡错人。要拦请先给出可信的余量接口，我们没有。
-    为什么这个数**天然偏乐观**：号池是单日上限、且与每天的解压线**共用**（1023 叠两份量
-    → 115/120 成批 fail），而解压线在库里没有台账——这里只能算出素材库自己吃了多少。
-    """
-    day_start = svc.board_timestamp(tz_offset_hours=settings.ASSET_BOARD_TZ_OFFSET_HOURS).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    already = int(
-        (
-            await db.execute(
-                select(func.coalesce(func.sum(AssetProduction.board_total), 0)).where(
-                    AssetProduction.board_date >= day_start,
-                    AssetProduction.board_date < day_start + timedelta(days=1),
-                    # 只数**已投上板**的（含投过后被撤审作废的）：没投的单不吃号池
-                    or_(AssetProduction.status.in_(list(_DISPATCH_STATES)), _VOIDED_BUT_SENT),
-                )
-            )
-        ).scalar_one()
-        or 0
-    )
-    hint = svc.board_capacity_hint(
-        planned_rows, already, int(settings.ASSET_BOARD_DAILY_SOFT_CAP)
-    )
-    # 把"这个数没算解压线"写在返回体里，而不是只写在代码注释里：
-    # 一线是看这行字排今天量的，注释帮不到他。
-    hint["note"] = (
-        str(hint.get("note") or "")
-        + "；本数只含**素材库自己**今天投的，不含同日在板子上跑的解压线（那条线库里没有台账），"
-        "所以真实余量比这里显示的小——号池是共用池"
-    )
-    return hint
 
 
 async def _fetch_board_output(
@@ -10656,7 +10426,7 @@ async def dispatch_productions(
 
     拍板口径（11-04 晚④）：「可自动投板，但**逐批人工确认**」——机器连板、那一下由人点。
     所以本口没有"整批今晚自动投掉"的形态：`ids` 必须点名，`confirm` 必须为 true，
-    不自动补投隔夜、不自动 QC、号池余量只提示不拦。
+    不自动补投隔夜、不自动 QC；只保留防重复提交与状态校验。
 
     为什么默认 `async_mode=true`：一次投板＝建任务＋等出片（实测单条 45s 一轮、25 分钟
     到手，整批排队更久）＋下载落桶，几十分钟的活同步等必然顶穿超时链
@@ -10664,7 +10434,7 @@ async def dispatch_productions(
     出文案/投产留了同步档给脚本与回归用例，这两条没有"几十分钟"的负担，投板有。
     后台协程复用**本函数**（`_job_endpoint(JOB_DISPATCH)`），闸门与审计只有一套口径。
 
-    三条不重复烧钱的硬规矩：
+    三条防重复建任务的硬规矩：
     - 已拿到 `board_tid` 的单**只回读不重建**（它们进 `to_recover`）；
     - `ids` 里有不存在的 → 整批 400 不落库（和投递状态回写口同一条纪律：
       台账动作说"投了 12 张"就必须 12 张都投了，静默跳过会留下一张永远没人补）；
@@ -10710,7 +10480,7 @@ async def dispatch_productions(
     if len(ids) > cap:
         raise HTTPException(
             status_code=400,
-            detail=f"单次最多投 {cap} 张（号池是单日上限，一次点太多只会一起排队）；当前 {len(ids)} 张请分批",
+            detail=f"单次最多投 {cap} 张，请分批提交；当前 {len(ids)} 张",
         )
     rows = list((await db.execute(select(AssetProduction).where(AssetProduction.id.in_(ids)))).scalars().all())
     found = {str(r.id) for r in rows}
@@ -10792,7 +10562,7 @@ async def dispatch_productions(
 
     # ── 自动拼接的入参校验（11-10 批 Q，需求⑤「钩子成片生成出来以后自动拼成可投放素材」）──
     # 判据在投出去**之前**跑完：拼装要求要是等回收到了才发现拼不了（挑的是图片／
-    # 那条链接素材还没取回原片），号池已经烧了，片子只能人工另拼一遍。
+    # 那条链接素材还没取回原片），片子只能人工另拼一遍。
     # 校验复用手工拼接口的 `_resolve_concat_input`——同一套 400 话术、同一个"图片不能当一段"
     # 的闸门，两处各写一遍必然分叉（批 M 的 R-6 就是三入口口径不一被点名）。
     concat_spec: Optional[Dict[str, Any]] = None
@@ -10818,7 +10588,7 @@ async def dispatch_productions(
             status_code=400,
             detail=(
                 f"要新建 {len(to_create)} 张板任务，必须带 confirm=true（逐批人工确认）。"
-                "投出去吃的是当天号池额度，且板面失败行没有原因字段，事后只能靠这张单自己的台账——"
+                "板面失败行没有原因字段，事后只能靠这张单自己的台账——"
                 "所以这一下只能由人点。只回收已投出去的片子请带 recover_only=true，那不看 confirm"
             ),
         )
@@ -10838,21 +10608,6 @@ async def dispatch_productions(
         if len(blocked) > 5:
             detail += f"（另有 {len(blocked) - 5} 张被挡，本条只列前 5 张）"
         raise HTTPException(status_code=400, detail=detail)
-
-    # 11-06 拍板②：新建板任务吃号池额度，替别人批次投之前先让人确认；回收已投的单
-    # 一分钱不花（`to_recover` 不过内容闸门的同一口径），不走这道闸。
-    crosses = (
-        await _cross_person_gate(
-            db,
-            operator=current_user,
-            batch_ids=[p.batch_id for p in to_create],
-            action_label="投板",
-            confirmed=data.cross_person_confirm,
-        )
-        if to_create
-        else []
-    )
-    gate["cross_person"] = crosses or None
 
     # 拍板②：新建的这批按**投递时刻**重新排日（人工投板用不到这条，见函数头说明）
     for p in to_create:
@@ -10942,7 +10697,6 @@ async def dispatch_productions(
         to_create = [p for p in to_create if str(p.id) in payloads_by_id]
 
     planned_rows = sum(int(p.board_total or 1) for p in to_create)
-    capacity = await _dispatch_capacity(db, planned_rows)
 
     if data.async_mode:
         job = await _start_asset_job(
@@ -10952,7 +10706,6 @@ async def dispatch_productions(
             operator=current_user,
             batch_id=None,
             planned_units=len(to_create) + len(to_recover),
-            cross_person=crosses,
         )
         return {
             **_job_accepted(job, "投板"),
@@ -10962,8 +10715,6 @@ async def dispatch_productions(
                 "planned_board_rows": planned_rows,
                 "blocked": blocked,
                 "card_warnings": card_warnings,
-                "capacity": capacity,
-                "cross_person": crosses or None,
                 "prompt_overrides": sorted(overrides),
                 "card_override": card_override,
                 "concat": concat_request,
@@ -10989,7 +10740,6 @@ async def dispatch_productions(
         operator=current_user,
         gate=gate,
         blocked=blocked,
-        capacity=capacity,
         card_warnings=card_warnings,
         recover_only=data.recover_only,
         card_override=card_override,
@@ -11005,7 +10755,6 @@ async def _execute_dispatch(
     operator: User,
     gate: Dict[str, Any],
     blocked: List[dict],
-    capacity: Dict[str, Any],
     card_warnings: List[dict],
     recover_only: bool,
     card_override: Optional[Dict[str, Any]] = None,
@@ -11016,7 +10765,7 @@ async def _execute_dispatch(
     每一段的结构都是「读库拿数据 → commit → 出网（板子/桶）→ 开短事务写结果 → commit」。
     建任务 90s、下载 180s、轮询整批可能几十分钟，任何一个趴在开着的事务里，
     Postgres 的 `idle_in_transaction_session_timeout`（现网 60s）就会把连接掐死，
-    然后一线看到"任务失败"，而板子上那批其实好端端在跑——号池白烧一遍。
+    然后一线看到"任务失败"，而板子上那批其实好端端在跑——此时重投就会重复建任务。
     """
     created: List[dict] = []
     uncertain: List[dict] = []
@@ -11042,7 +10791,7 @@ async def _execute_dispatch(
             after = await board.readback(days, tag)
         except board.BoardError as e:
             # POST 失败/超时 ≠ 板上没有这条。先做一次差集回读认领：
-            # 真建上了就照实记账（这条最重要——否则重投会把号池烧两遍），
+            # 真建上了就照实记账（这条最重要——否则重投会重复建任务），
             # 确实没建上才留在 order_ready 并说清"没投出去"。
             try:
                 after = await board.readback(days, tag)
@@ -11065,7 +10814,7 @@ async def _execute_dispatch(
             uncertain.append({
                 "id": str(p.id), "hook_code": p.hook_code,
                 "error": "建任务回了成功，但按批次日＋今天都没回读到新任务（date/tag 对不上？）："
-                         "这张单先不钉 tid，请立刻到板面核对，直接重投会烧两遍额度",
+                         "这张单先不钉 tid，请立刻到板面核对，直接重投会重复建任务",
             })
             continue
         # 建板期间允许撤审/删单先提交。网络回来后必须持行锁重读，不能拿旧对象覆盖新状态。
@@ -11105,17 +10854,17 @@ async def _execute_dispatch(
         _adopt_tids(p, after, new_tids)
         tracked[str(p.id)] = {
             "prod": p, "tids": new_tids, "tag": tag, "payload": payload,
-            # 判失败后的自动重启额度：本次投出去的这批才有，且只在**本次轮询窗口内**花
+            # 判失败后的自动重启次数：本次投出去的这批才有，且只在**本次轮询窗口内**花
             "retries": 0, "allow_retry": True,
         }
         row: Dict[str, Any] = {"id": str(p.id), "hook_code": p.hook_code, "tids": new_tids, "to": PR_QUEUED}
         if recovered_note:
             # POST 这一步报了错，但差集回读认领到了新任务＝板子上真建上了。
-            # 照实记账（并把报错原文带上），别让下一轮把它当没投过再烧一遍。
+            # 照实记账（并把报错原文带上），别让下一轮把它当没投过再建一遍。
             row["recovered_after_error"] = recovered_note
         created.append(row)
         # ⚠️ 逐张提交：进程在两张中间被带走时，已建上的那张必须已经带着 tid 落库，
-        # 否则重启后它既没 tid 又已被重投＝同一条烧两遍（这正是拍板②要防的事）。
+        # 否则重启后它既没 tid 又已被重投＝同一条建两遍（这正是拍板②要防的事）。
         await db.commit()
 
     # ── ② 认领已投出去的（回读不重建）──
@@ -11142,7 +10891,6 @@ async def _execute_dispatch(
                 "errors": errors,
                 "uncertain": uncertain,
                 "recover_only": recover_only,
-                "cross_person": gate.get("cross_person"),
             },
         )
         await db.commit()
@@ -11155,7 +10903,6 @@ async def _execute_dispatch(
             "errors": errors,
             "uncertain": uncertain,
             "card_warnings": card_warnings,
-            "capacity": capacity,
             "dispatch": counts,
             "message": (
                 f"一张都没投出去：{len(errors)} 张建任务被板子拒绝、{len(blocked)} 张过不了闸门"
@@ -11171,7 +10918,7 @@ async def _execute_dispatch(
     # 批 F 留的「豆包成片是 output_thumb 第二个写入方」就在这里接上。放在阶段收敛
     # commit 之后单独调：_start_asset_job 自己 commit、失败路径会 rollback，
     # 早调会把没提交的收敛一起卷进去。fail-soft 口径与导入/拼接侧一致——
-    # 帧没排上只是墙上一时没图，片子已经真金白银回收了，不连累回收结果。
+    # 帧没排上只是墙上一时没图，成片已经回收了，不连累回收结果。
     _new_output_ids = [
         rec["_output_id"] for rec in outcome["outputs"]
         if rec.get("_inserted") and rec.get("_output_id")
@@ -11189,8 +10936,8 @@ async def _execute_dispatch(
     # ── ③c 成片到手后自动拼接（11-10 批 Q，需求⑤）──
     # 排在补帧之后、阶段收敛之前：这一步只读产物行（已经 commit 过了），
     # 拼出来的新产物行自己逐条 commit，绝不把回收结果的写回窗口拖长。
-    # **整段 fail-soft**：片子是真金白银烧号池收回来的，拼不上只是"这条还得人工拼"，
-    # 不许把回收结果改判失败——那会让人以为号池白烧，其实成片就在产物里。
+    # **整段 fail-soft**：成片已经回收，拼不上只是"这条还得人工拼"，
+    # 不许把回收结果改判失败——成片就在产物里，重投只会重复建任务。
     concat_note = await _auto_concat_recovered(db, outcome, operator=operator)
     outcome["concat"] = concat_note
 
@@ -11219,9 +10966,7 @@ async def _execute_dispatch(
             "errors": errors,
             "blocked": blocked,
             "asset_status": stage_by_asset,
-            "capacity": capacity,
             "forced_risk": {"ids": gate["forced_ids"], "reason": gate["forced_reason"]} if gate["forced_ids"] else None,
-            "cross_person": gate.get("cross_person"),
             "payload_keys": list(svc.BOARD_PAYLOAD_KEYS),
         },
     )
@@ -11256,7 +11001,6 @@ async def _execute_dispatch(
         "uncertain": uncertain,
         "card_warnings": card_warnings,
         "asset_status": stage_by_asset,
-        "capacity": capacity,
         "dispatch": counts,
         "concat": outcome.get("concat"),
         # 11-24 缺口账：要几版／账上几版／还缺几版（逐张在同一条 results[].short_by 里）
@@ -11276,7 +11020,6 @@ async def _execute_dispatch(
                 if (outcome.get("gap") or {}).get("retries") else ""
             )
             + _gap_hint(outcome.get("gap"))
-            + f"；号池今天已吃 {capacity['total_today']} 条（软提示线 ≈{capacity['soft_cap']}，不硬拦）"
         ),
     }
 
@@ -11284,7 +11027,7 @@ async def _execute_dispatch(
 def _gap_hint(gap: Optional[Dict[str, Any]]) -> str:
     """缺口的那句「明确过程提示」（11-24 用户口径：做不到百分百回收，就要说清还缺几版、怎么补）。
 
-    只说三件事：缺几版、为什么机器不再自己补（重启＝整条 payload 再烧一遍额度，
+    只说三件事：缺几版、为什么机器不再自己补（重启＝整条 payload 再建一次任务，
     且出窗口就是隔夜补投，那条口径没开）、人该怎么补（生产单「按同文案重开单」）。
     """
     g = gap or {}
@@ -11317,8 +11060,8 @@ async def _auto_concat_recovered(
        （到期后再点一次、重启后补收），没有幂等键同一支片子会被拼出 N 条一模一样的产物，
        成片墙就没法对账了。
     2. **失败绝不连累回收**：逐支单独包异常，成因写进该单的 `concat_last_result` 给界面看。
-       片子是真金白银烧号池收回来的，拼不上只是"这条还得人工拼"，把回收改判失败会让人
-       以为号池白烧，其实成片就在产物里。
+       成片已经回收，拼不上只是"这条还得人工拼"，把回收改判失败会让人
+      误以为成片没拿到，其实成片就在产物里。
     3. **0 元**：不调模型、不调智令，纯本机 ffmpeg——和手工口同一个口径，所以不进预算闸门、
        不写任何 cost_*，但每条都留审计（谁拼的、哪两段、什么顺序）。
     4. **不在事务里等网络**：`_concat_render`（两次下载＋一次转码＋一次上传）全在事务外跑，
@@ -11667,19 +11410,20 @@ async def _poll_and_collect(
     节奏：`ASSET_BOARD_POLL_INTERVAL`（默认 45s）一轮、最多 `ASSET_BOARD_POLL_MAX_MINUTES`
     （默认 45 分钟，实测单条 45s 一轮、25 分钟内到手）。**到期不判失败**：还在板上跑的单
     留在 queued/running，由人再点一次回收（`recover_only=true`）——按拍板口径
-    「不自动补投隔夜」，把没出片的单判成失败会诱导人去重投，那才是真烧钱。
+    「不自动补投隔夜」，把没出片的单判成失败会诱导人去重投，造成重复建任务。
 
     三条判读规矩都来自板子的实测行为，别"优化"掉：
-    - `waiting`／看不懂的词＝**还在跑**。判死→重投→同一条烧两遍号池（11-04 真踩过）；
+    - `waiting`／看不懂的词＝**还在跑**。判死→重投→同一条建两遍（11-04 真踩过）；
     - 回读失败／这一天查不到＝**跳过这一轮**，不是失败（11-04 反推轮询同一条教训）；
     - `total>1` 的单**全版到手才落 success**：先判成功，剩下的版次再没人回收。
 
     失败重试（11-24 用户口径「豆包生产会有一定的失败概率，最好失败后有一个重试机制」）：
     - **全版都 fail** 的单，用同一条 payload 自动重启，最多 `ASSET_BOARD_RETRY_MAX` 次
-      （默认 2，＝首投＋2 次＝最多 3 次上板机会）。重启只在**本次轮询窗口内**发生，
+      （默认 2，＝首投＋2 次＝最多 3 次上板机会）。每次重启把轮询窗口续一整轮——
+      首投常在窗口尾部才判 fail（实测 28 分钟），续窗才能等到重启出来的那版；
       到期不补（「不自动补投隔夜」照旧），`recover_only` 接续回收永不重启；
     - **部分版失败**（有的 succ 有的 fail）**不自动重启**：一次重启是整条 payload 重建，
-      等于把已经到手的那几版再烧一遍额度。这类单当场收口成 failed，`error` 与产物账
+      已经到手的版次会被重复创建。这类单当场收口成 failed，`error` 与产物账
       一起说清「要几版、到手几版、缺几版」，缺的走人工「按同文案重开单」只补差额；
     - 到期/收口时逐张算 `short_by = board_total − 库里产物数`，缺口在这里点名，
       不让人回去数成片墙。
@@ -11751,12 +11495,12 @@ async def _poll_and_collect(
     # 轮询持有的是 dispatch 时加载的 ORM 对象（expire_on_commit=False，整轮不重读库），
     # 期间人工经投递状态回写口改状态（failed→queued 重投是迁移表明确放行的路）：
     # 按旧快照直接写回就是 lost update；更糟的是人工改回 queued 后板面 fail 还会按
-    # 旧快照再自动重启一次——同一条烧两遍号池。
+    # 旧快照再自动重启一次——同一条重复建两遍。
     # 规矩：库里 status ≠ 本轮快照（或行没了）＝所有权已交还人工——这一行**整行让位**：
     # 恢复轮前快照（撤销本轮全部改动）、状态/心跳一律不写、从 tracked 摘除不再跟踪，
     # summary 里留 note 点名。已下载到手的产物照插：那是板侧已发生的事实（本单 tid
     # 出的片子），与状态互不覆盖；但 cancelled／行已不存在属于整单作废，未落库产物丢弃。
-    # 每轮查两次：开工时一次（防按旧快照重启烧号池），写回前一次 SELECT ... FOR UPDATE
+    # 每轮查两次：开工时一次（防按旧快照重启重复建任务），写回前一次 SELECT ... FOR UPDATE
     # （行锁把「轮询 commit vs 人工回写 UPDATE」串行化，写回窗口从整轮几分钟缩到毫秒级）。
     # 两次都裹在 no_autoflush 里：本轮的改动此刻还只在内存里，绝不能被 autoflush 先冲下去，
     # 否则重读读到的是自己的旧快照、判「没人动过」就白防了。
@@ -11815,7 +11559,7 @@ async def _poll_and_collect(
             for pid, t in pending.items()
         }
         # ① 开工重读：上一轮 commit 之后人工可能已改状态。改走的行当场摘除——
-        #    尤其不能让它在下面的板面 fail 分支里按旧快照再自动重启一次（烧两遍号池）。
+        #    尤其不能让它在下面的板面 fail 分支里按旧快照再自动重启一次（重复建任务）。
         stale_start: Dict[str, Optional[str]] = {}
         with db.sync_session.no_autoflush:
             for pid in list(pending):
@@ -11882,7 +11626,7 @@ async def _poll_and_collect(
                 if got:
                     await _take_outputs(pid, t, got, s)
                 if not got and t["payload"] and t["allow_retry"] and t["retries"] < retry_max and not recover_only:
-                    # 批 M（评审一·P1-1）：重启是**第二次烧号池**的动作，动手前用独立短会话
+                    # 批 M（评审一·P1-1）：重启会再建一次板任务，动手前用独立短会话
                     # 再读一眼库里的真实状态。主会话此刻不能开事务（下面紧跟出网，开着事务
                     # 等网络会撞 60s idle 掐断），也不能 commit（会把其他行本轮还没重读过的
                     # 改动先写下去）——所以借 _database 的模块属性开一次性会话（测试替身
@@ -11891,7 +11635,7 @@ async def _poll_and_collect(
                     #
                     # 11-24 口径「有界自动重试」：次数由 ASSET_BOARD_RETRY_MAX 说了算（默认 2）。
                     # **只有整批全失败才有重启资格**——重启是整条 payload 重建，部分成功时重启
-                    # 等于把已经到手的那几版再烧一遍额度，那种缺口的补法是人工重开单。
+                    # 等于重复创建已经到手的版次，那种缺口的补法是人工重开单。
                     async with _database.async_session_factory() as probe:
                         live_status = (
                             await probe.execute(
@@ -11932,19 +11676,27 @@ async def _poll_and_collect(
                     s["retries"] = t["retries"]
                     s["board_status"] = None
                     s.pop("last_read_error", None)
+                    # 重启后库里被 _adopt_tids 落成 queued，summary 快照必须同步跟上：
+                    # 下一轮「开工重读」拿它跟库里比，留着上一轮的 running 会把自己的
+                    # 写回误判成"人工接管"，整行让位、不再跟踪。11-27 那张 1116钩子-2
+                    # 就是这么被丢下的——板子 09:22 就出了 succ，单子却在 queued 挂了一夜。
+                    s["status"] = PR_QUEUED
+                    # 重启＝重新排一次队出片（实测 25 分钟上下），窗口跟着续一整轮；
+                    # 只往后推、不提前，仍受 retry_max 约束（最多 3 轮窗口）。
+                    deadline = max(deadline, time.monotonic() + _board_poll_max_minutes() * 60)
                     changed = True
                     # 批 L：重启后旧板侧状态已不属于新任务，_adopt_tids 已重钉「已投板」。
                 else:
                     if got:
                         reason = (
                             f"板面 {len(mine)} 版里 {len(bad)} 版 fail（succ 的 {len(got)} 版已正常回收）；"
-                            f"这张单缺 {len(bad)} 版——整批重启会把已到手的版次再烧一遍额度，"
+                            f"这张单缺 {len(bad)} 版——整批重启会重复创建已到手的版次，"
                             "所以缺口不自动补，在生产单对这行「按同文案重开单」只补差额"
                         )
                     elif t["retries"]:
                         reason = (
                             f"已按口径自动重启 {t['retries']} 次（上限 {retry_max} 次）仍失败；"
-                            "重启是再烧一遍号池的动作，次数到顶就交人工判读"
+                            "自动重启次数已到上限，交人工判读"
                         )
                     elif t["payload"] and t["allow_retry"] and retry_max == 0:
                         reason = "自动重试已关（ASSET_BOARD_RETRY_MAX=0）：失败直接交人工判读"
@@ -12577,6 +12329,8 @@ async def list_inflight_outputs(
     owner: Optional[str] = None,
     owner_id: Optional[str] = None,
     batch_id: Optional[str] = None,
+    include_creating: bool = False,
+    include_older_failed: bool = False,
     limit: int = 100,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -12600,7 +12354,7 @@ async def list_inflight_outputs(
       这个口会被墙每 20 秒轮一次，绝不能顺手去查企微后台。
     - owner／批次筛选跟墙一致，否则「只看这批」会把别批的在途单摆进来；试产单不进交付墙，
       占位也不摆（与 `/assets/outputs` 的 `include_trial` 默认口径对齐）。
-    - 失败只**报**不**判**：这一栏不改任何状态，重投仍走生产单面板（那里才有号池/审计口径）。
+    - 失败只**报**不**判**：这一栏不改任何状态，重投仍走生产单面板。
     """
     if owner not in (None, "", "me", "all"):
         raise HTTPException(status_code=400, detail="owner 只支持 me（我的链路）或 all（全量），缺省=all")
@@ -12624,12 +12378,19 @@ async def list_inflight_outputs(
         or_(
             AssetProduction.status.in_((PR_QUEUED, PR_RUNNING)),
             AssetProduction.board_tid.is_not(None),
+            # 极简直投先落 order_ready，再后台建豆包板任务。只把这 15 分钟内的新单
+            # 当「正在创建」，避免完整模式里人工建了但一直没投的待投单也堆到墙上。
+            and_(
+                AssetProduction.status == PR_ORDER_READY,
+                AssetProduction.created_at >= now - timedelta(minutes=15),
+            ) if include_creating else False,
         ),
         AssetProduction.is_trial.isnot(True),
     ]
     failed_conds = scope + [AssetProduction.status == PR_FAILED, AssetProduction.is_trial.isnot(True)]
     last_seen = func.coalesce(AssetProduction.completed_at, AssetProduction.board_last_check_at)
     failed_conds_win = failed_conds + [or_(last_seen >= cut, last_seen.is_(None))]
+    failed_conds_show = failed_conds if include_older_failed else failed_conds_win
 
     async def _count(conds) -> int:
         return int(
@@ -12660,7 +12421,7 @@ async def list_inflight_outputs(
         (
             await db.execute(
                 select(AssetProduction)
-                .where(and_(*failed_conds_win))
+                .where(and_(*failed_conds_show))
                 .order_by(last_seen.desc(), AssetProduction.created_at.desc())
                 .limit(cap)
             )
@@ -12715,11 +12476,12 @@ async def list_inflight_outputs(
             "batch_id": str(p.batch_id) if p.batch_id else None,
             "batch_code": batch_codes.get(p.batch_id) if p.batch_id else None,
             # `_user_names` 的键是**字符串** uuid（不是 UUID 对象），别拿 ORM 的 UUID 直接查
+            "owner_id": str(p.created_by) if p.created_by else None,
             "owner_name": owner_names.get(str(p.created_by)) if p.created_by else None,
             "board_tid": p.board_tid,
             "board_name": p.board_name,
             "board_total": p.board_total or 1,
-            "board_date": utc_iso(p.board_date) if p.board_date else None,
+            "board_date": board_local_iso(p.board_date) if p.board_date else None,
             "board_last_status": p.board_last_status,
             "board_last_check_at": utc_iso(p.board_last_check_at) if p.board_last_check_at else None,
             "attempts": p.attempts or 0,
@@ -12739,8 +12501,8 @@ async def list_inflight_outputs(
         "inflight_total": gen_total,
         "failed_total": failed_total,
         "failed_window_hours": _WALL_FAILED_WINDOW_HOURS,
-        # 摆出来的失败卡之外，还有多少张更早的（不摆、只报数，指去生产单）
-        "failed_older": max(0, failed_total - failed_recent_total),
+        # 摆出来的失败卡之外，还有多少张更早的（展开后=0；未展开时只报数）
+        "failed_older": 0 if include_older_failed else max(0, failed_total - failed_recent_total),
         # 出片正常 25 分钟上下。慢的判断基准直接取**轮询窗口本身**（`ASSET_BOARD_POLL_MAX_MINUTES`，
         # 默认 45 分）：过了这个点后台协程已经不再跟踪这张单，卡上的状态再也不会自己动了——
         # 此时该说的不是「失败了」（只有板面/人工能判），而是「没人替你盯着了，去看生产单」。
@@ -12755,14 +12517,14 @@ async def cancel_inflight_production(
     production_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_db),
-    _role_gate: User = Depends(require_roles(*_REVIEW_ROLES)),
+    _role_gate: User = Depends(require_roles(*_PROD_ROLES)),
 ):
     """在途/失败单人工删单（批 Y，11-25；11-26 补失败单）。
 
-    `queued/running` 是墙上超时也不动的灰卡；`failed` 是红卡。两者都允许操作人从
-    成片墙删掉：状态改 `cancelled`，卡片随即消失，但原失败成因、操作人和投板时长
-    仍留在台账/审计，已消耗的号池也照常计数。`success` 的账是既成事实，要清的是
-    片子，走产物删除口；`order_ready` 尚未投板，也不能走这个删单口。
+    `order_ready/queued/running` 是墙上等待投板或尚未回片的灰卡；`failed` 是红卡。
+    两者都允许操作人从成片墙删掉：状态改 `cancelled`，卡片随即消失，但原失败成因、
+    操作人和投板时长仍留在台账/审计，已投板的任务也照常计数。`success` 的账是既成事实，
+    要清的是片子，走产物删除口。
 
     下游不用新加任何守卫（11-05 起 `cancelled` 的读口全部就位）：
     回收只认点名后的状态迁移表，作废态在 `_block` 里被拒 → 删掉的单就算
@@ -12781,11 +12543,13 @@ async def cancel_inflight_production(
     ).scalar_one_or_none()
     if p is None:
         raise HTTPException(status_code=404, detail="这条生产单不存在")
-    if p.status not in (PR_QUEUED, PR_RUNNING, PR_FAILED):
+    if current_user.role == UserRole.material and p.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="素材专员只能删自己投出的生产单")
+    if p.status not in (PR_ORDER_READY, PR_QUEUED, PR_RUNNING, PR_FAILED):
         raise HTTPException(
             status_code=409,
-            detail=f"只有已投板未回片或已失败的单能从这里删（当前状态 {p.status}）；"
-                   "成片走产物删除口，未投板单请先撤单或重开",
+            detail=f"只有待投板、已投板未回片或已失败的单能从这里删（当前状态 {p.status}）；"
+                   "成片走产物删除口",
         )
     was = p.status
     previous_error = p.error
@@ -13812,7 +13576,7 @@ async def create_overlay_preset(
     if scope == OVERLAY_PRESET_SHARED and current_user.role != UserRole.admin:
         raise HTTPException(
             status_code=403,
-            detail="只有管理员能把叠加预设设成「全员可选」——共享出去会影响别人的出片外观",
+            detail="只有管理员能把叠加预设设成「全员可选」——共享后会改变全员出片外观",
         )
     name = data.name.strip()
     dup = (
@@ -13871,7 +13635,7 @@ async def update_overlay_preset(
     elif row.owner_id != current_user.id and not is_admin:
         raise HTTPException(
             status_code=403,
-            detail=f"这是别人的个人预设（{row.name}），只能自己改或另存一套",
+            detail=f"没有修改个人预设「{row.name}」的权限，请另存一套",
         )
 
     before = {"name": row.name, "scope": row.scope, "summary": overlay.overlay_summary(row.params)}
@@ -13944,7 +13708,7 @@ async def deactivate_overlay_preset(
     row = await _get_preset_or_404(db, preset_id)
     is_admin = current_user.role == UserRole.admin
     if row.scope == OVERLAY_PRESET_USER and row.owner_id != current_user.id and not is_admin:
-        raise HTTPException(status_code=403, detail=f"这是别人的个人预设（{row.name}），删不了")
+        raise HTTPException(status_code=403, detail=f"没有停用个人预设「{row.name}」的权限")
     if row.scope == OVERLAY_PRESET_SHARED and not is_admin:
         raise HTTPException(status_code=403, detail="「全员可选」的预设只有管理员能停")
     if not row.active:
@@ -14091,7 +13855,7 @@ async def _resolve_overlay_for_call(
             )
         if preset.scope == OVERLAY_PRESET_USER and preset.owner_id != current_user.id and current_user.role != UserRole.admin:
             # 个人预设不进别人的列表，但**直接拿 id 打接口**要挡（否则等于靠猜 id 读别人参数）
-            raise HTTPException(status_code=403, detail="这是别人的个人预设，用不了")
+            raise HTTPException(status_code=403, detail="没有使用这套个人预设的权限")
         params = overlay.validate_overlay(preset.params)
         return params, preset
     params = overlay.validate_overlay(inline or {})
@@ -14120,13 +13884,13 @@ async def compose_matrix(
     四条口径，都是先定死再写代码的（§9.5b 缺口 4）：
     1. **钩子侧只认非试产片**（见 `_load_matrix_hooks` 第 2 道闸）。
     2. **单次上限走 `ASSET_COMPOSE_MAX_PER_CALL`（默认 20），不复用投板那个 cap**：
-       投板 cap 管的是"当天号池额度"，这里管的是"一次要压多少秒服务器 CPU"。
+       投板 cap 控制一次确认多少张生产单，这里管的是"一次要压多少秒服务器 CPU"。
        两个数字凑巧都叫 20，语义毫无关系——复用会造出一个真 bug：
-       将来谁调号池 cap 到 40，拼接的单次上限就被连带放宽到 40 格。
+       将来谁调投板批量上限到 40，拼接的单次上限就被连带放宽到 40 格。
        超上限**不是 admin 强行放行**，是"请分两次点"——多出来的格子不会更值钱，
        只会让这次请求挂到网关超时（超时链见 §9.5，最外层 3600s，但 20 格×2~3 次转码
        真能吃满，所以默认 `async_mode=true` 走后台台账）。
-    3. **0 元**：不调模型、不调智令、不占号池——纯本机 ffmpeg。所以不进预算三档闸门、
+    3. **0 元**：不调模型、不调智令——纯本机 ffmpeg。所以不进预算三档闸门、
        不写 cost_*、`planned_units` 只是给一线看"这次排了多少格"。
        界面**不许**出现"花费 N 元/确认提交"（11-12 钱面下架口径）。
     4. **校验全部排在投出之前**：闸门、上限、试产、图片段、预设可用性，全在
@@ -14442,7 +14206,7 @@ async def _run_compose_matrix(
             "elapsed_seconds": round(time.monotonic() - started, 2),
             "message": (
                 f"拼好 {n_ok} 条" + (f"，失败 {n_fail} 条（逐条原因见 results）" if n_fail else "")
-                + "，0 元（纯本机 ffmpeg，不占号池）。成片墙里直接可见可下载，出包走原来那条口"
+                + "，0 元（纯本机 ffmpeg）。成片墙里直接可见可下载，出包走原来那条口"
             ),
         }
     finally:
@@ -14638,13 +14402,10 @@ async def resolve_link_assets(
             ),
         }
 
-    # 11-06 拍板②：解析费虽小（0.01/条）但是真实支出，替别人批次花之前先确认，确认后留痕
-    crosses = await _cross_person_gate(
+    crosses = await _cross_person_batches(
         db,
         operator=current_user,
         batch_ids=[a.batch_id for a in todo],
-        action_label="回源解析",
-        confirmed=data.cross_person_confirm,
     )
 
     # max_duration=0：只算解析这一条腿，别把反推的档位钱混进来（反推有它自己的确认单）
@@ -14950,13 +14711,10 @@ async def download_asset_sources(
             + (f"；{len(skipped)} 条被跳过" if skipped else ""),
         }
 
-    # 11-06 拍板②：下载会按解析渠道计 0.01/条，替别人批次跑之前先确认，确认后留痕
-    crosses = await _cross_person_gate(
+    crosses = await _cross_person_batches(
         db,
         operator=current_user,
         batch_ids=[a.batch_id for a in todo],
-        action_label="下载原片",
-        confirmed=data.cross_person_confirm,
     )
 
     results: List[dict] = []
@@ -16166,7 +15924,7 @@ def _not_script_carrier(col: Any, via_asset: bool = False):
     脚本库给每个脚本配一个素材壳＋候选行当生产载体（生产单必须挂在候选文案上），
     但载体**不是钩子文案**：正文是整篇脚本、不过 ≤80 字形态闸。混进五环的列表会
     ①污染「等审核」角标 ②出现在「从过审文案开单」挑选器里（对它做 autoclip 展开＝
-    把一篇脚本当文案展开，白烧钩子号）。所以五环的 ②③ 读口默认把载体及其素材壳藏起来，
+    把一篇脚本当文案展开，浪费一个钩子号）。所以五环的 ②③ 读口默认把载体及其素材壳藏起来，
     极简模式自己的读口（/assets/scripts）不走这里。
 
     批 X 为什么改读列：原来判别是**引用式**（有脚本指着它＝壳），批 X 的镜像脚本会把
@@ -16219,7 +15977,7 @@ def _split_ids(raw: Optional[str], field: str) -> List[str]:
 #
 # 四条口径（2026-11-26 定稿直投）：
 # 1. **只折叠 UI，不旁路逻辑**：投产走同一个 `create_productions`（`ProduceRequest.script_texts`
-#    脚本直投），投板走同一个 `dispatch_productions`——号池「一发即烧」、跨人确认、
+#    脚本直投），投板走同一个 `dispatch_productions`——重复提交保护、
 #    风险词重扫、卡片校验全部复用。
 # 2. **定稿即冻结、定稿即可投**：`ready` 行正文不可改，要改就派生新草稿；无需先送审。
 #    未人工过审的载体在投产前按定稿正文自动就绪，已人工过审的镜像仍投最新过审正文。
@@ -16285,7 +16043,6 @@ class ScriptProduceRequest(BaseModel):
     hook_codes: Optional[List[str]] = Field(
         None, description="手工粘的钩子编号（数量须等于缺号脚本数）；不传＝后端自动取号"
     )
-    cross_person_confirm: bool = Field(False, description="用了别人的定稿脚本时要知情确认")
 
 
 def _script_hash(body: Optional[str]) -> str:
@@ -16326,10 +16083,9 @@ async def _get_script(db: AsyncSession, script_id: Any) -> AssetScript:
 
 
 def _assert_script_owner(script: AssetScript, user: User) -> bool:
-    """写权限：仅 owner；admin 改别人的要留痕（返回「是否 admin 代改」）。
+    """写权限：仅 owner；admin 修改非本人脚本时返回 True 供审计留痕。
 
-    别人的脚本**可以取用、可以派生**（读全员可见——11-03 拍板素材内容不分权限），
-    只是不能直接改。要改就基于它建自己的草稿（`based_on_script_id`）。
+    脚本可直接取用、派生；修改已有脚本仍需先另存为本人草稿。
     """
     if script.owner_id == user.id:
         return False
@@ -16337,7 +16093,7 @@ def _assert_script_owner(script: AssetScript, user: User) -> bool:
         return True
     raise HTTPException(
         status_code=403,
-        detail="这条脚本不是你的——别人的脚本可以直接取用投产，要改请先「另存为我的草稿」",
+        detail="请先另存为草稿再修改",
     )
 
 
@@ -16356,9 +16112,7 @@ async def _ensure_script_carrier(
     为什么要有载体：生产单必须挂在候选文案上（`asset_productions.summary_id`
     NOT NULL）。新载体先记待审，极简模式在定稿脚本投产时自动就绪；保留人工审核态供
     完整模式与历史流程使用。壳不带批次（`batch_id` 可空是既有设计）——这样五环的
-    批次下拉里不会多出一个「脚本库」批次；代价是投板侧的「替他人批次花钱」闸对它
-    不触发，跨人口径由脚本作者与真实审核人承担（`reviewed_by ≠ 操作者` → produce
-    口的跨人确认，与五环同一条）。
+    批次下拉里不会多出一个「脚本库」批次；付费动作仍按批次保留费用与审计信息。
     """
     if script.carrier_summary_id:
         existing = await db.get(AssetSummary, script.carrier_summary_id)
@@ -17107,7 +16861,7 @@ async def produce_from_scripts(
     - 一脚本一单：脚本正文就是提示词（不展开、不调模型），`board_total`＝出几版；
     - 走**同一个** `create_productions` 与 `dispatch_productions`，钩子号、卡片校验照旧；
     - 只吃**已定稿**脚本；未人工过审的载体在取号前按定稿正文自动就绪并重扫风险词；
-    - 已人工过审的镜像仍投最新过审正文；跨人确认与审计照旧；
+    - 已人工过审的镜像仍投最新过审正文，作者与审核人留审计；
     - 受理即回任务号：豆包出片约 25 分钟，成片回到成片墙。
     """
     if not data.script_ids:
@@ -17175,40 +16929,9 @@ async def produce_from_scripts(
             + "——改掉脚本里的这些词并重新定稿后再投",
         )
 
-    # ── 会 400 的闸先过，再取号：号是「一发即烧」，先取号再被闸拦下＝白烧 ──
-    # 这里只是把 create_productions 里同三道闸的判定**提前**（话术与白话一致，前端靠
-    # _CROSS_OWNER_MARKER 识别跨人确认）；真正的闸仍在 create_productions 里照跑一遍。
+    # 会 400 的闸先过，再取号；先过卡片校验，避免取号后才发现输入不合法。
     if data.card_asset_ids:
         await _resolve_card_assets(db, data.card_asset_ids)   # 脏卡 id 当场 400
-    _cross = [
-        s for s in picked
-        if str(s.owner_id) != str(current_user.id)
-        or (carrier_of[str(s.id)].reviewed_by is not None
-            and str(carrier_of[str(s.id)].reviewed_by) != str(current_user.id))
-    ]
-    if _cross and not data.cross_person_confirm:
-        _who = {
-            s.id: (carrier_of[str(s.id)].reviewed_by
-                   if carrier_of[str(s.id)].reviewed_by is not None
-                   and str(carrier_of[str(s.id)].reviewed_by) != str(current_user.id)
-                   else s.owner_id)
-            for s in _cross
-        }
-        _names = await _user_names(db, set(_who.values()))
-        _shown = "；".join(
-            f"「{s.name}」（{'过审人' if _who[s.id] == carrier_of[str(s.id)].reviewed_by else '作者'} "
-            f"{_names.get(str(_who[s.id]), '未知')}）"
-            for s in _cross[:5]
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"投产涉及{_CROSS_OWNER_MARKER}：{_shown}"
-                f"{'（另有 ' + str(len(_cross) - 5) + ' 条，本条只列前 5 条）' if len(_cross) > 5 else ''}。"
-                "谁投账算谁（生产单记你名下、脚本作者与审核人留审计）——请确认确实是替同事补单/代班："
-                "界面弹窗点「确认替他人投产」后再发一次（带 cross_person_confirm=true），这一次没有建单、没有取号。"
-            ),
-        )
     _self_rows = [s for s in picked if carrier_of[str(s.id)].reviewed_by == current_user.id]
     if _self_rows and not bool(getattr(settings, "ASSET_SELF_PRODUCE_ALLOWED", True)):
         raise HTTPException(
@@ -17285,7 +17008,7 @@ async def produce_from_scripts(
                         "via": "script_produce",
                     },
                 )
-            # 已经钉上的号**留在文案预取位**（回滚等于再白烧一次），下一枪直接复用
+            # 已经钉上的号**留在文案预取位**（回滚会浪费已发编号），下一枪直接复用
             await db.commit()
             # 「怎么补」这句话必须对准**真实卡点**：命令没配 / 预取旋钮被关 / 取号脚本自己坏了，
             # 三种情况下「重试有没有用」是相反的答案（用户口径：不能给一个模糊的「稍后重试」）。
@@ -17305,8 +17028,8 @@ async def produce_from_scripts(
                     + f"这 {len(picked)} 条没建单：钩子编号差 {len(short)} 个"
                     f"（{reason or '取号脚本没给原因'}）。"
                     + (
-                        f"已取到的 {got} 个号挂在对应文案的预取位上，重发这一批会直接复用、不重复烧号。"
-                        if got else "共享台账上一个号也没烧。"
+                        f"已取到的 {got} 个号挂在对应文案的预取位上，重发这一批会直接复用、不重复取号。"
+                        if got else "共享台账上一个号也没取。"
                     )
                     + how
                     + "把服务器上跑 hook_id.py 取到的号贴进来（每行一个，只贴还缺号的那几条，"
@@ -17327,7 +17050,6 @@ async def produce_from_scripts(
             expand=False,
             hook_codes=codes,
             card_asset_ids=data.card_asset_ids,
-            cross_person_confirm=data.cross_person_confirm,
             async_mode=False,
         ),
         current_user,
@@ -17380,7 +17102,6 @@ async def produce_from_scripts(
                 ids=production_ids,
                 confirm=True,
                 async_mode=True,
-                cross_person_confirm=data.cross_person_confirm,
             ),
             current_user,
             db,
@@ -17932,7 +17653,7 @@ async def delete_asset(
     if not (is_admin or is_owner):
         raise HTTPException(
             status_code=403,
-            detail="只能删除自己导入的素材；删别人导入的要管理员",
+            detail="只能删除自己导入的素材；其他素材需管理员处理",
         )
 
     # ── 护栏 1：还在跑的任务圈住了这条素材 ──

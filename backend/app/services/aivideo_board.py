@@ -17,14 +17,12 @@
    **没有时长与分辨率参数**，成片恒 10.08s / 720×1280。请求体按 `ensure_ascii=False` 发
    （与页面/权威脚本一致，中文原样发出、不做 Unicode 转义，排查时能直接对上板面看到的字）。
 4. `date` 必须是**完整时间戳**：只写日期接口照样回 succ，但 `info?date=` 按任何日期都查不到，
-   额度白烧、成片永久取不回（1021 那次 120 条）。生成口径见 `asset_service.board_timestamp`。
+   成片会永久漏收。生成口径见 `asset_service.board_timestamp`。
 5. **回读要双日并集**（批次日＋板面今天）：跨午夜只查一天会把整批误判成"全失败"。
 6. `status` 只有 `succ` / `fail` 算终态。`waiting` **不是失败**——11-04 把它当失败去重投，
-   同一条烧了两遍号池。查不到／查得抖一下，都不许当成失败（见 `readback` 的容错口径）。
+   同一条重复建了两遍任务。查不到／查得抖一下，都不许当成失败（见 `readback` 的容错口径）。
 7. 成片下载是 `GET /data<outUrl>`：`outUrl` 是**相对路径**，直接当绝对地址用会连不上。
-8. 号池是**单日上限、且与每日解压线共用**（1023 叠两份量 → 115/120 成批 fail）。解压线在
-   我们的库里没有台账，所以 `assets.py` 算的当日余量**只含素材库自己投的**，天然偏乐观——
-   这也是"只提示不硬拦"的另一条理由（用户 11-04 拍板：产能不限）。
+8. 豆包生成免费，不设号池余量或每日额度闸门；仍需防重复提交，避免同一批任务被建两遍。
 """
 import base64
 import json
@@ -41,7 +39,7 @@ logger = logging.getLogger(__name__)
 # ── 板面状态词（大小写按板接口原样，别自己发明）──
 STATE_SUCC = "succ"
 STATE_FAIL = "fail"
-# 只有这两个算"结束了"。其它（waiting/running/空）一律算还在跑：判死＝重复烧号
+# 只有这两个算"结束了"。其它（waiting/running/空）一律算还在跑：判死会导致重复建任务
 TERMINAL_STATES: Tuple[str, ...] = (STATE_SUCC, STATE_FAIL)
 
 
@@ -100,7 +98,7 @@ def board_day(dt: Optional[datetime]) -> str:
 def days_to_query(dates: Iterable[Optional[datetime]]) -> List[str]:
     """要并集查的日期：本批每张单的批次日 ＋ 板面今天。
 
-    为什么不能只查批次日：号池排队时板子可能把活落到跨午夜之后；
+    为什么不能只查批次日：跨午夜后板面任务可能落到次日；
     为什么不能只查今天：昨天投的那批今天来回读就会"查不到"→被误判失败。
     """
     today = datetime.utcnow() + timedelta(hours=int(settings.ASSET_BOARD_TZ_OFFSET_HOURS or 0))
@@ -164,7 +162,7 @@ async def readback(days: Iterable[str], tag: str) -> Dict[str, Dict[str, Any]]:
 
     容错口径（照 11-04 反推轮询那次修的「查询抖动＝判死」教训）：
     **某几天查不到就先用查到的这几天**，只有**所有**日期都失败才抛错。
-    轮询方拿"暂时查不到"当成失败就会去重投，那就是同一条烧两遍号池。
+    轮询方拿"暂时查不到"当成失败就会去重投，造成重复建任务。
     """
     wanted = sorted({str(d) for d in days if d})
     if not wanted:

@@ -26,8 +26,8 @@
 3. 成片**不落 SliceOutput**：该表 task_id NOT NULL 且 FK→slice_tasks，硬塞要造假 SliceTask。
 4. 生产环节 P0 只到"生产单"（N 条差异化提示词 + 可导出投放 payload），**自动**投递属 P1；
    但投递**状态**在 P0 就有落点（11-03 拍板第 4 条）：人投完板用 `POST /assets/productions/status`
-   回写 queued/running/success/failed，列表侧给「投了多少、成多少、败多少」——号池不做硬限，
-   只报数。没有这个口，库里永远只有 order_ready，对账页回答不了"昨天那 120 条到手几条"。
+   回写 queued/running/success/failed，列表侧给「投了多少、成多少、败多少」——免费通道不设额度限制，
+   只报任务状态。没有这个口，库里永远只有 order_ready，对账页回答不了实际回收情况。
    通道 = 企微自动化后台「创建 AI 视频」任务板（`wework_aivideo`，不扣现金、成片恒
    10.08s/720×1280、payload 七键），**不是**火山方舟 Seedance 官方 API，也不走豆包网页 RPA。
    P1 前置仍是队列拆分：`seedance_generate_task` 现在与视频号发布抢同一个 `--concurrency=1`
@@ -158,8 +158,7 @@ PR_SUCCESS = "success"        # 成片到手；completed_at 由回写口/投板�
 PR_FAILED = "failed"          # 失败/不出片；error 必填（我们侧判读，板上失败行没有原因字段）
 PR_CANCELLED = "cancelled"    # 仍无写入方：自动投板做的是"重启一次"而不是"取消"（11-05 口径）；
                               # 列在这里是为了读口能判
-PR_SKIPPED = "skipped"      # 被批次熔断挡下（额度/预算），未投递：仍无写入方——熔断本身没做，
-                            # 号池余量按用户拍板只提示不拦，所以这条态在 P0/P1 都不会自动产生
+PR_SKIPPED = "skipped"      # 被投递前闸门挡下，未投递；保留给已有数据与兼容读取
 PR_SUPERSEDED = "superseded"  # 文案被撤销过审后作废的旧单：不许导出、不许投递（A2-2）
 PRODUCTION_STATES = (
     PR_ORDER_READY, PR_QUEUED, PR_RUNNING, PR_AWAITING_REWRITE,
@@ -499,9 +498,9 @@ class AssetProduction(Base):
     """生产单条目：一条过审文案 × 第 i 个产物 = 一行（N 的 fan-out 单元）。
 
     N 的语义（2026-11-03 定）= 同一条过审文案派生 **N 条差异化提示词**，不是重复投喂
-    同一条——重复投喂产物近似且白烧额度。差异来源记在 `variant_basis`。
+    同一条——重复投喂产物近似且浪费生成机会。差异来源记在 `variant_basis`。
 
-    ⚠️ **N 与板上 `total` 是两个量，混用会一次白烧 N×N**（B-1）：
+    ⚠️ **N 与板上 `total` 是两个量，混用会一次建出 N×N 个版次**（B-1）：
     板上 `total` = 同一条 prompt 出 N 版（后台给每版派不同豆包号），所以
     「一批 N 份差异化」= **N 个任务、每个 `board_total=1`**；想"一条出 2~3 版挑最好"
     是另一个口径（09-09 定过），用 `board_total` 表达，接口层 min1/max20。
@@ -603,7 +602,7 @@ class AssetProduction(Base):
     # 幂等键：防同一文案同一序号被重复投递（重试新增 attempt 行，不改原行）
     idempotency_key = Column(String(120), nullable=True)
     error = Column(String(500), nullable=True)
-    cost = Column(Float, nullable=True)                    # 额度类消耗记 0，成本走号池
+    cost = Column(Float, nullable=True)                    # 免费豆包通道记 0；真实付费动作另记成本
     created_by = Column(UUID(as_uuid=True), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     started_at = Column(DateTime, nullable=True)
@@ -756,7 +755,7 @@ JOB_PRODUCE = "produce"
 # 所以 `GET /assets/jobs` 默认不列它（见 list_asset_jobs），任务横幅才不会被人人都有的
 # 抽帧任务把「我刚才点的那批还在不在跑」挤出视野。
 JOB_FRAMES = "frames"
-# 批 H（11-05）：投板。它是这三类里**唯一会往外花钱/花号池额度**的活，所以
+# 批 H（11-05）：投板。它会真正创建豆包生成任务，因此
 # ① 权限跟 `_REVIEW_ROLES`（与建单/投产/回写同一侧）；② 必须带 `confirm=true`
 # （P0 拍板口径「可自动投板，但逐批人工确认」）；③ 一个 job 里包含"建任务＋轮询＋
 # 回收下载"整段，跑几十分钟，同步等必然顶穿超时链——只能走这里。
@@ -792,7 +791,7 @@ class AssetJob(Base):
     （单条 ~95s，一批 10 条串跑就是 15 分钟），一线只能靠浏览器干等。四层超时
     （nginx 3600s > 前端 960s > 后端单条 900s > autoclip 600s）只保证"不被半路掐"，
     不保证"人敢点"：刷新页面、切走标签、网关抖动，一次 15 分钟的等待就白扔，
-    而钱和号池编号在那一次已经花掉了。所以：提交即回一个 job_id，前端轮询台账。
+    已经花掉的模型费用或已经建好的豆包任务也可能因此重复提交。所以：提交即回一个 job_id，前端轮询台账。
 
     ⚠️ 这不是 Celery 队列，是**同进程 asyncio 后台任务 + 数据库台账**：
     现网 backend 跑 `--workers 1`，也没有任何 celery worker 订阅素材库队列，

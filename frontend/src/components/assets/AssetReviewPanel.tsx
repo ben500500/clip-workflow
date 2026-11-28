@@ -1296,7 +1296,7 @@ const AssetReviewPanel: React.FC<Props> = ({ canReview, canProduce, isAdmin, sco
         width={720}
         confirmLoading={trialBusy}
         onCancel={() => { if (!trialBusy) setTrialFor(null); }}
-        okText="投豆包试产（占 1 个号池额度）"
+        okText="投豆包试产"
         okButtonProps={{ disabled: !!trialDrafting.startsWith('正在') }}
         onOk={submitTrial}
       >

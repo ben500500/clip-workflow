@@ -28,7 +28,7 @@ import AssetComposeModal from './AssetComposeModal';
 import ApprovedSummaryPickerModal from './ApprovedSummaryPickerModal';
 import ProduceOrderModal from './ProduceOrderModal';
 import { nudgeAssetJobBanner } from './AssetJobBanner';
-import { withCrossPersonConfirm } from './crossPerson';
+import { formatDateTime } from '../../utils/format';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -156,7 +156,7 @@ interface Props {
  *
  * 「投去 AI 生成」（11-09）是**只读的一步跳转**：把勾选素材名下已过审的文案捞出来，
  * 交给生产单页/审核台共用的那个投产弹窗。本按钮自己不算钱、不做校验——闸门只有一套，
- * 在弹窗里（风险词、一致性、钩子编号、号池），这里再写一套早晚对不上。
+ * 在弹窗里（风险词、一致性、钩子编号），这里再写一套早晚对不上。
  */
 const AssetListPanel: React.FC<Props> = ({
   canProduce, isAdmin, scopeMine, batchId, reloadToken, onGoToProduction, onProduced, active = true,
@@ -329,22 +329,18 @@ const AssetListPanel: React.FC<Props> = ({
   const submitAnalyze = async () => {
     setAnalyzeLoading(true);
     try {
-      const res: AssetAnalyzeResponse | AssetJobAck | undefined = await withCrossPersonConfirm((c) =>
-        assetApi.analyzeBatch({
-          asset_ids: selectedVideoIds,
-          max_duration: tier,
-          confirmed: true,
-          // 余额闸门仍在后端：非 admin 余额不足照样被拦（报错文案带原因）；
-          // admin 视为已知情（费用记账可查），自动带 force 免一道勾选
-          force: isAdmin,
-          retry_failed: retryFailed,
-          download: withDownload,
-          cross_person_confirm: c,
-          // 11-06：提交即回任务号，提交＋收敛都在后台跑——页面关了也照收（任务条会报进度）
-          async_mode: true,
-        }),
-      );
-      if (!res) return; // 用户在「替他人批次」确认窗点了取消：什么都没动，留在弹窗里
+      const res: AssetAnalyzeResponse | AssetJobAck = await assetApi.analyzeBatch({
+        asset_ids: selectedVideoIds,
+        max_duration: tier,
+        confirmed: true,
+        // 余额闸门仍在后端：非 admin 余额不足照样被拦（报错文案带原因）；
+        // admin 视为已知情（费用记账可查），自动带 force 免一道勾选
+        force: isAdmin,
+        retry_failed: retryFailed,
+        download: withDownload,
+        // 11-06：提交即回任务号，提交＋收敛都在后台跑——页面关了也照收（任务条会报进度）
+        async_mode: true,
+      });
       if (isAssetJobAck(res)) {
         message.success(res.message || '反推文案已排到后台，跑完顶部任务条会报', 8);
         nudgeAssetJobBanner();
@@ -423,10 +419,7 @@ const AssetListPanel: React.FC<Props> = ({
   const doGenerateSummaries = async (ok: string[], overwrite: boolean) => {
     setGenBusy(true);
     try {
-      const res = await withCrossPersonConfirm((c) =>
-        assetApi.generateSummaries({ asset_ids: ok, async_mode: true, overwrite, cross_person_confirm: c }),
-      );
-      if (!res) return; // 取消了「替他人批次」确认：什么都不做
+      const res = await assetApi.generateSummaries({ asset_ids: ok, async_mode: true, overwrite });
       if (isAssetJobAck(res)) {
         // 回执里没结果，只有任务号：告诉人去哪儿看，别在这里猜跑没跑完
         // （busy 由下面的 finally 收，这里不重复置位）
@@ -481,14 +474,10 @@ const AssetListPanel: React.FC<Props> = ({
     setResolveBusy(true);
     try {
       const linkIds = selected.filter((s) => s.source_kind === 'link' && !isCopyShell(s)).map((s) => s.id);
-      const res: AssetResolveResponse | undefined = await withCrossPersonConfirm((c) =>
-        assetApi.resolveAssets({
-          asset_ids: linkIds,
-          confirmed: true,
-          cross_person_confirm: c,
-        }),
-      );
-      if (!res) return; // 取消了「替他人批次」确认：什么都不做
+      const res: AssetResolveResponse = await assetApi.resolveAssets({
+        asset_ids: linkIds,
+        confirmed: true,
+      });
       const notes = (res.results || []).filter((r) => r.note && !r.ok);
       Modal.info({
         title: `查时长：拿到 ${res.resolved} 条（费用已自动记账）`,
@@ -611,18 +600,14 @@ const AssetListPanel: React.FC<Props> = ({
       onOk: async () => {
         setRetryingId(row.id);
         try {
-          const res: AssetAnalyzeResponse | AssetJobAck | undefined = await withCrossPersonConfirm((c) =>
-            assetApi.analyzeBatch({
-              asset_ids: [row.id],
-              max_duration: DEFAULT_TIER,
-              confirmed: true,
-              retry_failed: true,
-              cross_person_confirm: c,
-              // 行级重试也走后台：收敛不靠这条页面的轮询，关了页面照样收到终态
-              async_mode: true,
-            }),
-          );
-          if (!res) return; // 取消了「替他人批次」确认
+          const res: AssetAnalyzeResponse | AssetJobAck = await assetApi.analyzeBatch({
+            asset_ids: [row.id],
+            max_duration: DEFAULT_TIER,
+            confirmed: true,
+            retry_failed: true,
+            // 行级重试也走后台：收敛不靠这条页面的轮询，关了页面照样收到终态
+            async_mode: true,
+          });
           if (isAssetJobAck(res)) {
             message.success(res.message || '反推文案已重新提交（后台跑，跑完列表自己刷新）', 8);
             nudgeAssetJobBanner();
@@ -647,10 +632,7 @@ const AssetListPanel: React.FC<Props> = ({
   const retryDownload = async (row: AssetItem) => {
     setRetryDlId(row.id);
     try {
-      const res = await withCrossPersonConfirm((c) =>
-        assetApi.downloadSources({ asset_ids: [row.id], async_mode: true, cross_person_confirm: c }),
-      );
-      if (!res) return; // 取消了「替他人批次」确认
+      const res = await assetApi.downloadSources({ asset_ids: [row.id], async_mode: true });
       if (isAssetJobAck(res)) {
         message.success(res.message || '已排上下载，跑完这行会变绿色', 6);
         nudgeAssetJobBanner();
@@ -961,7 +943,7 @@ const AssetListPanel: React.FC<Props> = ({
       dataIndex: 'status',
       width: 128,
       render: (v: AssetItem['status'], row) => (
-        <Tooltip title={`反推文案 ${yuan(row.cost_prompt)}｜查时长 ${yuan(row.cost_parse)}｜导入 ${(row.created_at || '').replace('T', ' ').slice(0, 16)}`}>
+        <Tooltip title={`反推文案 ${yuan(row.cost_prompt)}｜查时长 ${yuan(row.cost_parse)}｜导入 ${formatDateTime(row.created_at)}`}>
           <span><AssetStatusTag status={v} /></span>
         </Tooltip>
       ),
@@ -1155,7 +1137,7 @@ const AssetListPanel: React.FC<Props> = ({
           <CopyGuide open={howOpen} onClose={() => setHowOpen(false)} />
           {/*
             批 M（11-09）：直达投产。这一步 0 元、只读（拉已过审文案清单），
-            真花钱的是下一屏投产弹窗里的展开/投板，所以不走这里的成本确认单——
+            开单与投板统一在下一屏完成，所以不走这里的成本确认单——
             闸门在 ProduceOrderModal 里，全站只有那一套。
           */}
           <Tooltip
@@ -1163,7 +1145,7 @@ const AssetListPanel: React.FC<Props> = ({
               <div style={{ maxWidth: 300 }}>
                 <div>把勾选素材名下<strong>已过审 / 改后通过</strong>的文案捞出来，进投产弹窗开生产单。</div>
                 <div style={{ marginTop: 4 }}>
-                  风险词、一致性、钩子编号、号池这些检查都在弹窗里，这里不重复一遍。
+                  风险词、一致性、钩子编号这些检查都在弹窗里，这里不重复一遍。
                 </div>
               </div>
             }
@@ -1316,8 +1298,7 @@ const AssetListPanel: React.FC<Props> = ({
         「你勾的这几条素材里，哪些文案已经过审、能开单」。
         批 N（11-09 收「两套入口」）：这屏抽成 ②④ 共用组件 ApprovedSummaryPickerModal，
         生产单页那版（原来 approved/passed_edited 各拉 300 条再前端拼）一起并进来。
-        不做默认全选：一条素材可能好几版都过了审，全勾＝一次投出几倍号池额度，
-        而号池是按天算的（≈120 条/日）。
+        不做默认全选：一条素材可能有好几版过审文案，需要逐条确认本次要投产哪几版。
       */}
       <ApprovedSummaryPickerModal
         open={aiOpen}
@@ -1331,7 +1312,7 @@ const AssetListPanel: React.FC<Props> = ({
         }}
       />
 
-      {/* 与生产单页/审核台同一个投产弹窗：闸门（风险词、一致性、钩子编号、号池、成本）只有一套 */}
+      {/* 与生产单页/审核台同一个投产弹窗：闸门（风险词、一致性、钩子编号）只有一套 */}
       <ProduceOrderModal
         open={produceOpen}
         summaries={pickedSummaries}

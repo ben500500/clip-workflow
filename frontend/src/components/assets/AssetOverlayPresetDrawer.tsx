@@ -276,7 +276,7 @@ const AssetOverlayPresetDrawer: React.FC<Props> = ({ open, onClose, isAdmin, onP
             </Space>
             {!isAdmin && (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                「全员可选」只有管理员能设——共享出去会影响别人的出片外观。
+                「全员可选」只有管理员能设——共享后会改变全员出片外观。
               </Text>
             )}
             <Input

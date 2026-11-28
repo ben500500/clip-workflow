@@ -13,7 +13,7 @@ const POLL_MS = 8000;
 
 /**
  * 批 N（评审二·P1-6）：interrupted 的重提出口。台账里存着提交时的原请求体（params），
- * 但「一键原样重提」对 dispatch 这类烧号池的动作等于绕过逐批人工确认——不做。
+ * 但「一键原样重提」对 dispatch 这类需要逐批人工确认的动作等于绕过人工确认——不做。
  * 给的是**跳原入口**：去对应页签重新点一次（那一步本来就该由人点）。
  */
 export const RESUBMIT_TARGET: Record<string, { tab: string; label: string }> = {

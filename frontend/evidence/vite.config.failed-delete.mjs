@@ -13,14 +13,17 @@ const inflightPath = '/api/assets/outputs/inflight';
 const cancelPath = '/api/assets/productions/';
 const A = '00000000-0000-4000-8000-000000000001';
 const B = '00000000-0000-4000-8000-000000000002';
+const CURRENT_USER = '00000000-0000-4000-8000-000000000099';
+const OTHER_USER = '00000000-0000-4000-8000-000000000088';
 
-const row = (id, error, status = 'failed') => ({
+const row = (id, error, status = 'failed', ownerId = CURRENT_USER) => ({
   production_id: id, bucket: status === 'failed' ? 'failed' : 'generating', status,
+  owner_id: ownerId,
   hook_code: id === A ? 'ZZ901' : 'ZZ902',
   asset_id: '5df558e7-e88e-4cf8-a225-88f8cfea8827', asset_code: 'AS-24DC5D8D',
   asset_title: '失败删单·隔离验收', batch_id: null, batch_code: null,
-  owner_name: 'admin', board_tid: `CDP-${id.slice(-1)}`, board_name: '失败删单验收', board_total: 1,
-  board_date: '2026-11-26T08:00:00+00:00', board_last_status: status,
+  owner_name: ownerId === CURRENT_USER ? 'admin' : '同事', board_tid: status === 'order_ready' ? null : `CDP-${id.slice(-1)}`, board_name: '失败删单验收', board_total: 1,
+  board_date: '2026-11-26T16:00:00+08:00', board_last_status: status,
   board_last_check_at: '2026-11-26T08:20:00+00:00', attempts: 1,
   dispatched_at: '2026-11-26T08:00:00+00:00', minutes_since_dispatch: 20,
   created_at: '2026-11-26T08:00:00+00:00', error,
@@ -35,8 +38,12 @@ const seed = () => ({
 });
 const scenarios = {
   default: seed,
+  empty: () => ({ ...seed(), items: [], inflight_total: 0, failed_total: 0 }),
   mixed: () => ({ ...seed(), items: [row(A, '内容审核未通过：角色卡不符'), row(B, '在途隔离验收', 'running')], inflight_total: 1 }),
   twoGenerating: () => ({ ...seed(), items: [row(A, '在途隔离验收 A', 'running'), row(B, '在途隔离验收 B', 'queued')], inflight_total: 2, failed_total: 0 }),
+  creating: () => ({ ...seed(), items: [row(A, null, 'order_ready')], inflight_total: 1, failed_total: 0 }),
+  ownership: () => ({ ...seed(), items: [row(A, '他人失败单', 'failed', OTHER_USER), row(B, '本人失败单')] }),
+  historical: () => ({ ...seed(), items: [{ ...row(A, '24 小时前的失败单'), older: true }, row(B, '生成失败：隔离验收错误路径')], failed_total: 2, failed_older: 1 }),
 };
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; } };
 const readText = (path, fallback) => { try { return readFileSync(path, 'utf8').trim(); } catch { return fallback; } };
@@ -76,7 +83,25 @@ function stubFailedDelete() {
         req.on('data', (chunk) => { body += chunk; });
         req.on('end', () => {
           const patch = JSON.parse(body || '{}');
-          writeJson(CONTROL, { ...readJson(CONTROL, {}), ...patch });
+          if (patch.transition === 'running') {
+            const state = readJson(STATE, seed());
+            const item = state.items.find((entry) => entry.production_id === A);
+            if (item) {
+              Object.assign(item, row(A, null, 'running', item.owner_id), {
+                board_last_check_at: '2026-11-26T08:20:00+00:00',
+                board_last_status: 'running',
+                minutes_since_dispatch: 1,
+              });
+            }
+            writeJson(STATE, state);
+          }
+          const current = readJson(CONTROL, {});
+          writeJson(CONTROL, {
+            ...current,
+            ...patch,
+            ...(Array.isArray(patch.gets) ? { gets: patch.gets } : {}),
+            ...(Array.isArray(patch.posts) ? { posts: patch.posts } : {}),
+          });
           json(res, 200, readJson(CONTROL, {}));
         });
         return;
@@ -87,7 +112,7 @@ function stubFailedDelete() {
         res.end(readFileSync(EVENTS, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)).map((line) => JSON.stringify(line)).join('\n'));
         return;
       }
-      if (url === '/__fd/harness') {
+      if (url.split('?')[0] === '/__fd/harness') {
         res.statusCode = 200;
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
         res.end('<!doctype html><html><head><meta charset="UTF-8"><title>FD race harness</title></head><body><div id="root"></div><script type="module">import RefreshRuntime from "/@react-refresh";RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>(type)=>type;window.__vite_plugin_react_preamble_installed__=true;</script><script type="module" src="/evidence/failed-delete-harness.tsx"></script></body></html>');
@@ -109,7 +134,7 @@ function stubFailedDelete() {
         const plan = queue.length ? queue.shift()
           : legacyRefresh === 'error' ? { status: 503, detail: '隔离验收：删单后的刷新失败' }
             : legacyRefresh === 'stale' ? { snapshot: 'seed' } : {};
-        if (queue.length !== (Array.isArray(c.gets) ? c.gets.length : 0)) writeJson(CONTROL, { ...c, gets: queue });
+        if (Array.isArray(c.gets)) writeJson(CONTROL, { ...c, gets: queue });
         const captured = readJson(STATE, seed());
         event({ kind: 'get-start', url, plan });
         const respond = () => {
@@ -122,6 +147,7 @@ function stubFailedDelete() {
             : plan.snapshot === 'mixed' ? scenarios.mixed()
               : plan.snapshot === 'live' ? readJson(STATE, seed()) : captured;
           let items = [...(source.items || [])];
+          if (!url.includes('include_older_failed=true')) items = items.filter((item) => !item.older);
           const omit = Array.isArray(plan.omit) ? plan.omit : [];
           items = items.filter((item) => !omit.includes(item.production_id));
           if (Number.isFinite(plan.limit)) items = items.slice(0, plan.limit);
@@ -138,12 +164,23 @@ function stubFailedDelete() {
         if (plan.delay) setTimeout(respond, plan.delay); else respond();
         return;
       }
+      if (req.method === 'POST' && url === '/api/assets/scripts/produce') {
+        writeJson(STATE, scenarios.creating());
+        event({ kind: 'produce', status: 200 });
+        json(res, 200, {
+          production_ids: [A],
+          results: [{ script_id: '00000000-0000-4000-8000-0000000000s1', code: 'CDP-FAKE', ok: true, production_id: A, hook_code: 'ZZ901', error: null }],
+          dispatch: { queued: true, job_id: 'cdp-fake-job' },
+          message: '已投出 1 个脚本',
+        });
+        return;
+      }
       if (req.method === 'POST' && url.startsWith(cancelPath) && url.endsWith('/cancel')) {
         const id = url.slice(cancelPath.length).split('/')[0];
         const c = readJson(CONTROL, {});
         const queue = Array.isArray(c.posts) ? c.posts : [];
         const plan = queue.length ? queue.shift() : {};
-        if (queue.length !== (Array.isArray(c.posts) ? c.posts.length : 0)) writeJson(CONTROL, { ...c, posts: queue });
+        if (Array.isArray(c.posts)) writeJson(CONTROL, { ...c, posts: queue });
         const mode = plan.mode || readText(MODE, 'ok');
         appendFileSync(HITS, `${id} ${mode}\n`);
         event({ kind: 'post-start', id, mode, plan });
@@ -154,6 +191,17 @@ function stubFailedDelete() {
           error: [409, '删单失败：隔离验收错误路径'],
           server: [500, '服务暂时不可用：隔离验收 500'],
         };
+        let removed = null;
+        if (!details[mode] && mode !== 'timeout' && !plan.status) {
+          const state = readJson(STATE, seed());
+          removed = state.items.find((x) => x.production_id === id) || null;
+          if (removed) {
+            state.items = state.items.filter((x) => x.production_id !== id);
+            if (removed.bucket === 'failed') state.failed_total = Math.max(0, (state.failed_total || 0) - 1);
+            else state.inflight_total = Math.max(0, (state.inflight_total || 0) - 1);
+            writeJson(STATE, state);
+          }
+        }
         const respond = () => {
           if (details[mode]) {
             const [status, detail] = details[mode];
@@ -166,17 +214,13 @@ function stubFailedDelete() {
             json(res, plan.status, { detail: plan.detail || '隔离验收失败' });
             return;
           }
-          const state = readJson(STATE, seed());
-          const found = state.items.find((x) => x.production_id === id);
-          if (!found) {
+          if (!removed) {
             event({ kind: 'post-end', id, mode, status: 404 });
             json(res, 404, { detail: '生产单不存在' });
             return;
           }
-          state.items = state.items.filter((x) => x.production_id !== id);
-          writeJson(STATE, state);
           event({ kind: 'post-end', id, mode, status: 200 });
-          json(res, 200, { ok: true, id, status: 'cancelled', error: `${found.error}；成片墙人工删单` });
+          json(res, 200, { ok: true, id, status: 'cancelled', error: `${removed.error}；成片墙人工删单` });
         };
         // timeout 保留旧基线兼容：仍然返回 409；专项用 plan.status + delay 制造真实 60s 超时。
         if (mode === 'timeout' && !plan.delay && !plan.status) {
@@ -184,6 +228,7 @@ function stubFailedDelete() {
           json(res, 409, { detail: '删单失败：隔离验收错误路径' });
           return;
         }
+        if (mode === 'timeout' && plan.delay) return;
         if (plan.delay) setTimeout(respond, plan.delay); else respond();
         return;
       }
