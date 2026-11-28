@@ -2102,6 +2102,11 @@ const EpisodeDetail: React.FC = () => {
             接缝转场
           </Checkbox>
         </Tooltip>
+        {/* 速度差常驻提示（2026-11-28 用户需求）：不开 Tooltip 也要让用户看到开启的
+            性能代价——实测基准 hook 1s+body 90s：关=0.3s 流拷贝拼接，开=18s 全片重编码 */}
+        <span style={{ fontSize: 11, color: hookTransitionEnabled ? '#fa8c16' : '#999', whiteSpace: 'nowrap' }}>
+          {hookTransitionEnabled ? '开启后拼接需整体重编码，速度慢约 40 倍' : '关闭（硬切）拼接最快'}
+        </span>
         {/* 钩子混搭输出数量：高光混剪有自己的输出个数（混剪配置），两者并存会按组相乘
             导致输出爆炸 → 高光混剪开启时不下发该数量（仍常驻显示、置灰提示）。
             2026-11-21 修正：数量框曾只在 random/combine 模式渲染，顺序模式整块消失，
