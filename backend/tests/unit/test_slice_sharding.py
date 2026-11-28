@@ -123,7 +123,7 @@ def _req(**kw):
     d = types.SimpleNamespace(
         target_node_id=None, no_cut=False, output_id=None,
         hook_video_key=None, hook_video_keys=None, outro_video_key=None,
-        hook_mix_mode=None, dual_mix_enabled=False,
+        hook_mix_mode=None, hook_mix_output_count=None, dual_mix_enabled=False,
     )
     for k, v in kw.items():
         setattr(d, k, v)
@@ -136,17 +136,58 @@ def test_plan_disabled_or_nonworker_returns_none():
     assert plan_shards_if_eligible(sharding_enabled=True, engine="celery", data=_req(), remotion_mix_config=None, cutlist=full) is None
 
 
-def test_plan_excludes_phase1_features():
+def test_plan_excludes_phase2_remaining_features():
     full = _cutlist(90)
     base = dict(sharding_enabled=True, engine="worker", remotion_mix_config=None, cutlist=full)
     assert plan_shards_if_eligible(data=_req(target_node_id="slice-worker-1"), **base) is None
     assert plan_shards_if_eligible(data=_req(no_cut=True), **base) is None
     assert plan_shards_if_eligible(data=_req(output_id="x"), **base) is None
-    assert plan_shards_if_eligible(data=_req(hook_video_keys=["h/1.mp4"]), **base) is None
-    assert plan_shards_if_eligible(data=_req(outro_video_key="outro/x.mp4"), **base) is None
-    assert plan_shards_if_eligible(data=_req(hook_mix_mode="random"), **base) is None
     assert plan_shards_if_eligible(data=_req(dual_mix_enabled=True), **base) is None
+    # combine 仍排除（任务级钩子链缓存跨片不可复用）
+    assert plan_shards_if_eligible(
+        data=_req(hook_video_keys=["h/1.mp4"], hook_mix_mode="combine",
+                  hook_mix_output_count=90), **base) is None
     assert plan_shards_if_eligible(data=_req(), remotion_mix_config={"enabled": True}, **{k: v for k, v in base.items() if k != "remotion_mix_config"}) is None
+
+
+def test_plan_phase2_hook_tasks_eligible_by_output_count():
+    full = _cutlist(12)  # 钩子 ×100 任务的组数常远小于 N
+    base = dict(sharding_enabled=True, engine="worker", remotion_mix_config=None, cutlist=full)
+    # random ×100：工作量按 N=100 → k=3
+    s100 = plan_shards_if_eligible(
+        data=_req(hook_video_keys=[f"h/{i}.mp4" for i in range(10)],
+                  hook_mix_mode="random", hook_mix_output_count=100), **base)
+    assert s100 and len(s100) == 3
+    # sequential（无多输出）：工作量=组数 12 → 不分
+    assert plan_shards_if_eligible(
+        data=_req(hook_video_keys=["h/1.mp4"], hook_mix_mode="sequential"), **base) is None
+    # random ×10（N=10 ≤30）→ 不分
+    assert plan_shards_if_eligible(
+        data=_req(hook_video_keys=["h/1.mp4"], hook_mix_mode="random",
+                  hook_mix_output_count=10), **base) is None
+
+
+def test_hook_assignment_mapping_and_scaling():
+    from app.api.slice_helpers import build_shard_hook_assignments
+    full = _cutlist(12)  # 12 组，全局编号 0..11
+    shards = split_cutlist_groups(full, 3)  # 4/4/4 组
+    hooks_n = 10
+    # random ×100：精确计数 = 36/32/32（Σ=100 恒等；j=96..99 落组 0-3 属片 0）
+    built = [build_shard_hook_assignments(full, sc, hooks_n, 100) for sc in shards]
+    assert [n for _a, n in built] == [36, 32, 32]
+    assert sum(n for _a, n in built) == 100
+    # 分配表与全局 round-robin 精确对齐：本地 i → 全局 j=(i//Gs)*G+gs+(i%Gs)
+    gs = [0, 4, 8]
+    for si, (a, _n) in enumerate(built):
+        Gs = 4
+        for i, h in enumerate(a):
+            j = (i // Gs) * 12 + gs[si] + (i % Gs)
+            assert h == j % hooks_n, (si, i, h, j % hooks_n)
+    # sequential（无多输出）：Ns=Gs，逐组对齐全局 round-robin
+    b0, n0 = build_shard_hook_assignments(full, shards[0], hooks_n, 0)
+    assert n0 == 4 and b0 == [0, 1, 2, 3]
+    b2, _ = build_shard_hook_assignments(full, shards[2], hooks_n, 0)
+    assert b2 == [8, 9, 0, 1]  # 跨片 round-robin 回绕
 
 
 def test_plan_k_formula_and_minimum():

@@ -64,6 +64,7 @@ from app.services.redis_stream import (
 from app.api.slice_helpers import (
     BadgeItem,
     TextOverlayItem,
+    build_shard_hook_assignments,
     get_slice_sharding_enabled,
     plan_shards_if_eligible,
     recalc_parent_task_status,
@@ -1184,12 +1185,23 @@ async def _dispatch_sharded_task(
             shard_names = set(parse_cutlist_groups_local(shard_cutlist).keys())
             # 绑定子集 = 全集快照的精确子集（校验器已保证不重不漏）
             shard_clip_ids = {name: full_snapshot[name] for name in shard_names if name in full_snapshot}
+            # 真分片二期：钩子任务按片预排显式分配表（random 多输出按组占比缩放 Ns）
+            shard_assign = None
+            shard_hook_mix_count = None
+            if parent_task.hook_video_keys or parent_task.hook_video_key:
+                hook_count = len(parent_task.hook_video_keys or []) or (1 if parent_task.hook_video_key else 0)
+                built = build_shard_hook_assignments(
+                    full_cutlist, shard_cutlist, hook_count,
+                    parent_task.hook_mix_output_count or 0,
+                )
+                if built:
+                    shard_assign, shard_hook_mix_count = built
             shard = SliceTask(
                 episode_id=parent_task.episode_id,
                 mode=parent_task.mode,
                 cutlist=shard_cutlist,
                 output_clip_ids=shard_clip_ids,
-                intervals=None,  # intervals 仅 scrub 模式使用；一期分片不含 scrub
+                intervals=None,  # intervals 仅 scrub 模式使用；分片不含 scrub
                 dedupe_config=parent_task.dedupe_config,
                 variant_count=parent_task.variant_count,
                 source_bucket=parent_task.source_bucket,
@@ -1205,12 +1217,12 @@ async def _dispatch_sharded_task(
                 watermark_mask_config=parent_task.watermark_mask_config,
                 remotion_mix_config=None,
                 cover_image_key=parent_task.cover_image_key,
-                hook_video_key=None,
-                hook_video_keys=None,
-                outro_video_key=None,
-                hook_mix_mode=None,
-                hook_mix_output_count=None,
-                hook_position=None,
+                hook_video_key=parent_task.hook_video_key,
+                hook_video_keys=parent_task.hook_video_keys,
+                outro_video_key=parent_task.outro_video_key,
+                hook_mix_mode=parent_task.hook_mix_mode,
+                hook_mix_output_count=shard_hook_mix_count,
+                hook_position=parent_task.hook_position,
                 dual_mix_config=None,
                 output_tier=parent_task.output_tier,
                 parent_task_id=parent_task.id,
@@ -1220,7 +1232,7 @@ async def _dispatch_sharded_task(
                 progress=0.0,
             )
             db.add(shard)
-            shards.append(shard)
+            shards.append((shard, shard_assign))
         await db.flush()
     except Exception as e:  # noqa: BLE001 - 建片失败：父行置 failed，无半套分片
         parent_task.status = "failed"
@@ -1231,7 +1243,7 @@ async def _dispatch_sharded_task(
 
     # 逐片发布（_publish_to_worker 内部逐片 commit；分片行+父行对 worker 可见）
     published_shards: list = []
-    for shard in shards:
+    for shard, shard_assign in shards:
         ok = await _publish_to_worker(
             db,
             shard,
@@ -1239,28 +1251,29 @@ async def _dispatch_sharded_task(
             shard.cutlist,
             None,  # intervals 仅 scrub 使用
             source_file_key,
-            data.dedupe_config,
-            configs["watermark"],
+            shard.dedupe_config,
+            shard.watermark_config,
             data.encoder,
-            configs["vert2horiz"],
-            configs["badges"],
-            data.badge_default_width,
+            shard.vert2horiz_config,
+            shard.badges_config,
+            shard.badge_default_width or 0,
             source_bucket,
-            configs["subtitle"],
-            configs["text_overlays"],
-            configs["subtitle_mask"],
-            configs["watermark_mask"],
-            data.subtitle_align_mask,
-            data.cover_image_key,
-            data.output_tier,
-            None,  # hook_video_key
-            None,  # hook_video_keys
-            None,  # outro_video_key
-            None,  # hook_mix_mode
-            None,  # hook_mix_output_count
-            None,  # hook_position
+            shard.subtitle_config,
+            shard.text_overlays_config,
+            shard.subtitle_mask_config,
+            shard.watermark_mask_config,
+            bool(shard.subtitle_align_mask) if shard.subtitle_align_mask is not None else True,
+            shard.cover_image_key,
+            shard.output_tier,
+            shard.hook_video_key,
+            shard.hook_video_keys,
+            shard.outro_video_key,
+            shard.hook_mix_mode,
+            shard.hook_mix_output_count,
+            shard.hook_position,
             data.priority,
             None,  # target_node_id：分片全走公共流（v2 §2）
+            json.dumps(shard_assign) if shard_assign is not None else None,  # 钩子分配表
         )
         if not ok:
             break
@@ -1268,7 +1281,7 @@ async def _dispatch_sharded_task(
 
     if len(published_shards) != k:
         failed_msg = f"分片发布失败（{len(published_shards)}/{k} 片成功），已整体置失败"
-        for shard in shards:
+        for shard, _assign in shards:
             shard.status = "failed"
             shard.error_message = failed_msg
             shard.completed_at = datetime.utcnow()
@@ -2278,7 +2291,24 @@ async def _reset_shard_for_rerun(db: AsyncSession, shard: SliceTask) -> None:
 
 
 async def _republish_shard(db: AsyncSession, shard: SliceTask, episode: Episode, source_file_key, source_bucket: str) -> bool:
-    """按分片行自身字段重建 payload 并发布（与创建期同一发布函数）。"""
+    """按分片行自身字段重建 payload 并发布（与创建期同一发布函数）。
+
+    真分片二期：钩子任务的显式分配表不落列——有父行时从父行全集 cutlist 现场重算
+    （公式与创建期同源 build_shard_hook_assignments），保证重跑/补投不退化为随机。
+    """
+    hook_assignments_json = None
+    if shard.parent_task_id and (shard.hook_video_keys or shard.hook_video_key):
+        parent = (
+            await db.execute(select(SliceTask).where(SliceTask.id == shard.parent_task_id))
+        ).scalar_one_or_none()
+        if parent and parent.cutlist:
+            hook_count = len(parent.hook_video_keys or []) or (1 if parent.hook_video_key else 0)
+            built = build_shard_hook_assignments(
+                parent.cutlist, shard.cutlist, hook_count,
+                parent.hook_mix_output_count or 0,
+            )
+            if built:
+                hook_assignments_json = json.dumps(built[0])
     return await _publish_to_worker(
         db,
         shard,
@@ -2300,9 +2330,15 @@ async def _republish_shard(db: AsyncSession, shard: SliceTask, episode: Episode,
         bool(shard.subtitle_align_mask) if shard.subtitle_align_mask is not None else True,
         shard.cover_image_key,
         shard.output_tier,
-        None, None, None, None, None, None,  # 钩子族：一期分片恒无
+        shard.hook_video_key,
+        shard.hook_video_keys,
+        shard.outro_video_key,
+        shard.hook_mix_mode,
+        shard.hook_mix_output_count,
+        shard.hook_position,
         None,  # priority
         None,  # target_node_id：公共流
+        hook_assignments_json,
     )
 
 

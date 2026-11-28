@@ -53,6 +53,12 @@ dbmod.engine = _test_engine
 dbmod.async_session_factory = async_sessionmaker(
     _test_engine, class_=AsyncSession, expire_on_commit=False
 )
+# tasks.py 的 async_session_factory 是**导入期绑定**：若本模块之前有别的测试把
+# app.celery.tasks 连同 postgres 默认 URL 一起导入（如 test_wechat_dl_direct_url_gate），
+# 这里必须同步重绑，否则 sweep/watchdog 会去连 127.0.0.1:5432（合跑 OSError 实测）
+import app.celery.tasks as _celery_tasks
+
+_celery_tasks.async_session_factory = dbmod.async_session_factory
 
 from httpx import ASGITransport, AsyncClient
 
@@ -67,19 +73,32 @@ PASSWORD = "pw123456"
 
 
 def _assert_disposable_test_engine() -> None:
-    backend = _test_engine.url.get_backend_name()
+    """只对「确认是临时目录下的 sqlite 测试库」的当前引擎执行破坏性操作。
+
+    多个集成测试文件并存时（race/episode 在收集期各自重绑 dbmod.engine），
+    不能断言「必须是本文件的引擎」——只断言当前绑定是一次性 sqlite 临时库。
+    """
+    eng = dbmod.engine
+    backend = eng.url.get_backend_name()
     if backend != "sqlite":
         raise RuntimeError(f"拒绝执行 drop_all：后端 {backend!r} 非 sqlite")
-    db_path = os.path.abspath(_test_engine.url.database or "")
+    db_path = os.path.abspath(eng.url.database or "")
     if not db_path or _TMP_DIR != os.path.commonpath([db_path, _TMP_DIR]):
         raise RuntimeError(f"拒绝执行 drop_all：库路径 {db_path!r} 不在临时目录下")
-    if not os.path.basename(db_path).startswith("slice_shard_fanout_"):
-        raise RuntimeError("拒绝执行 drop_all：库文件名无测试库标记")
-    if str(dbmod.engine.url) != str(_test_engine.url):
-        raise RuntimeError("app.database.engine 未被测试引擎替换")
+    if not (os.path.basename(db_path).startswith(("slice_shard_fanout_", "publish_dispatch_race_"))):
+        raise RuntimeError("拒绝执行 drop_all：库文件名无已知测试库标记")
 
 
 async def _reset_db() -> None:
+    # 运行期重绑：race/episode 在收集期会覆盖 dbmod.engine（导入顺序后于本文件），
+    # 本文件每次用例前把共享绑定拉回自己的临时库，保证用例间隔离。
+    dbmod.engine = _test_engine
+    dbmod.async_session_factory = async_sessionmaker(
+        _test_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    import app.celery.tasks as _celery_tasks
+
+    _celery_tasks.async_session_factory = dbmod.async_session_factory
     _assert_disposable_test_engine()
     async with _test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)

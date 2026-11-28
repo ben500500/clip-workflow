@@ -694,6 +694,9 @@ type SliceTask struct {
 	// 钩子拼接位置（可选，后端透传；Worker 透传给引擎 --hook-position 参数）
 	// head=片头（默认，[封面][钩子][本体]）/ tail=片尾（[封面][本体][钩子]）
 	HookPosition string `json:"hook_position"`
+	// 钩子显式分配表（可选，真分片二期后端预排；JSON 数组字符串，按输出序给出
+	// 每个成品用的钩子下标。Worker 原样透传给引擎 --hook-assignments）
+	HookAssignments string `json:"hook_assignments"`
 	// 输出档位（可选，后端透传；Worker 透传给引擎 --output-tier 参数，高分辨率/高 fps 素材降档提速）
 	OutputTier     string     `json:"output_tier"`
 	Output         TaskOutput `json:"output"`

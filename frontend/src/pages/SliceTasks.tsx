@@ -473,6 +473,13 @@ const SUBTITLE_MASK_PRESETS = [
           {(t.status === 'failed' || t.status === 'cancelled') && done !== null && done > 0 && (
             <Text style={{ fontSize: 11, color: '#faad14' }}>已保留 {done} 条成品</Text>
           )}
+          {/* 真分片 partial 黄标（2026-11-28）：completed 但聚合标注部分分片未完成，
+              用户需要知道成品不齐（混合终态口径=保留已完成分片的全部成品） */}
+          {t.status === 'completed' && t.error_message && (
+            <Tooltip title={t.error_message}>
+              <Tag color="gold" style={{ marginInlineEnd: 0, fontSize: 11 }}>部分分片未完成</Tag>
+            </Tooltip>
+          )}
         </Space>
         );
       },

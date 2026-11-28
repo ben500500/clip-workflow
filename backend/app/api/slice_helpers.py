@@ -1273,24 +1273,71 @@ def validate_shard_cutlists(full_cutlist, shard_cutlists):
         raise ValueError("V5 行数守恒失败：全集 %d 行 vs 分片合计 %d 行" % (full_lines, total_lines))
 
 
+def build_shard_hook_assignments(
+    full_cutlist: str,
+    shard_cutlist: str,
+    hook_count: int,
+    hook_mix_output_count: int,
+):
+    """真分片二期：为单个分片构建显式钩子分配表（docs/1128-v2 二期设计）。
+
+    引擎全局分配语义：第 j 个输出 = (组 j%G, 变体 j//G+1)，钩子 = j % hook_count
+    （sequential 语义；random 的随机性由后端确定性预排取代——跨片多样性与覆盖
+    由连续切块保证）。分片是全集组的连续块（起点 gs，块内 Gs 组），本地第 i 个
+    输出 ↔ 全局 j = (i//Gs)*G + gs + (i%Gs)。
+
+    返回 (分配表, 分片输出数 Ns)；random 多输出时 Ns = ceil(N*Gs/G)（防 ×k 翻倍，
+    后端评审 M-缩放）；无钩子返回 None。
+    """
+    if hook_count <= 0:
+        return None
+    full_names = list(parse_cutlist_groups(full_cutlist).keys())
+    shard_names = list(parse_cutlist_groups(shard_cutlist).keys())
+    if not shard_names:
+        return None
+    gs = full_names.index(shard_names[0])  # 连续切块保证 shard_names 是 full 的子序列
+    G, Gs = len(full_names), len(shard_names)
+    if hook_mix_output_count and hook_mix_output_count > 1:
+        # 精确计数：全局第 j 个输出=（组 j%G，变体 j//G+1），钩子=j%hook_count。
+        # 数出落在本片组区间 [gs, gs+Gs) 的全部 j——Σ各片 Ns 恒等于 N（无独立
+        # ceil 的溢出），且枚举序与引擎本地 assignments 序严格一致。
+        js = [j for j in range(hook_mix_output_count) if gs <= (j % G) < gs + Gs]
+        ns = len(js)
+        assignments = [j % hook_count for j in js]
+    else:
+        ns = Gs
+        assignments = [(gs + i) % hook_count for i in range(ns)]
+    return assignments, ns
+
+
 def plan_shards_if_eligible(*, sharding_enabled, engine, data, remotion_mix_config, cutlist):
     """真分片准入判定：返回分片 cutlist 列表（k≥2），不合格返回 None。
 
-    一期排除（v2 §2）：no_cut / output_id 源 / 指定节点直投 / 钩子·片尾·双批混拼 /
-    remotion。k = min(SHARD_MAX_K, ceil(组数/SHARD_MAX_OUTPUTS))，k≥2 才分片。
+    二期起钩子任务可分片（docs/1128-v2 二期）：random/sequential 走后端预排
+    --hook-assignments（build_shard_hook_assignments）；combine（任务级钩子链缓存
+    跨片不可复用）与双批混拼仍排除。其余排除：no_cut / output_id 源 / 指定节点
+    直投 / remotion。
+    工作量口径：普通任务=组数；钩子多输出任务（hook_mix_output_count>1）=输出
+    总数 N（钩子 ×100 任务的组数常 <31，按组数算会漏掉它们）。k = min(SHARD_MAX_K,
+    ceil(工作量/SHARD_MAX_OUTPUTS))，且要求组数≥2（组级切分的前提），k≥2 才分片。
     """
     if not sharding_enabled or engine != "worker":
         return None
     if data.target_node_id or data.no_cut or data.output_id:
         return None
-    if data.hook_video_key or data.hook_video_keys or data.outro_video_key             or data.hook_mix_mode or data.dual_mix_enabled:
+    if (data.hook_mix_mode or "") == "combine" or data.dual_mix_enabled:
         return None
     if remotion_mix_config:
         return None
     n_groups = len(parse_cutlist_groups(cutlist))
     if n_groups < 2:
         return None
-    k = min(SHARD_MAX_K, -(-n_groups // SHARD_MAX_OUTPUTS))
+    has_multi_hook = bool(
+        (data.hook_video_key or data.hook_video_keys)
+        and data.hook_mix_output_count and data.hook_mix_output_count > 1
+    )
+    workload = max(n_groups, data.hook_mix_output_count or 0) if has_multi_hook else n_groups
+    k = min(SHARD_MAX_K, -(-workload // SHARD_MAX_OUTPUTS))
     if k < 2:
         return None
     shards = split_cutlist_groups(cutlist, k)
@@ -1469,6 +1516,8 @@ async def _publish_to_worker(
     # 指定目标 Worker 节点（服务器指定派发）：非空时任务直投该节点专属队列，
     # 否则走公共 Stream（由任意匹配标签的节点消费，与旧行为一致）
     target_node_id: Optional[str] = None,
+    # 钩子显式分配表（真分片二期，后端预排；JSON 字符串，Worker 原样透传引擎）
+    hook_assignments: Optional[str] = None,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -1591,6 +1640,8 @@ async def _publish_to_worker(
         "hook_mix_output_count": hook_mix_output_count,
         # 钩子拼接位置（head/tail，可选；Worker 透传给引擎 --hook-position）
         "hook_position": hook_position,
+        # 钩子显式分配表（真分片二期，可选；Worker 透传给引擎 --hook-assignments）
+        "hook_assignments": hook_assignments,
         "cutlist": cutlist,
         "intervals": intervals_content,
         "dedupe_config": dedupe_config or {},

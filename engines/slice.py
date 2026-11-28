@@ -5144,6 +5144,13 @@ def main():
         help="钩子拼接位置：head=片头（默认，[封面][钩子][本体]）/ tail=片尾（[封面][本体][钩子]）",
     )
     parser.add_argument(
+        "--hook-assignments",
+        default=None,
+        help="钩子显式分配表（真分片二期，JSON 数组）：按输出序给出每个成品用的钩子下标"
+             "（0 起，对齐 hook_paths）。后端分片时预排跨片多样性与覆盖，引擎只忠实消费；"
+             "长度必须等于输出总数，不符即退出码 2（fail-fast，绝不静默回退随机）。",
+    )
+    parser.add_argument(
         "--product-concurrency",
         type=int,
         default=int(os.environ.get("SLICE_PRODUCT_CONCURRENCY", "1")),
@@ -5642,6 +5649,28 @@ def main():
         preselected_hooks = []
         if use_multi_output and hook_mix_mode == "random":
             preselected_hooks = [random.choice(hook_paths) for _ in range(len(assignments))]
+        # 真分片二期：后端预排的显式钩子分配表（docs/1128-v2）。提供时完全取代
+        # random.choice / sequential round-robin——跨片多样性与覆盖由后端保证，
+        # 引擎只消费；长度/类型不符即 fail-fast（退出码 2），绝不静默回退随机。
+        hook_assignments = None
+        if getattr(args, "hook_assignments", None):
+            try:
+                hook_assignments = json.loads(args.hook_assignments)
+            except (ValueError, TypeError) as _e:
+                print(f"错误: --hook-assignments JSON 解析失败: {_e}", file=sys.stderr)
+                sys.exit(2)
+            if (
+                not isinstance(hook_assignments, list)
+                or len(hook_assignments) != len(assignments)
+                or any(not isinstance(x, int) or x < 0 for x in hook_assignments)
+            ):
+                got = len(hook_assignments) if isinstance(hook_assignments, list) else type(hook_assignments).__name__
+                print(
+                    f"错误: --hook-assignments 长度/类型不符（收到 {got}，需要 {len(assignments)} 个非负整数下标）",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            print(f"钩子显式分配表生效: {len(hook_assignments)} 个输出 ← {len(hook_paths)} 个钩子", file=sys.stderr)
         total = len(assignments)
         # 成品级并发（2026-11-25 用户需求）：P>1 时同一节点内并行处理多个成品
         # （每成品独立临时目录与 ffmpeg 进程），threads 按 P 均分防超卖。
@@ -5760,7 +5789,11 @@ def main():
                             print(f"钩子拼接[combine 缓存复用]: (总时长 {hook_dur:.3f}s) -> 切片 '{name}'", file=sys.stderr)
                     else:
                         # sequential 或 random：取一个钩子作为片头
-                        if hook_mix_mode == "random" and len(hook_paths) > 1:
+                        if hook_assignments is not None:
+                            # 真分片二期：消费后端预排的显式分配表（对齐 assignments 序）
+                            hook_path = hook_paths[hook_assignments[idx] % len(hook_paths)]
+                            print(f"钩子拼接[分配表 {hook_assignments[idx]}]: {os.path.basename(hook_path)} -> 切片 '{name}'", file=sys.stderr)
+                        elif hook_mix_mode == "random" and len(hook_paths) > 1:
                             if use_multi_output:
                                 # 使用预先随机选好的钩子（每个输出一个，变体间尽量不同）
                                 hook_path = preselected_hooks[idx]
