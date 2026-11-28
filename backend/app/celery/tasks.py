@@ -3245,7 +3245,7 @@ def slice_shard_watchdog_task():
             ).scalars().all()
             if not parents:
                 return {"alerted": [], "republished": []}
-            from app.api.slice_helpers import _publish_to_worker  # noqa: E402 - 惰性导入避免循环
+            from app.services.redis_stream import get_redis  # noqa: E402 - 惰性导入（造障演练抓到：裸用 NameError）
             redis = await get_redis()
             for parent in parents:
                 shards = (
