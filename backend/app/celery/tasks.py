@@ -3268,7 +3268,7 @@ def slice_shard_watchdog_task():
                     )
                 # 丢失补投：hash 整体缺失的 pending/running 分片（龄期>2h）
                 for t in non_terminal:
-                    if _dt.utcnow() - (_t.started_at or _t.created_at or _dt.utcnow()) <= _td(seconds=WATCHDOG_STALE):
+                    if _dt.utcnow() - (t.started_at or t.created_at or _dt.utcnow()) <= _td(seconds=WATCHDOG_STALE):
                         continue
                     try:
                         data = await redis.hgetall(f"slice:task:{t.id}")
