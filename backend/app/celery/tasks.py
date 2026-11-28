@@ -3293,17 +3293,9 @@ def slice_shard_watchdog_task():
                         await remove_slice_task_from_streams(str(t.id))
                     except Exception:  # noqa: BLE001
                         pass
-                    ok = await _publish_to_worker(
-                        db, t, episode_row, t.cutlist, None,
-                        t.source_file_key, t.dedupe_config, t.watermark_config,
-                        None, t.vert2horiz_config, t.badges_config,
-                        t.badge_default_width or 0, t.source_bucket,
-                        t.subtitle_config, t.text_overlays_config,
-                        t.subtitle_mask_config, t.watermark_mask_config,
-                        bool(t.subtitle_align_mask) if t.subtitle_align_mask is not None else True,
-                        t.cover_image_key, t.output_tier,
-                        None, None, None, None, None, None, None, None,
-                    )
+                    # 复用 API 层重投函数：钩子字段/显式分配表（有父行时现场重算）不丢
+                    from app.api.slice import _republish_shard  # noqa: E402 - 函数级导入避免循环
+                    ok = await _republish_shard(db, t, episode_row, t.source_file_key, t.source_bucket)
                     if ok:
                         republished.append(str(t.id))
                         logger.warning(
