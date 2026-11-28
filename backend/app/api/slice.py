@@ -1120,6 +1120,8 @@ async def _create_slice_task_record(
     slice_task.hook_mix_output_count = None if data.highlight_mix_enabled else (data.hook_mix_output_count or None)
     # 钩子拼接位置（head=片头默认 / tail=片尾；重试时保留）
     slice_task.hook_position = data.hook_position if data.hook_position in ("head", "tail") else None
+    # 外部素材接缝转场开关（2026-11-28 用户需求，默认关；重试时保留）
+    slice_task.hook_transition_enabled = bool(data.hook_transition_enabled)
     # 输出档位：高分辨率/高 fps 素材降档提速（重试时保留）
     slice_task.output_tier = data.output_tier or "auto"
 
@@ -1223,6 +1225,7 @@ async def _dispatch_sharded_task(
                 hook_mix_mode=parent_task.hook_mix_mode,
                 hook_mix_output_count=shard_hook_mix_count,
                 hook_position=parent_task.hook_position,
+                hook_transition_enabled=parent_task.hook_transition_enabled,
                 dual_mix_config=None,
                 output_tier=parent_task.output_tier,
                 parent_task_id=parent_task.id,
@@ -1274,6 +1277,7 @@ async def _dispatch_sharded_task(
             data.priority,
             None,  # target_node_id：分片全走公共流（v2 §2）
             json.dumps(shard_assign) if shard_assign is not None else None,  # 钩子分配表
+            bool(shard.hook_transition_enabled),
         )
         if not ok:
             break
@@ -1371,6 +1375,7 @@ async def _dispatch_slice_task(
             data.hook_position,
             data.priority,
             data.target_node_id,
+            data.hook_transition_enabled,
         )
 
         if not published:
@@ -2339,6 +2344,7 @@ async def _republish_shard(db: AsyncSession, shard: SliceTask, episode: Episode,
         None,  # priority
         None,  # target_node_id：公共流
         hook_assignments_json,
+        bool(shard.hook_transition_enabled),
     )
 
 
@@ -2493,6 +2499,7 @@ async def retry_slice_task(
         hook_mix_mode=getattr(task, "hook_mix_mode", None),
         hook_mix_output_count=getattr(task, "hook_mix_output_count", None),
         hook_position=getattr(task, "hook_position", None),
+        hook_transition_enabled=bool(getattr(task, "hook_transition_enabled", False)),
         remotion_mix_config=getattr(task, "remotion_mix_config", None),
         output_tier=getattr(task, "output_tier", None) or "auto",
         output_clip_ids=getattr(task, "output_clip_ids", None),
@@ -2574,6 +2581,7 @@ async def retry_slice_task(
             getattr(task, "hook_mix_output_count", None),
             getattr(task, "hook_position", None),
             None,  # 重试沿用默认 priority
+            bool(getattr(task, "hook_transition_enabled", False)),
         )
 
         if not published:

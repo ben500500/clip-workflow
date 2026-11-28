@@ -333,6 +333,8 @@ async def _apply_compat_migrations():
         ("publish_profiles", "location", "VARCHAR(200)"),
         # 输出档位（0040_slice_task_output_tier）：original/auto/1080p/720p/480p
         ("slice_tasks", "output_tier", "VARCHAR(20)"),
+        # 创建任务时的输出→候选关联快照（0080_slice_task_output_clip_ids）
+        ("slice_tasks", "output_clip_ids", "JSON"),
         # Remotion 混剪增强（0046_slice_task_remotion_mix）：整包 JSON config，老库由 compat 补列
         ("slice_tasks", "remotion_mix_config", "JSON"),
         # Remotion 混剪增强渲染结果（0047_slice_task_remotion_result）：产物 file_key + 渲染状态
@@ -387,6 +389,10 @@ async def _apply_compat_migrations():
         ("asset_summaries", "prompt_preview", "TEXT"),
         ("asset_summaries", "prompt_preview_at", "TIMESTAMP"),
         ("asset_summaries", "cost_preview", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
+        # 脚本生产载体标记（11-25 批 X，0079）：极简脚本送审造的「壳」候选行。
+        # NOT NULL DEFAULT false 安全：存量行全是真候选/真文案，补列时数据库自己填 false，
+        # 存量壳（被脚本引用着的 3 行）由 scripts/backfill_summary_is_shell.py 补标。
+        ("asset_summaries", "is_shell", "BOOLEAN NOT NULL DEFAULT false"),
         # 时效直链缓存（11-06 播放直链修复）：resolve 成功后存 play_url + 取链时间，
         # 有效期内 source-preview/resolve 免费回放；过期作数、重取自愈。全部可空不回填。
         ("asset_items", "play_url", "TEXT"),
@@ -433,6 +439,13 @@ async def _apply_compat_migrations():
         # 可空不回填，NULL＝不是矩阵产物（手工两段拼／回收自动拼照旧不写）。
         # 新表 asset_overlay_presets 由 create_all 建（163 迁移容器跑 init_db），这里只管老表补列。
         ("asset_outputs", "compose_meta", "JSON"),
+        # 任务内真分片（2026-11-28，docs/1128-工程方案-v2）：分片行指向聚合父行，
+        # 父行与历史行 NULL 天然兼容；shard_index/shard_total 非分片行 = NULL。
+        # 部分索引在下方单独建（create_all 不给已存在表补索引）。
+        ("slice_tasks", "hook_transition_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("slice_tasks", "parent_task_id", "UUID"),
+        ("slice_tasks", "shard_index", "INTEGER"),
+        ("slice_tasks", "shard_total", "INTEGER"),
     ]
     async with engine.begin() as conn:
         for table, column, ddl in migrations:
@@ -450,6 +463,39 @@ async def _apply_compat_migrations():
                     logger.info("Added column %s.%s", table, column)
                 except Exception as e:
                     logger.warning("Failed to add column %s.%s: %s", table, column, e)
+
+        # 真分片（2026-11-28）：父行聚合查询走部分索引；create_all 不给已存在表补索引，这里手工建。
+        if conn.dialect.name == "postgresql":
+            try:
+                await conn.execute(sqlalchemy.text(
+                    "CREATE INDEX IF NOT EXISTS ix_slice_tasks_parent "
+                    "ON slice_tasks(parent_task_id) WHERE parent_task_id IS NOT NULL"
+                ))
+            except Exception as e:
+                logger.warning("Failed to create ix_slice_tasks_parent: %s", e)
+
+        # 0081：存量库也必须在 init_db 链路把 clip_id FK 改成 SET NULL。
+        # 生产只 stamp head、不跑 alembic upgrade；若这里不改，passive_deletes
+        # 会把“删候选保留成品”错误地交给旧 NO ACTION 约束。仅 PostgreSQL 执行。
+        if conn.dialect.name == "postgresql":
+            fk_state = (await conn.execute(sqlalchemy.text("""
+                SELECT confdeltype FROM pg_constraint
+                WHERE conrelid = 'slice_outputs'::regclass
+                  AND conname = 'slice_outputs_clip_id_fkey'
+                  AND contype = 'f'
+            """))).scalar_one_or_none()
+            if fk_state != "n":
+                await conn.execute(sqlalchemy.text("""
+                    ALTER TABLE slice_outputs
+                    DROP CONSTRAINT IF EXISTS slice_outputs_clip_id_fkey
+                """))
+                await conn.execute(sqlalchemy.text("""
+                    ALTER TABLE slice_outputs
+                    ADD CONSTRAINT slice_outputs_clip_id_fkey
+                    FOREIGN KEY (clip_id) REFERENCES clip_candidates(id)
+                    ON DELETE SET NULL
+                """))
+                logger.info("Updated slice_outputs_clip_id_fkey to ON DELETE SET NULL")
 
 
 async def close_db():

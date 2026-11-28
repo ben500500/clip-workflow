@@ -287,6 +287,9 @@ const EpisodeDetail: React.FC = () => {
   const [hookMixMode, setHookMixMode] = useState<'sequential' | 'random' | 'combine'>('sequential');
   // 钩子拼接位置：head=片头（默认，[封面][钩子][本体]）/ tail=片尾（[封面][本体][钩子]）
   const [hookPosition, setHookPosition] = useState<'head' | 'tail'>('head');
+  // 外部素材接缝转场开关（2026-11-28 用户需求，默认关）：开=接缝叠化过渡（每接缝
+  // 时长 -0.2s、拼接需整体重编码耗时明显增加）；关=硬切（保留流拷贝快路径）
+  const [hookTransitionEnabled, setHookTransitionEnabled] = useState<boolean>(false);
   // 钩子混搭输出数量：当模式为 random/combine 时，生成多个不同钩子组合的成品（-v1, -v2 后缀）
   const [hookMixOutputCount, setHookMixOutputCount] = useState<number>(1);
   // ── 角标保存库：从历史上传的角标直接选用（免重复上传） ──
@@ -1583,6 +1586,8 @@ const EpisodeDetail: React.FC = () => {
     hook_mix_mode: hooksUsable ? (hookMixMode || 'sequential') : undefined,
     // 钩子拼接位置（head=片头默认 / tail=片尾）
     hook_position: hooksUsable ? hookPosition : undefined,
+    // 外部素材接缝转场开关（默认关；仅钩子/片尾接缝生效，正片内部硬切不受影响）
+    hook_transition_enabled: hooksUsable ? hookTransitionEnabled : false,
     // 钩子混搭输出数量：random/combine 模式；高光混剪有自己的输出个数（cutlist 组数），
     // 两者并存会按组相乘导致输出爆炸 → 高光混剪开启时忽略
     hook_mix_output_count: args.hooksActive && !highlightMixEnabled && (hookMixMode === 'random' || hookMixMode === 'combine') && hookMixOutputCount > 1 ? hookMixOutputCount : undefined,
@@ -2084,6 +2089,18 @@ const EpisodeDetail: React.FC = () => {
               { value: 'tail', label: '放在片尾' },
             ]}
           />
+        </Tooltip>
+        <Tooltip title={hookTransitionEnabled
+          ? '已开启：钩子/片尾与正片的接缝将叠化过渡（每处时长 -0.2s）；拼接需整体重编码，任务耗时明显增加'
+          : '已关闭：接缝硬切，保留流拷贝快速拼接。开启后接缝叠化更顺滑，但整条成品需重编码、耗时明显增加'}>
+          <Checkbox
+            checked={hookTransitionEnabled}
+            disabled={disabled || highlightMixEnabled}
+            onChange={(e) => setHookTransitionEnabled(e.target.checked)}
+            style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+          >
+            接缝转场
+          </Checkbox>
         </Tooltip>
         {/* 钩子混搭输出数量：高光混剪有自己的输出个数（混剪配置），两者并存会按组相乘
             导致输出爆炸 → 高光混剪开启时不下发该数量（仍常驻显示、置灰提示）。

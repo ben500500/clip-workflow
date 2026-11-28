@@ -5144,6 +5144,13 @@ def main():
         help="钩子拼接位置：head=片头（默认，[封面][钩子][本体]）/ tail=片尾（[封面][本体][钩子]）",
     )
     parser.add_argument(
+        "--hook-transition",
+        action="store_true",
+        help="外部素材接缝转场开关（用户自主控制，默认关）：开=钩子/片尾接缝 xfade/acrossfade "
+             "叠化过渡（每接缝时长 -0.2s）；关=硬切（保留 copy-concat 流拷贝快路径，"
+             "无固定文字的钩子任务拼接从全片重编码回到秒级）",
+    )
+    parser.add_argument(
         "--hook-assignments",
         default=None,
         help="钩子显式分配表（真分片二期，JSON 数组）：按输出序给出每个成品用的钩子下标"
@@ -5846,13 +5853,21 @@ def main():
                 # 同档位百分比在 worker 侧只续 lease 不重复写 Redis（节流），
                 # 但足以刷新卡死检测心跳——单成品耗时再长也不会被 stuckTaskLoop 误杀。
                 print(f"PROGRESS:{min(99, int((_completed() + 0.6) * 100 / total))}")
+                # 接缝转场开关（2026-11-28 用户需求，默认关）：关=硬切+copy-concat
+                # 流拷贝快路径（56.2× 拼接差实测，见 /tmp/transbench 基准）；
+                # 开=接缝 xfade 叠化（每接缝时长 -0.2s，全片重编码）。固定文字任务
+                # 本就重编码，开关对它们只有观感差异。
+                _want_transition = bool(getattr(args, "hook_transition", False))
                 if head_hook_index is not None:
-                    transition_seams.append(head_hook_index)
+                    if _want_transition:
+                        transition_seams.append(head_hook_index)
                 if tail_hook_part:
-                    transition_seams.append(len(parts) - 1)
+                    if _want_transition:
+                        transition_seams.append(len(parts) - 1)
                     parts.append(tail_hook_part)
                 if outro_part:
-                    transition_seams.append(len(parts) - 1)
+                    if _want_transition:
+                        transition_seams.append(len(parts) - 1)
                     parts.append(outro_part)
                 # 仅外部素材接缝加转场；正片内部仍按原顺序硬切。
                 # 只有 concat 与文字叠加之间没有其他成品级处理时，才融合为一次编码。

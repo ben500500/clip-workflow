@@ -154,7 +154,11 @@ class ClipCandidate(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     episode = relationship("Episode", back_populates="clip_candidates")
-    slice_outputs = relationship("SliceOutput", back_populates="clip_candidate", cascade="all, delete-orphan")
+    # 候选删除只解除成品引用；成品仍归 SliceTask 级联管理，不能随候选一起删除。
+    # FK ON DELETE SET NULL 负责置空，passive_deletes 避免 ORM 先加载并删除子行。
+    slice_outputs = relationship(
+        "SliceOutput", back_populates="clip_candidate", passive_deletes=True
+    )
 
     def __repr__(self) -> str:
         return f"<ClipCandidate(id={self.id}, clip_index={self.clip_index})>"
@@ -191,6 +195,9 @@ class SliceTask(Base):
     node_id = Column(String(100), nullable=True)
     mode = Column(String(50), nullable=True)
     cutlist = Column(Text, nullable=True)
+    # 创建任务时固化的 输出名→候选ID 快照；回调不再依赖可能被改/删的候选现状。
+    # NULL 仅用于兼容历史任务（回调按 cutlist 重建），{} 表示明确无绑定。
+    output_clip_ids = Column(JSON, nullable=True)
     intervals = Column(Text, nullable=True)
     dedupe_config = Column(JSON, nullable=True)
     # 多视频号素材去重：需要生成的素材变体数（null/1=不生成，零侵入；>1=切片后自动派生 N 个去重版本）
@@ -235,6 +242,9 @@ class SliceTask(Base):
     hook_mix_output_count = Column(Integer, nullable=True)
     # 钩子拼接位置：head（默认，[封面][钩子][本体]）/ tail（[封面][本体][钩子]）；重试时保留
     hook_position = Column(String(10), nullable=True)
+    # 外部素材接缝转场开关（2026-11-28 用户需求）：默认 False=硬切+流拷贝快路径；
+    # 落列使重试/分片行保留用户选择
+    hook_transition_enabled = Column(Boolean, nullable=False, server_default="false")
     # 输出档位（original/auto/1080p/720p/480p）：高分辨率/高 fps 素材降档提速；重试时保留
     output_tier = Column(String(20), nullable=True)
     # Remotion 混剪增强配置（可选，整包 JSON：enabled/template/intro/outro/transition_frames/
@@ -244,6 +254,13 @@ class SliceTask(Base):
     remotion_output_file_key = Column(String(500), nullable=True)
     # Remotion 混剪增强渲染状态（pending/rendering/done/failed；未启用时为 None）
     remotion_status = Column(String(20), nullable=True)
+    # ── 任务内真分片（2026-11-28，docs/1128-工程方案-v2）─────────────────
+    # 父任务 id：分片行指向聚合父行；父行与全部历史行 = NULL。父行自身不派发、
+    # 由分片回调事务内 FOR UPDATE 重算聚合终态（禁增量累加）。
+    parent_task_id = Column("parent_task_id", UUID(as_uuid=True), nullable=True)
+    # 分片序号/总数（1..shard_total）；非分片行 = NULL
+    shard_index = Column(Integer, nullable=True)
+    shard_total = Column(Integer, nullable=True)
     status = Column(String(50), nullable=True)
     progress = Column(Float, default=0.0)
     output_count = Column(Integer, default=0)
@@ -264,7 +281,7 @@ class SliceOutput(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     task_id = Column(UUID(as_uuid=True), ForeignKey("slice_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
-    clip_id = Column(UUID(as_uuid=True), ForeignKey("clip_candidates.id"), nullable=True, index=True)
+    clip_id = Column(UUID(as_uuid=True), ForeignKey("clip_candidates.id", ondelete="SET NULL"), nullable=True, index=True)
     file_key = Column(String(500), nullable=True)
     file_name = Column(String(255), nullable=True)
     duration = Column(Float, nullable=True)

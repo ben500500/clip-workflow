@@ -196,6 +196,9 @@ class SliceRunRequest(BaseModel):
     hook_mix_output_count: Optional[int] = None
     # 钩子拼接位置：head（默认，片头）/ tail（片尾）
     hook_position: Optional[str] = None
+    # 外部素材接缝转场开关（2026-11-28 用户需求，默认关）：关=硬切+copy-concat
+    # 流拷贝快路径（56.2× 拼接差实测）；开=接缝 xfade 叠化、全片重编码
+    hook_transition_enabled: bool = False
     # ── 优先级流映射（方案A：档位→优先级流）──
     # 取值 high / normal / low（缺省 normal，向后兼容）。路由规则：
     #   标准生产 → normal 流；高清首发 → high 流（优先消费）；实验测试 → low 流。
@@ -504,6 +507,7 @@ def _serialize_task(task: SliceTask) -> dict:
         "remotion_output_file_key": task.remotion_output_file_key,
         "remotion_status": task.remotion_status,
         "hook_mix_output_count": task.hook_mix_output_count,
+        "hook_transition_enabled": bool(getattr(task, "hook_transition_enabled", False)),
         "hook_position": getattr(task, "hook_position", None),
         # 源桶：sliced=源是切片成品（再处理/入库链路），前端据此打「成品再处理」标记，
         # 避免与 AI 选点直接切片的结果混排误导（2026-11-24 赶海集实锤需求）
@@ -1518,6 +1522,8 @@ async def _publish_to_worker(
     target_node_id: Optional[str] = None,
     # 钩子显式分配表（真分片二期，后端预排；JSON 字符串，Worker 原样透传引擎）
     hook_assignments: Optional[str] = None,
+    # 外部素材接缝转场开关（用户自主控制，默认关）
+    hook_transition_enabled: bool = False,
 ) -> bool:
     """构造 Worker 任务 payload 并发布到 Redis Stream。
 
@@ -1642,6 +1648,8 @@ async def _publish_to_worker(
         "hook_position": hook_position,
         # 钩子显式分配表（真分片二期，可选；Worker 透传给引擎 --hook-assignments）
         "hook_assignments": hook_assignments,
+        # 外部素材接缝转场开关（可选；Worker 透传给引擎 --hook-transition）
+        "hook_transition_enabled": bool(hook_transition_enabled),
         "cutlist": cutlist,
         "intervals": intervals_content,
         "dedupe_config": dedupe_config or {},

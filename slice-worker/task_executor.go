@@ -225,6 +225,14 @@ func (te *TaskExecutor) ExecuteTask(ctx context.Context, task *SliceTask, source
 		if task.HookPosition == "head" || task.HookPosition == "tail" {
 			args = append(args, "--hook-position", task.HookPosition)
 		}
+		// 钩子显式分配表：真分片二期后端预排，原样透传（引擎做长度校验 fail-fast）
+		if task.HookAssignments != "" {
+			args = append(args, "--hook-assignments", task.HookAssignments)
+		}
+		// 接缝转场开关：默认关（引擎不收该参时按硬切处理）
+		if task.HookTransition {
+			args = append(args, "--hook-transition")
+		}
 	}
 
 	// 成品级并发：节点配置 >1 时透传（引擎默认 1=串行；combine 模式引擎自动回退）
