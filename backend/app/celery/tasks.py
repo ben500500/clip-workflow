@@ -175,6 +175,12 @@ celery_app.conf.update(
             "task": "app.celery.tasks.autoclip_stale_recovery_task",
             "schedule": 900.0,
         },
+        # 真分片父任务 watchdog（2026-11-28，docs/1128-v2 §4.2）：悬挂告警 + 丢失分片
+        # 自动补投（claimOnce ACK 丢消息/X14 场景——7h sweep 兜底前父任务会挂 2h+）
+        "slice-shard-watchdog": {
+            "task": "app.celery.tasks.slice_shard_watchdog_task",
+            "schedule": 900.0,
+        },
     },
 )
 
@@ -3200,3 +3206,120 @@ def compress_episode_720p_task(self, episode_id: str):
             import shutil
 
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@celery_app.task
+def slice_shard_watchdog_task():
+    """真分片父任务 watchdog（docs/1128-工程方案-v2 §4.2，beat 每 15 分钟）。
+
+    ① 悬挂告警：父行 running/pending 且存在非终态分片超过 2h → 打
+       SLICE_SHARD_WATCHDOG 标记日志（供告警抓取；不等 7h sweep）。
+    ② 丢失补投：分片行 pending/running 但 Redis 任务 hash 整体缺失（claimOnce
+       ACK 丢消息/X14 场景——消息没了、租约也没了，sweep 只能等阈值）且
+       分片龄期超 2h → 原行复位重投（父级重试语义：成品 file_key 回调去重，
+       聚合关系保留）。hash 存在但租约陈旧的分片不在此补投——交给 sweep 的
+       45min 分片阈值收尸后走父级重试，避免与慢节点双跑。
+    """
+    import time as _time
+    from datetime import datetime as _dt, timedelta as _td
+
+    from sqlalchemy import select as _select
+
+    from app.models.material import SliceTask as _ST
+
+    WATCHDOG_STALE = 2 * 3600  # 2h：max(预估墙钟×2, 2h) 的 v1 常量口径
+
+    async def _watch():
+        now_ts = _time.time()
+        alerted: list = []
+        republished: list = []
+        async with async_session_factory() as db:
+            parents = (
+                await db.execute(
+                    _select(_ST).where(
+                        _ST.status.in_(("running", "pending")),
+                        _ST.parent_task_id.is_(None),
+                        # 只看有分片的行（EXISTS 由分片表引用判定）
+                        _ST.id.in_(_select(_ST.parent_task_id).where(_ST.parent_task_id.is_not(None))),
+                    )
+                )
+            ).scalars().all()
+            if not parents:
+                return {"alerted": [], "republished": []}
+            from app.api.slice_helpers import _publish_to_worker  # noqa: E402 - 惰性导入避免循环
+            redis = await get_redis()
+            for parent in parents:
+                shards = (
+                    await db.execute(
+                        _select(_ST).where(_ST.parent_task_id == parent.id)
+                    )
+                ).scalars().all()
+                non_terminal = [t for t in shards if t.status in ("running", "pending", "processing")]
+                if not non_terminal:
+                    continue
+                oldest = min(
+                    (_t.started_at or _t.created_at) for _t in non_terminal
+                    if (_t.started_at or _t.created_at) is not None
+                ) if any((_t.started_at or _t.created_at) for _t in non_terminal) else None
+                if oldest is not None and _dt.utcnow() - oldest > _td(seconds=WATCHDOG_STALE):
+                    alerted.append(f"{parent.id}(oldest={oldest.isoformat()})")
+                    logger.warning(
+                        "SLICE_SHARD_WATCHDOG 父任务 %s 悬挂：%d/%d 分片非终态超 2h（最老 %s）",
+                        parent.id, len(non_terminal), len(shards), oldest.isoformat(),
+                    )
+                # 丢失补投：hash 整体缺失的 pending/running 分片（龄期>2h）
+                for t in non_terminal:
+                    if _dt.utcnow() - (_t.started_at or _t.created_at or _dt.utcnow()) <= _td(seconds=WATCHDOG_STALE):
+                        continue
+                    try:
+                        data = await redis.hgetall(f"slice:task:{t.id}")
+                    except Exception:  # noqa: BLE001 - Redis 不可达不误判丢失
+                        continue
+                    if data:
+                        continue  # hash 在：交给 sweep 阈值收尸，避免与慢节点双跑
+                    from app.models.material import Episode as _EP  # noqa: E402
+                    episode_row = (
+                        await db.execute(_select(_EP).where(_EP.id == t.episode_id))
+                    ).scalar_one_or_none()
+                    t.status = "pending"
+                    t.progress = 0.0
+                    t.error_message = None
+                    t.completed_at = None
+                    try:
+                        await redis.delete(f"slice:task:{t.id}")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    from app.services.redis_stream import remove_slice_task_from_streams  # noqa: E402
+                    try:
+                        await remove_slice_task_from_streams(str(t.id))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    ok = await _publish_to_worker(
+                        db, t, episode_row, t.cutlist, None,
+                        t.source_file_key, t.dedupe_config, t.watermark_config,
+                        None, t.vert2horiz_config, t.badges_config,
+                        t.badge_default_width or 0, t.source_bucket,
+                        t.subtitle_config, t.text_overlays_config,
+                        t.subtitle_mask_config, t.watermark_mask_config,
+                        bool(t.subtitle_align_mask) if t.subtitle_align_mask is not None else True,
+                        t.cover_image_key, t.output_tier,
+                        None, None, None, None, None, None, None, None,
+                    )
+                    if ok:
+                        republished.append(str(t.id))
+                        logger.warning(
+                            "SLICE_SHARD_WATCHDOG 丢失分片 %s（父 %s 第 %d/%d 片）已自动补投",
+                            t.id, parent.id, t.shard_index, t.shard_total,
+                        )
+                    else:
+                        logger.error(
+                            "SLICE_SHARD_WATCHDOG 分片 %s 补投发布失败（下轮重试）", t.id,
+                        )
+                if republished:
+                    parent.status = "running"
+            await db.commit()
+        return {"alerted": alerted, "republished": republished}
+
+    result = run_async(_watch())
+    if result.get("alerted") or result.get("republished"):
+        logger.warning("slice_shard_watchdog: %s", result)
+    return result

@@ -1717,10 +1717,13 @@ async def list_slice_tasks(
     await check_project_access_by_episode(db, episode, current_user)
 
     # 排除 detect_* 内部进度跟踪记录（区间检测复用了 slice_tasks 表）。
+    # 真分片（docs/1128-v2 §4.1）：分片行不单独展示——父行经聚合重算持有
+    # 整体进度/成品数/终态，用户视角与普通任务一致（一期前端零改动）。
     result = await db.execute(
         select(SliceTask)
         .where(SliceTask.episode_id == eid)
         .where(_not_detect_task())
+        .where(SliceTask.parent_task_id.is_(None))
         .order_by(SliceTask.created_at.desc())
     )
     tasks = result.scalars().all()

@@ -148,6 +148,16 @@ for s in "${SVC_LIST[@]}"; do
 done
 [ -z "$PRE_FAIL" ] || die "预检失败：[$PRE_FAIL] —— 退出，未动任何容器"
 
+# ---------- SRE M5：recreate 前自动打回滚 tag（F105 手工止血动作固化）----------
+for s in "${SVC_LIST[@]}"; do
+  img="${SVC_IMAGE[$s]}"
+  if docker tag "$img" "$img:rollback-pre-$TS" 2>/dev/null; then
+    log "回滚锚点：$img:rollback-pre-$TS"
+  else
+    log "⚠️ 回滚 tag 失败（继续部署）：$img"
+  fi
+done
+
 # ---------- 闸门 4（G4）：单服务逐个 recreate ----------
 for s in "${SVC_LIST[@]}"; do
   log "recreate $s..."
