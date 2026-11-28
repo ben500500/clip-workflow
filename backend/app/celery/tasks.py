@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -12,12 +13,14 @@ from typing import List, Optional
 from celery import Celery
 from celery.schedules import crontab
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy.orm import aliased
 
 from app.config import settings
 from app.database import async_session_factory
 from app.models.models import SliceTask
 from app.models.material import AutoClipRun
+from app.utils.helpers import strip_output_extension
 
 # Celery application
 celery_app = Celery(
@@ -172,6 +175,12 @@ celery_app.conf.update(
             "task": "app.celery.tasks.autoclip_stale_recovery_task",
             "schedule": 900.0,
         },
+        # 真分片父任务 watchdog（2026-11-28，docs/1128-v2 §4.2）：悬挂告警 + 丢失分片
+        # 自动补投（claimOnce ACK 丢消息/X14 场景——7h sweep 兜底前父任务会挂 2h+）
+        "slice-shard-watchdog": {
+            "task": "app.celery.tasks.slice_shard_watchdog_task",
+            "schedule": 900.0,
+        },
     },
 )
 
@@ -257,13 +266,33 @@ def slice_stuck_sweep_task():
         cutoff = datetime.utcnow() - timedelta(seconds=threshold_seconds)
         swept: List[str] = []
         async with async_session_factory() as db:
+            # 真分片（2026-11-28，docs/1128-工程方案-v2 §4.2）：
+            # ① 父行豁免——父行无 worker 租约，若进本巡检会满阈值后被当失联误杀
+            #   （子行还在跑）。父行由分片回调重算 + watchdog 口径覆盖，这里用
+            #   相关子查询排除「被任何分片行引用」的行。
+            # ② 分片行阈值收紧 max(3×预期分片时长, 45min)——7h 主阈值对 30min 级
+            #   分片=漏杀（父任务挂 7h 才有人收尸）。
+            shard_cutoff = datetime.utcnow() - timedelta(seconds=min(threshold_seconds, 2700))
+            _shard = aliased(SliceTask)
+            _not_parent = ~exists(
+                select(_shard.id).where(_shard.parent_task_id == SliceTask.id)
+            )
+            _age = func.coalesce(SliceTask.started_at, SliceTask.created_at)
             rows = (
                 await db.execute(
                     select(SliceTask).where(
                         SliceTask.status.in_(("running", "pending")),
-                        # slice_tasks 表没有 updated_at 列（勿改）：pending 用 created_at，
-                        # running 用 started_at（从未起跑的 running 行回退 created_at）
-                        func.coalesce(SliceTask.started_at, SliceTask.created_at) < cutoff,
+                        _not_parent,
+                        or_(
+                            and_(
+                                SliceTask.parent_task_id.is_(None),
+                                _age < cutoff,
+                            ),
+                            and_(
+                                SliceTask.parent_task_id.is_not(None),
+                                _age < shard_cutoff,
+                            ),
+                        ),
                     )
                 )
             ).scalars().all()
@@ -302,6 +331,20 @@ def slice_stuck_sweep_task():
                     pass
                 swept.append(str(task.id))
             if swept:
+                await db.commit()
+            # 真分片：收尸分片行后联动父行重算终态（重算式聚合，禁增量累加）
+            if swept:
+                from app.api.slice_helpers import recalc_parent_task_status
+                parent_ids = (
+                    (await db.execute(
+                        select(SliceTask.parent_task_id).where(SliceTask.id.in_([__import__("uuid").UUID(x) for x in swept]))
+                    )).scalars().all()
+                )
+                for pid in {p for p in parent_ids if p is not None}:
+                    try:
+                        await recalc_parent_task_status(db, pid)
+                    except Exception as e:  # noqa: BLE001 - 重算失败不阻断 sweep
+                        logger.warning("分片回收后父任务重算失败 parent=%s: %s", pid, e)
                 await db.commit()
         return swept
 
@@ -1556,9 +1599,11 @@ async def _update_slice_task_progress(task_id: Optional[str], progress: float):
             tid = uuid.UUID(task_id)
         except ValueError:
             return
-        result = await session.execute(select(SliceTask).where(SliceTask.id == tid))
+        result = await session.execute(
+            select(SliceTask).where(SliceTask.id == tid).with_for_update()
+        )
         task = result.scalar_one_or_none()
-        if task:
+        if task and task.status not in ("completed", "cancelled", "failed"):
             task.progress = progress
             task.status = "running"
             await session.commit()
@@ -1577,18 +1622,25 @@ async def _save_slice_outputs(
     async with async_session_factory() as session:
         tid = uuid.UUID(task_id) if task_id else None
 
-        # Map outputs to accepted clip candidates by order.
-        clips = []
+        # 行锁把“读取任务状态 → 落成品 → 推进终态”与取消/失败写路径串行化，
+        # 避免本地执行/Celery 收尾覆盖已取消或已失败的终态。
+        from app.api.slice_helpers import lock_existing_clip_ids
+
+        output_clip_ids = {}
+        task = None
+        terminal_status = None
         if tid is not None:
-            clip_result = await session.execute(
-                select(ClipCandidate)
-                .where(
-                    ClipCandidate.episode_id == uuid.UUID(episode_id),
-                    ClipCandidate.status == "accepted",
-                )
-                .order_by(ClipCandidate.clip_index.asc())
+            task_result = await session.execute(
+                select(SliceTask).where(SliceTask.id == tid).with_for_update()
             )
-            clips = clip_result.scalars().all()
+            task = task_result.scalar_one_or_none()
+            if task is not None:
+                output_clip_ids = task.output_clip_ids or {}
+                if task.status in ("cancelled", "failed", "completed"):
+                    terminal_status = task.status
+        existing_clip_ids = await lock_existing_clip_ids(
+            session, (output_clip_ids or {}).values()
+        )
 
         # 幂等:任务已落库过输出则直接跳过,避免 Celery 重试导致重复输出
         if tid is not None:
@@ -1600,7 +1652,7 @@ async def _save_slice_outputs(
                     select(SliceTask).where(SliceTask.id == tid)
                 )
                 task = task_result.scalar_one_or_none()
-                if task and task.status != "completed":
+                if task and task.status not in ("completed", "cancelled", "failed"):
                     task.status = "completed"
                     task.progress = 100.0
                     task.output_count = len(output_files)
@@ -1610,7 +1662,18 @@ async def _save_slice_outputs(
                 return
 
         for i, out in enumerate(output_files):
-            clip_id = clips[i].id if i < len(clips) else None
+            base = strip_output_extension(out.get("file_name", ""))
+            clip_id = (output_clip_ids or {}).get(base)
+            if clip_id is None and task is not None \
+                    and int(task.hook_mix_output_count or 1) > 1 \
+                    and task.hook_mix_mode in ("random", "combine"):
+                clip_id = (output_clip_ids or {}).get(re.sub(r"-v\d+$", "", base))
+            try:
+                clip_id = uuid.UUID(str(clip_id)) if clip_id else None
+            except (ValueError, TypeError, AttributeError):
+                clip_id = None
+            if clip_id not in existing_clip_ids:
+                clip_id = None
             session.add(SliceOutput(
                 task_id=tid,
                 clip_id=clip_id,
@@ -1620,10 +1683,7 @@ async def _save_slice_outputs(
                 duration=out.get("duration"),
             ))
 
-        created_outputs: list = []
-        variant_count = 1
-        base_dedupe = None
-        created_by = None
+        task_completed = False
         if tid is not None:
             # 收集本次新建的输出 id（变体生成需要）
             new_outs = await session.execute(
@@ -1631,28 +1691,31 @@ async def _save_slice_outputs(
             )
             created_outputs = new_outs.scalars().all()
 
-        if tid is not None:
-            task_result = await session.execute(
-                select(SliceTask).where(SliceTask.id == tid)
-            )
-            task = task_result.scalar_one_or_none()
-            variant_count = int(task.variant_count or 1) if task else 1
-            base_dedupe = task.dedupe_config if task else None
+        if task is not None:
+            variant_count = int(task.variant_count or 1)
+            base_dedupe = task.dedupe_config
             created_by = None
-            if task:
+            # 已取消/失败/完成的迟到收尾只补录成品，不覆盖状态、错误或完成时间。
+            if terminal_status is None:
                 task.status = "completed"
                 task.progress = 100.0
                 task.output_count = len(output_files)
                 task.completed_at = datetime.utcnow()
                 task.error_message = None
+                task_completed = True
+            else:
+                task.output_count = len(output_files)
+                variant_count = 1
 
-            # 切片输出落库后把剧集状态推进到 completed,让工作流步骤条走到"成品预览"
-            episode_result = await session.execute(
-                select(Episode).where(Episode.id == uuid.UUID(episode_id))
-            )
-            episode = episode_result.scalar_one_or_none()
-            if episode and episode.status != "completed":
-                episode.status = "completed"
+            # 只有任务本身转入 completed 才推进剧集；取消/失败的迟到成品不能
+            # 把剧集错误地标成完成。
+            if task_completed:
+                episode_result = await session.execute(
+                    select(Episode).where(Episode.id == uuid.UUID(episode_id))
+                )
+                episode = episode_result.scalar_one_or_none()
+                if episode and episode.status != "completed":
+                    episode.status = "completed"
 
         await session.commit()
 
@@ -1687,9 +1750,11 @@ async def _fail_slice_task(task_id: Optional[str], error: str):
             tid = uuid.UUID(task_id)
         except ValueError:
             return
-        result = await session.execute(select(SliceTask).where(SliceTask.id == tid))
+        result = await session.execute(
+            select(SliceTask).where(SliceTask.id == tid).with_for_update()
+        )
         task = result.scalar_one_or_none()
-        if task:
+        if task and task.status not in ("completed", "cancelled", "failed"):
             task.status = "failed"
             task.error_message = error[:2000]
             task.completed_at = datetime.utcnow()
@@ -3141,3 +3206,120 @@ def compress_episode_720p_task(self, episode_id: str):
             import shutil
 
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+@celery_app.task
+def slice_shard_watchdog_task():
+    """真分片父任务 watchdog（docs/1128-工程方案-v2 §4.2，beat 每 15 分钟）。
+
+    ① 悬挂告警：父行 running/pending 且存在非终态分片超过 2h → 打
+       SLICE_SHARD_WATCHDOG 标记日志（供告警抓取；不等 7h sweep）。
+    ② 丢失补投：分片行 pending/running 但 Redis 任务 hash 整体缺失（claimOnce
+       ACK 丢消息/X14 场景——消息没了、租约也没了，sweep 只能等阈值）且
+       分片龄期超 2h → 原行复位重投（父级重试语义：成品 file_key 回调去重，
+       聚合关系保留）。hash 存在但租约陈旧的分片不在此补投——交给 sweep 的
+       45min 分片阈值收尸后走父级重试，避免与慢节点双跑。
+    """
+    import time as _time
+    from datetime import datetime as _dt, timedelta as _td
+
+    from sqlalchemy import select as _select
+
+    from app.models.material import SliceTask as _ST
+
+    WATCHDOG_STALE = 2 * 3600  # 2h：max(预估墙钟×2, 2h) 的 v1 常量口径
+
+    async def _watch():
+        now_ts = _time.time()
+        alerted: list = []
+        republished: list = []
+        async with async_session_factory() as db:
+            parents = (
+                await db.execute(
+                    _select(_ST).where(
+                        _ST.status.in_(("running", "pending")),
+                        _ST.parent_task_id.is_(None),
+                        # 只看有分片的行（EXISTS 由分片表引用判定）
+                        _ST.id.in_(_select(_ST.parent_task_id).where(_ST.parent_task_id.is_not(None))),
+                    )
+                )
+            ).scalars().all()
+            if not parents:
+                return {"alerted": [], "republished": []}
+            from app.api.slice_helpers import _publish_to_worker  # noqa: E402 - 惰性导入避免循环
+            redis = await get_redis()
+            for parent in parents:
+                shards = (
+                    await db.execute(
+                        _select(_ST).where(_ST.parent_task_id == parent.id)
+                    )
+                ).scalars().all()
+                non_terminal = [t for t in shards if t.status in ("running", "pending", "processing")]
+                if not non_terminal:
+                    continue
+                oldest = min(
+                    (_t.started_at or _t.created_at) for _t in non_terminal
+                    if (_t.started_at or _t.created_at) is not None
+                ) if any((_t.started_at or _t.created_at) for _t in non_terminal) else None
+                if oldest is not None and _dt.utcnow() - oldest > _td(seconds=WATCHDOG_STALE):
+                    alerted.append(f"{parent.id}(oldest={oldest.isoformat()})")
+                    logger.warning(
+                        "SLICE_SHARD_WATCHDOG 父任务 %s 悬挂：%d/%d 分片非终态超 2h（最老 %s）",
+                        parent.id, len(non_terminal), len(shards), oldest.isoformat(),
+                    )
+                # 丢失补投：hash 整体缺失的 pending/running 分片（龄期>2h）
+                for t in non_terminal:
+                    if _dt.utcnow() - (_t.started_at or _t.created_at or _dt.utcnow()) <= _td(seconds=WATCHDOG_STALE):
+                        continue
+                    try:
+                        data = await redis.hgetall(f"slice:task:{t.id}")
+                    except Exception:  # noqa: BLE001 - Redis 不可达不误判丢失
+                        continue
+                    if data:
+                        continue  # hash 在：交给 sweep 阈值收尸，避免与慢节点双跑
+                    from app.models.material import Episode as _EP  # noqa: E402
+                    episode_row = (
+                        await db.execute(_select(_EP).where(_EP.id == t.episode_id))
+                    ).scalar_one_or_none()
+                    t.status = "pending"
+                    t.progress = 0.0
+                    t.error_message = None
+                    t.completed_at = None
+                    try:
+                        await redis.delete(f"slice:task:{t.id}")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    from app.services.redis_stream import remove_slice_task_from_streams  # noqa: E402
+                    try:
+                        await remove_slice_task_from_streams(str(t.id))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    ok = await _publish_to_worker(
+                        db, t, episode_row, t.cutlist, None,
+                        t.source_file_key, t.dedupe_config, t.watermark_config,
+                        None, t.vert2horiz_config, t.badges_config,
+                        t.badge_default_width or 0, t.source_bucket,
+                        t.subtitle_config, t.text_overlays_config,
+                        t.subtitle_mask_config, t.watermark_mask_config,
+                        bool(t.subtitle_align_mask) if t.subtitle_align_mask is not None else True,
+                        t.cover_image_key, t.output_tier,
+                        None, None, None, None, None, None, None, None,
+                    )
+                    if ok:
+                        republished.append(str(t.id))
+                        logger.warning(
+                            "SLICE_SHARD_WATCHDOG 丢失分片 %s（父 %s 第 %d/%d 片）已自动补投",
+                            t.id, parent.id, t.shard_index, t.shard_total,
+                        )
+                    else:
+                        logger.error(
+                            "SLICE_SHARD_WATCHDOG 分片 %s 补投发布失败（下轮重试）", t.id,
+                        )
+                if republished:
+                    parent.status = "running"
+            await db.commit()
+        return {"alerted": alerted, "republished": republished}
+
+    result = run_async(_watch())
+    if result.get("alerted") or result.get("republished"):
+        logger.warning("slice_shard_watchdog: %s", result)
+    return result
